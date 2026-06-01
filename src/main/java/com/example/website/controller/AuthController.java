@@ -1,0 +1,53 @@
+package com.example.website.controller;
+
+import com.example.website.common.ApiResponse;
+import com.example.website.dto.ChangePasswordRequest;
+import com.example.website.dto.CurrentUserView;
+import com.example.website.dto.LoginRequest;
+import com.example.website.dto.LoginResponse;
+import com.example.website.dto.RegisterRequest;
+import com.example.website.service.AuthService;
+import com.example.website.service.UserProfileService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.*;
+
+import javax.servlet.http.HttpServletRequest;
+import javax.validation.Valid;
+
+@RestController
+@RequiredArgsConstructor
+public class AuthController {
+
+    private final AuthService authService;
+    private final UserProfileService userProfileService;
+
+    @PostMapping("/api/auth/register")
+    public ApiResponse<LoginResponse> register(@Valid @RequestBody RegisterRequest req) {
+        return ApiResponse.ok(authService.register(req));
+    }
+
+    @PostMapping("/api/auth/login")
+    public ApiResponse<LoginResponse> login(@Valid @RequestBody LoginRequest req) {
+        return ApiResponse.ok(authService.login(req));
+    }
+
+    @GetMapping("/api/user/me")
+    public ApiResponse<CurrentUserView> currentUser(HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        if (userId == null) {
+            return ApiResponse.error(401, "Unauthorized");
+        }
+        return ApiResponse.ok(userProfileService.getCurrentUser(userId));
+    }
+
+    @PostMapping({"/api/admin/change-password", "/api/user/change-password"})
+    public ApiResponse<Void> changePassword(HttpServletRequest request,
+                                            @Valid @RequestBody ChangePasswordRequest req) {
+        Long userId = (Long) request.getAttribute("userId");
+        if (userId == null) {
+            return ApiResponse.error(401, "Unauthorized");
+        }
+        authService.changePassword(userId, req.getOldPassword(), req.getNewPassword());
+        return ApiResponse.ok();
+    }
+}

@@ -1,0 +1,52 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "website-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-31",
+  "routes": [
+    {
+      "pattern": "api.751152.xyz",
+      "custom_domain": true
+    }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "CORS_ORIGINS": "http://localhost:5173,https://*.pages.dev,https://hi.751152.xyz",
+    "PUBLIC_R2_BASE_URL": "",
+    "AI_CHAT_BASE_URL": "",
+    "AI_CHAT_API_KEY": "",
+    "IMAGE_API_BASE_URL": "",
+    "IMAGE_API_KEY": ""
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "website_db",
+      "database_id": "fdea0a54-a27b-4d90-a9c0-e4e2fa0b5da9"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "APP_KV",
+      "id": "88ee7190e35249ea9662245a98f147a1"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "IMAGE_QUEUE",
+        "queue": "website-image-generation"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "website-image-generation",
+        "max_batch_size": 1,
+        "max_retries": 2,
+        "max_concurrency": 2
+      }
+    ]
+  }
+}

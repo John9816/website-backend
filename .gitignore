@@ -1,0 +1,54 @@
+HELP.md
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### IntelliJ IDEA ###
+.idea/
+*.iws
+*.iml
+*.ipr
+
+### Eclipse ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### Local runtime ###
+*.log
+*.png
+_*.json
+
+### Local tooling ###
+.agents/
+.claude/
+.codex-compile/
+.m2/
+.playwright-cli/
+.playwright-mcp/
+
+### Cloudflare Worker local state ###
+cloudflare-worker/node_modules/
+cloudflare-worker/.wrangler/
+cloudflare-worker/.wrangler-config/
+cloudflare-worker/.local-logs/
+cloudflare-worker/*-headers.txt
+cloudflare-worker/*-curl.err

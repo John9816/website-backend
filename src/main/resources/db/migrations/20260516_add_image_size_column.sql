@@ -1,0 +1,2 @@
+ALTER TABLE generated_image
+    ADD COLUMN size VARCHAR(20) DEFAULT NULL AFTER model;

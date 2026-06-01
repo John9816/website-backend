@@ -416,8 +416,10 @@ async function qqCollectionSearch(keyword: string, type: SearchType, page: numbe
       key: keyword
     }), { headers: { ...JSON_HEADERS, referer: "https://y.qq.com/" } }, 1004);
     const box = asObj(asObj(json.data)?.singer);
-    const list = arr(box?.itemlist).map((row) => qqCollectionItem(row, "artist")).filter((item) => item.id && item.name);
-    return { total: num(box?.count) ?? list.length, list: slicePage(list, page, pageSize) };
+    const list = arr(box?.itemlist)
+      .map((row) => qqCollectionItem(row, "artist"))
+      .filter((item) => item.id && item.name && matchesKeyword(item.name, keyword));
+    return { total: list.length, list: slicePage(list, page, pageSize) };
   }
 
   if (type === "album") {
@@ -441,9 +443,12 @@ async function neteaseCollectionSearch(keyword: string, type: SearchType, page: 
   const json = await neteaseSearchJson(keyword, type, page, pageSize);
   const result = asObj(json.result);
   if (type === "artist") {
+    const list = arr(result?.artists)
+      .map((row) => collectionItem(row, "artist"))
+      .filter((item) => item.id && item.name && matchesKeyword(item.name, keyword));
     return {
-      total: num(result?.artistCount) ?? 0,
-      list: arr(result?.artists).map((row) => collectionItem(row, "artist")).filter((item) => item.id && item.name)
+      total: list.length,
+      list
     };
   }
   if (type === "album") {
@@ -470,9 +475,12 @@ async function kuwoCollectionSearch(keyword: string, type: SearchType, page: num
     vipver: "MUSIC_9.0.5.0_W1",
     newver: "1"
   }), { headers: JSON_HEADERS }, 1004, false, true);
+  const list = arr(firstValue(json.abslist, json.albumlist))
+      .map((row) => kuwoCollectionItem(row, type))
+      .filter((item) => item.id && item.name && (type !== "artist" || matchesKeyword(item.name, keyword)));
   return {
-    total: num(firstValue(json.total, json.TOTAL, json.HIT)) ?? 0,
-    list: arr(firstValue(json.abslist, json.albumlist)).map((row) => kuwoCollectionItem(row, type)).filter((item) => item.id && item.name)
+    total: type === "artist" ? list.length : num(firstValue(json.total, json.TOTAL, json.HIT)) ?? 0,
+    list
   };
 }
 
@@ -959,6 +967,12 @@ function arr(value: any): any[] {
 
 function str(value: any): string {
   return value == null ? "" : String(value);
+}
+
+function matchesKeyword(value: string, keyword: string): boolean {
+  const normalizedValue = value.toLowerCase().replace(/\s+/g, "");
+  const normalizedKeyword = keyword.toLowerCase().replace(/\s+/g, "");
+  return normalizedKeyword === "" || normalizedValue.includes(normalizedKeyword);
 }
 
 function num(value: any): number | undefined {

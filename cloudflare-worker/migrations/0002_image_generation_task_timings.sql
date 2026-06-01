@@ -1,1 +1,1 @@
-ALTER TABLE image_generation_task ADD COLUMN timings_json TEXT;
+-- No-op: timings_json is already present in 0001_initial.sql.

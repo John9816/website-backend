@@ -502,12 +502,20 @@ async function qqSearchCp(keyword: string, page: number, pageSize: number, t: st
 }
 
 async function neteaseSearchJson(keyword: string, type: SearchType, page: number, pageSize: number): Promise<any> {
-  return fetchJson(withQuery("https://music.163.com/api/search/get/web", {
+  const params = {
     s: keyword,
     type: neteaseSearchCode(type),
     offset: String(Math.max(0, (page - 1) * pageSize)),
     limit: String(pageSize)
-  }), { headers: neteaseHeaders() }, 1004);
+  };
+  try {
+    return await fetchJson(withQuery("https://music.163.com/api/cloudsearch/pc", params), { headers: neteaseHeaders() }, 1004);
+  } catch (error) {
+    console.warn("Netease cloudsearch failed, falling back to legacy search", {
+      message: error instanceof Error ? error.message : String(error)
+    });
+    return fetchJson(withQuery("https://music.163.com/api/search/get/web", params), { headers: neteaseHeaders() }, 1004);
+  }
 }
 
 async function kuwoSearch(keyword: string, page: number, pageSize: number): Promise<SongItem[]> {

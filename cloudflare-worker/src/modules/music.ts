@@ -22,12 +22,22 @@ export async function musicProxy(ctx: RequestContext): Promise<Response> {
   try {
     return ok(await musicProviderData(ctx));
   } catch (error) {
-    if (ctx.url.pathname.endsWith("/play")) {
+    if (!supportsLocalFallback(ctx.url.pathname)) {
       throw error;
     }
+    console.warn("Music provider unavailable, falling back to local D1 data", {
+      path: ctx.url.pathname,
+      message: error instanceof Error ? error.message : String(error)
+    });
     // Fall through to imported D1 playlist data when an upstream music provider is unavailable.
   }
   return ok(await localMusicData(ctx));
+}
+
+function supportsLocalFallback(pathname: string): boolean {
+  return pathname.endsWith("/playlist")
+    || pathname.endsWith("/playlist/detail")
+    || pathname.endsWith("/new");
 }
 
 export async function history(ctx: RequestContext): Promise<Response> {

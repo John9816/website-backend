@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "website-api",
+  "account_id": "b374286eb96b6c736f10c4b9561bb36d",
   "main": "src/index.ts",
   "compatibility_date": "2026-05-31",
   "routes": [
@@ -31,6 +32,12 @@
     {
       "binding": "APP_KV",
       "id": "88ee7190e35249ea9662245a98f147a1"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "R2_BUCKET",
+      "bucket_name": "website-bucket"
     }
   ],
   "queues": {

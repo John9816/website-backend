@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs";
+import { initialCredits, userCreditView } from "./credits";
 import { sha256Hex, signJwt, verifyJwt } from "./crypto";
 import { HttpError, AuthUser, Env } from "./types";
 
@@ -9,6 +10,7 @@ interface UserRow {
   username: string;
   password_hash: string;
   role: string;
+  credits?: number;
 }
 
 export async function getAuthUser(request: Request, env: Env): Promise<AuthUser | null> {
@@ -47,15 +49,17 @@ export async function register(env: Env, username: string, password: string) {
   if (!username || username.length < 3 || !password || password.length < 6) {
     throw new HttpError(400, "username or password is invalid");
   }
+  const credits = await initialCredits(env);
   try {
-    const result = await env.DB.prepare("INSERT INTO users(username, password_hash, role) VALUES(?, ?, 'USER')")
-      .bind(username, await passwordHash(password))
+    const result = await env.DB.prepare("INSERT INTO users(username, password_hash, role, credits) VALUES(?, ?, 'USER', ?)")
+      .bind(username, await passwordHash(password), credits)
       .run();
     return loginView(env, {
       id: Number(result.meta.last_row_id),
       username,
       password_hash: "",
-      role: "USER"
+      role: "USER",
+      credits
     });
   } catch {
     throw new HttpError(400, "username already exists");
@@ -83,17 +87,20 @@ export async function ensureAdmin(env: Env): Promise<void> {
   }
   const username = env.ADMIN_DEFAULT_USERNAME || "admin";
   const password = env.ADMIN_DEFAULT_PASSWORD || "admin123";
-  await env.DB.prepare("INSERT INTO users(username, password_hash, role) VALUES(?, ?, 'ADMIN')")
-    .bind(username, await passwordHash(password))
+  const credits = await initialCredits(env);
+  await env.DB.prepare("INSERT INTO users(username, password_hash, role, credits) VALUES(?, ?, 'ADMIN', ?)")
+    .bind(username, await passwordHash(password), credits)
     .run();
 }
 
-export function currentUserView(user: AuthUser) {
+export async function currentUserView(env: Env, user: AuthUser) {
+  const view = await userCreditView(env, user.id);
   return {
     id: user.id,
     username: user.username,
     role: user.role,
-    canManageSystemConfig: user.role === "ADMIN"
+    canManageSystemConfig: user.role === "ADMIN",
+    ...view
   };
 }
 
@@ -105,7 +112,7 @@ async function loginView(env: Env, user: UserRow) {
   );
   return {
     token,
-    user: currentUserView(user),
+    user: await currentUserView(env, user),
     username: user.username,
     role: user.role
   };

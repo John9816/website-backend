@@ -5,9 +5,21 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'USER',
+  credits INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS user_check_in (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  check_in_date TEXT NOT NULL,
+  reward_credits INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, check_in_date),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_user_check_in_user_date ON user_check_in(user_id, check_in_date DESC);
 
 CREATE TABLE IF NOT EXISTS category (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,6 +82,8 @@ CREATE TABLE IF NOT EXISTS image_generation_task (
   model TEXT,
   size TEXT,
   n INTEGER NOT NULL DEFAULT 1,
+  credit_cost INTEGER NOT NULL DEFAULT 0,
+  credit_refunded INTEGER NOT NULL DEFAULT 0,
   result_json TEXT,
   timings_json TEXT,
   error_message TEXT,
@@ -274,4 +288,9 @@ INSERT OR IGNORE INTO sys_config(config_key, config_value, description) VALUES
   ('ai.chat.models', 'gpt-4.1-mini,gpt-4.1,gpt-4o-mini', 'Comma separated chat models'),
   ('ai.chat.voices', 'alloy|Alloy,verse|Verse,aria|Aria', 'voiceId|Label list'),
   ('image.api.model', 'gpt-image-1', 'Default image model'),
-  ('music.play.resolverOrder', 'primary,qq_text,cross_source', 'Compatibility key');
+  ('image.persist.remote-url-mode', 'proxy', 'Store upstream image URLs in R2'),
+  ('image.generate.credit_cost', '1', 'Credits charged per generated image'),
+  ('user.checkin.reward_credits', '5', 'Credits rewarded for one daily check-in'),
+  ('user.register.initial_credits', '10', 'Credits granted to each newly registered account'),
+  ('music.play.resolverOrder', 'primary,qq_text,cross_source', 'Music play resolver order'),
+  ('music.play.crossSourceOrder', 'netease,qq,kuwo', 'Cross-source music play fallback order');

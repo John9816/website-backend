@@ -7,6 +7,7 @@ import * as music from "./modules/music";
 import * as image from "./modules/image";
 import * as ai from "./modules/ai";
 import * as kb from "./modules/kb";
+import * as credits from "./credits";
 
 const router = new Router();
 
@@ -20,7 +21,9 @@ router.on("POST", "/api/auth/login", async (ctx) => {
   return ok(await login(ctx.env, body.username || "", body.password || ""));
 });
 
-router.on("GET", "/api/user/me", async (ctx) => ok(currentUserView(requireUser(ctx))));
+router.on("GET", "/api/user/me", async (ctx) => ok(await currentUserView(ctx.env, requireUser(ctx))));
+router.on("GET", "/api/user/credits", credits.credits);
+router.on("POST", "/api/user/check-in", credits.checkIn);
 router.on("POST", "/api/user/change-password", passwordChange);
 router.on("POST", "/api/admin/change-password", passwordChange);
 
@@ -69,6 +72,7 @@ router.on("POST", "/api/user/ai/tts", ai.tts);
 router.on("POST", "/api/user/ai/conversations", ai.createConversation);
 router.on("GET", "/api/user/ai/conversations", ai.conversations);
 router.on("GET", "/api/user/ai/conversations/:id", ai.conversation);
+router.on("DELETE", "/api/user/ai/conversations/:id", ai.deleteConversation);
 router.on("GET", "/api/user/ai/conversations/:id/messages", ai.messages);
 router.on("POST", "/api/user/ai/conversations/:id/messages", async (ctx) => {
   return ctx.url.searchParams.get("stream") === "true" ? ai.streamMessage(ctx) : ai.sendMessage(ctx);
@@ -90,6 +94,8 @@ for (const prefix of ["/api/user/kb/tags", "/api/admin/kb/tags"]) {
   router.on("PUT", `${prefix}/:id`, kb.updateTag);
   router.on("DELETE", `${prefix}/:id`, kb.deleteTag);
 }
+router.on("POST", "/api/user/kb/assets", kb.uploadAsset);
+router.on("POST", "/api/admin/kb/assets", kb.uploadAsset);
 for (const prefix of ["/api/user/kb/docs", "/api/admin/kb/docs"]) {
   router.on("GET", prefix, kb.docs);
   router.on("POST", prefix, kb.createDoc);
@@ -106,6 +112,7 @@ for (const prefix of ["/api/user/kb/docs", "/api/admin/kb/docs"]) {
   router.on("DELETE", `${prefix}/:id/share`, kb.disableShare);
 }
 router.on("GET", "/api/public/kb/share/:token", kb.publicShare);
+router.on("GET", "/api/v1/kb/assets/:filename", kb.assetFile);
 
 router.on("GET", "/api/v1/music/search", music.musicProxy);
 router.on("GET", "/api/v1/music/play", music.musicProxy);

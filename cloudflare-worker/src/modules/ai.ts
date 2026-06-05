@@ -1,5 +1,5 @@
 import { firstRequired } from "../db";
-import { ok, readJson, requireUser } from "../http";
+import { emptyOk, ok, readJson, requireUser } from "../http";
 import { HttpError, RequestContext } from "../types";
 import { pagedQuery } from "./nav";
 
@@ -79,6 +79,19 @@ export async function conversations(ctx: RequestContext): Promise<Response> {
 export async function conversation(ctx: RequestContext): Promise<Response> {
   const user = requireUser(ctx);
   return ok(await conversationViewById(ctx, user.id, Number(ctx.params.id)));
+}
+
+export async function deleteConversation(ctx: RequestContext): Promise<Response> {
+  const user = requireUser(ctx);
+  const conversationId = Number(ctx.params.id);
+  await conversationViewById(ctx, user.id, conversationId);
+  await ctx.env.DB.prepare("DELETE FROM ai_chat_message WHERE conversation_id = ?")
+    .bind(conversationId)
+    .run();
+  await ctx.env.DB.prepare("DELETE FROM ai_conversation WHERE id = ? AND user_id = ?")
+    .bind(conversationId, user.id)
+    .run();
+  return emptyOk();
 }
 
 export async function messages(ctx: RequestContext): Promise<Response> {

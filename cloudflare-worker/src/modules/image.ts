@@ -1,4 +1,5 @@
 import { randomToken } from "../crypto";
+import { chargeCredits, imageCreditCost, refundCredits } from "../credits";
 import { firstRequired, pageOf, toBool } from "../db";
 import { emptyOk, ok, readJson, requireUser } from "../http";
 import { HttpError, ImageGenerateQueueMessage, RequestContext } from "../types";
@@ -17,7 +18,7 @@ interface EditImageInput {
   n: number;
 }
 
-type ImageStageName = "upstream" | "download" | "telegramUpload" | "telegramResponse";
+type ImageStageName = "upstream" | "download" | "r2Upload" | "telegramUpload" | "telegramResponse";
 
 interface ImageStageTiming {
   startedAt?: string;
@@ -56,9 +57,11 @@ export async function generateImage(ctx: RequestContext): Promise<Response> {
   const size = typeof body.size === "string" ? body.size : null;
   const quality = typeof body.quality === "string" && body.quality.trim() ? body.quality.trim() : null;
   const n = Math.min(10, Math.max(1, Number(body.n || 1)));
+  const creditCost = await calculateCreditCost(ctx, n);
+  await chargeCredits(ctx.env, user.id, creditCost);
   const result = await ctx.env.DB.prepare(
-    "INSERT INTO image_generation_task(user_id, type, status, prompt, model, size, n) VALUES(?, 'generate', 'PENDING', ?, ?, ?, ?)"
-  ).bind(user.id, prompt, model, size, n).run();
+    "INSERT INTO image_generation_task(user_id, type, status, prompt, model, size, n, credit_cost) VALUES(?, 'generate', 'PENDING', ?, ?, ?, ?, ?)"
+  ).bind(user.id, prompt, model, size, n, creditCost).run();
   const taskId = Number(result.meta.last_row_id);
   await enqueueImageTask(ctx, { type: "generate", userId: user.id, taskId, prompt, model, size, quality, n });
   return ok(await taskById(ctx, user.id, taskId));
@@ -113,6 +116,7 @@ async function runImageTask(
     await ctx.env.DB.prepare("UPDATE image_generation_task SET status = 'FAILED', error_message = ?, timings_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(error instanceof Error ? error.message : "Image generation failed", JSON.stringify(tracker.timings), taskId)
       .run();
+    await refundCredits(ctx.env, userId, taskId);
   }
 }
 
@@ -120,9 +124,11 @@ export async function editImage(ctx: RequestContext): Promise<Response> {
   const user = requireUser(ctx);
   const input = await readEditImageInput(ctx.request);
   const model = input.model || await getConfig(ctx, "image.api.model", "gpt-image-1");
+  const creditCost = await calculateCreditCost(ctx, input.n);
+  await chargeCredits(ctx.env, user.id, creditCost);
   const result = await ctx.env.DB.prepare(
-    "INSERT INTO image_generation_task(user_id, type, status, prompt, model, size, n) VALUES(?, 'edit', 'PROCESSING', ?, ?, ?, ?)"
-  ).bind(user.id, input.prompt, model, input.size, input.n).run();
+    "INSERT INTO image_generation_task(user_id, type, status, prompt, model, size, n, credit_cost) VALUES(?, 'edit', 'PROCESSING', ?, ?, ?, ?, ?)"
+  ).bind(user.id, input.prompt, model, input.size, input.n, creditCost).run();
   const taskId = Number(result.meta.last_row_id);
   await runEditImageTask(ctx, user.id, taskId, input, model);
   return ok(await taskById(ctx, user.id, taskId));
@@ -222,13 +228,14 @@ export async function retryImageTask(ctx: RequestContext): Promise<Response> {
     ctx.env.DB.prepare("SELECT * FROM image_generation_task WHERE id = ? AND user_id = ? AND status = 'FAILED'")
       .bind(id, user.id)
   );
-  await ctx.env.DB.prepare(
-    "UPDATE image_generation_task SET status = 'PROCESSING', error_message = NULL, result_json = NULL, timings_json = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?"
-  ).bind(id, user.id).run();
-
   if (row.type === "edit") {
     await failRetriedEditTask(ctx, id);
   } else {
+    const creditCost = await calculateCreditCost(ctx, Number(row.n || 1));
+    await chargeCredits(ctx.env, user.id, creditCost);
+    await ctx.env.DB.prepare(
+      "UPDATE image_generation_task SET status = 'PROCESSING', error_message = NULL, result_json = NULL, timings_json = NULL, credit_cost = ?, credit_refunded = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?"
+    ).bind(creditCost, id, user.id).run();
     await enqueueImageTask(ctx, {
       type: "generate",
       userId: user.id,
@@ -273,10 +280,7 @@ export async function testTelegramImage(ctx: RequestContext): Promise<Response> 
 }
 
 export async function imageFile(ctx: RequestContext): Promise<Response> {
-  if (!ctx.env.R2_BUCKET) {
-    throw new HttpError(503, "R2_BUCKET is not configured");
-  }
-  const object = await ctx.env.R2_BUCKET.get(`images/${ctx.params.filename}`);
+  const object = await requireR2Bucket(ctx).get(`images/${ctx.params.filename}`);
   if (!object) {
     throw new HttpError(404, "File not found");
   }
@@ -395,6 +399,7 @@ async function runEditImageTask(
     await ctx.env.DB.prepare("UPDATE image_generation_task SET status = 'FAILED', error_message = ?, timings_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(error instanceof Error ? error.message : "Image edit failed", JSON.stringify(tracker.timings), taskId)
       .run();
+    await refundCredits(ctx.env, userId, taskId);
   }
 }
 
@@ -555,9 +560,15 @@ async function taskById(ctx: RequestContext, userId: number, id: number) {
 }
 
 async function expireStaleProcessingTasks(ctx: RequestContext, userId: number): Promise<void> {
+  const rows = await ctx.env.DB.prepare(
+    "SELECT id FROM image_generation_task WHERE user_id = ? AND status = 'PROCESSING' AND datetime(updated_at) < datetime('now', '-20 minutes')"
+  ).bind(userId).all<{ id: number }>();
   await ctx.env.DB.prepare(
     "UPDATE image_generation_task SET status = 'FAILED', error_message = 'Task expired before completion', updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND status = 'PROCESSING' AND datetime(updated_at) < datetime('now', '-20 minutes')"
   ).bind(userId).run();
+  for (const row of rows.results ?? []) {
+    await refundCredits(ctx.env, userId, row.id);
+  }
 }
 
 function imageView(row: any) {
@@ -717,41 +728,32 @@ async function getConfig(ctx: RequestContext, key: string, fallback: string) {
   return row?.config_value || fallback;
 }
 
+async function calculateCreditCost(ctx: RequestContext, n: number): Promise<number> {
+  return Math.max(0, n) * await imageCreditCost(ctx.env);
+}
+
 function publicR2Url(ctx: RequestContext, filename: string): string {
   return ctx.env.PUBLIC_R2_BASE_URL
     ? `${ctx.env.PUBLIC_R2_BASE_URL.replace(/\/$/, "")}/images/${filename}`
     : `/api/v1/image/file/${filename}`;
 }
 
-async function persistImageBytes(ctx: RequestContext, bytes: Uint8Array, tracker?: ImagePipelineTracker): Promise<string | null> {
-  let telegramError = "";
+async function persistImageBytes(ctx: RequestContext, bytes: Uint8Array, tracker?: ImagePipelineTracker): Promise<string> {
+  const bucket = requireR2Bucket(ctx);
+  const filename = `${randomToken(12)}.png`;
+  await markStageStart(ctx, tracker, "r2Upload", { bytes: bytes.byteLength, key: `images/${filename}` });
   try {
-    const telegramUrl = await uploadTelegramPhoto(ctx, bytes, tracker);
-    if (telegramUrl) {
-      return telegramUrl;
-    }
-  } catch (error) {
-    telegramError = error instanceof Error ? error.message : "unknown Telegram error";
-  }
-
-  if (ctx.env.R2_BUCKET) {
-    const filename = `${randomToken(12)}.png`;
-    await ctx.env.R2_BUCKET.put(`images/${filename}`, bytes, { httpMetadata: { contentType: "image/png" } });
+    await bucket.put(`images/${filename}`, bytes, { httpMetadata: { contentType: "image/png" } });
+    await markStageEnd(ctx, tracker, "r2Upload", { bytes: bytes.byteLength, key: `images/${filename}` });
     return publicR2Url(ctx, filename);
+  } catch (error) {
+    await markStageError(ctx, tracker, "r2Upload", error);
+    throw error;
   }
-
-  if (telegramError) {
-    throw new HttpError(502, `Telegram image upload failed: ${telegramError}`);
-  }
-  return null;
 }
 
-async function persistRemoteImageUrl(ctx: RequestContext, url: string, tracker?: ImagePipelineTracker): Promise<string | null> {
-  const mode = (await getConfig(ctx, "image.persist.remote-url-mode", "direct")).trim().toLowerCase();
-  if (mode === "direct") {
-    return null;
-  }
-
+async function persistRemoteImageUrl(ctx: RequestContext, url: string, tracker?: ImagePipelineTracker): Promise<string> {
+  requireR2Bucket(ctx);
   await markStageStart(ctx, tracker, "download", { source: "remote-url" });
   let bytes: Uint8Array;
   try {
@@ -771,6 +773,13 @@ async function persistRemoteImageUrl(ctx: RequestContext, url: string, tracker?:
   }
   const storedUrl = await persistImageBytes(ctx, bytes, tracker);
   return storedUrl;
+}
+
+function requireR2Bucket(ctx: RequestContext): R2Bucket {
+  if (!ctx.env.R2_BUCKET) {
+    throw new HttpError(503, "R2_BUCKET is not configured");
+  }
+  return ctx.env.R2_BUCKET;
 }
 
 async function uploadTelegramPhoto(ctx: RequestContext, bytes: Uint8Array, tracker?: ImagePipelineTracker): Promise<string | null> {

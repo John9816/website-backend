@@ -64,6 +64,7 @@ public class SecurityConfig {
                 .antMatchers("/api/admin/categories/**", "/api/admin/links/**").authenticated()
                 .antMatchers("/api/user/kb/**").authenticated()
                 .antMatchers(HttpMethod.GET, "/api/v1/image/file/**").permitAll()
+                .antMatchers(HttpMethod.GET, "/api/v1/kb/assets/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/public/**").permitAll()
                 .antMatchers("/api/admin/**").hasRole("ADMIN")
                 .anyRequest().permitAll()

@@ -4,6 +4,16 @@ import { emptyOk, ok, readJson, requireUser } from "../http";
 import { HttpError, RequestContext } from "../types";
 import { pagedQuery } from "./nav";
 
+const KB_ASSET_MAX_BYTES = 10 * 1024 * 1024;
+const KB_ASSET_EXTENSIONS: Record<string, string> = {
+  "image/avif": "avif",
+  "image/gif": "gif",
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/svg+xml": "svg",
+  "image/webp": "webp"
+};
+
 export async function spaces(ctx: RequestContext): Promise<Response> {
   const user = requireUser(ctx);
   const rows = await ctx.env.DB.prepare("SELECT * FROM kb_space WHERE user_id = ? ORDER BY sort_order, id").bind(user.id).all();
@@ -230,6 +240,83 @@ export async function publicShare(ctx: RequestContext): Promise<Response> {
   return ok({ doc, docs: (docs.results ?? []).map(docSummaryView), share: shareView(share) });
 }
 
+export async function uploadAsset(ctx: RequestContext): Promise<Response> {
+  const user = requireUser(ctx);
+  if (!ctx.request.headers.get("content-type")?.includes("multipart/form-data")) {
+    throw new HttpError(400, "multipart/form-data is required");
+  }
+
+  const form = await ctx.request.formData();
+  const file = form.get("file");
+  if (!isFileLike(file)) {
+    throw new HttpError(400, "file is required");
+  }
+
+  const contentType = normalizeImageContentType(file.type);
+  const extension = KB_ASSET_EXTENSIONS[contentType];
+  if (!extension) {
+    throw new HttpError(400, "Only image files are allowed");
+  }
+
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!bytes.byteLength) {
+    throw new HttpError(400, "file is empty");
+  }
+  if (bytes.byteLength > KB_ASSET_MAX_BYTES) {
+    throw new HttpError(413, "file is too large");
+  }
+
+  const docIdValue = form.get("docId");
+  const docId = typeof docIdValue === "string" && docIdValue.trim() ? Number(docIdValue) : null;
+  if (docId !== null) {
+    if (!Number.isFinite(docId) || docId <= 0) {
+      throw new HttpError(400, "docId is invalid");
+    }
+    await rowByOwner(ctx, "kb_doc", user.id, docId);
+  }
+
+  const filename = `${user.id}-${docId ?? "unassigned"}-${randomToken(18)}.${extension}`;
+  const key = `kb-assets/${filename}`;
+  const bucket = requireR2Bucket(ctx);
+  await bucket.put(key, bytes, {
+    httpMetadata: {
+      contentType,
+      cacheControl: "public, max-age=31536000, immutable"
+    },
+    customMetadata: {
+      userId: String(user.id),
+      ...(docId ? { docId: String(docId) } : {}),
+      originalName: sanitizeMetadata(file.name || "image")
+    }
+  });
+
+  return ok({
+    url: publicKbAssetUrl(ctx, filename),
+    key,
+    contentType,
+    size: bytes.byteLength
+  });
+}
+
+export async function assetFile(ctx: RequestContext): Promise<Response> {
+  const filename = ctx.params.filename;
+  if (!/^[A-Za-z0-9._-]+$/.test(filename)) {
+    throw new HttpError(400, "Invalid filename");
+  }
+
+  const object = await requireR2Bucket(ctx).get(`kb-assets/${filename}`);
+  if (!object) {
+    throw new HttpError(404, "File not found");
+  }
+
+  return new Response(object.body, {
+    headers: {
+      "content-type": object.httpMetadata?.contentType || "application/octet-stream",
+      "cache-control": object.httpMetadata?.cacheControl || "public, max-age=31536000, immutable"
+    }
+  });
+}
+
 async function docViewById(ctx: RequestContext, userId: number, id: number) {
   const row = await rowByOwner(ctx, "kb_doc", userId, id);
   const tags = await ctx.env.DB.prepare("SELECT t.* FROM kb_tag t JOIN kb_doc_tag dt ON dt.tag_id = t.id WHERE dt.doc_id = ?").bind(id).all();
@@ -275,4 +362,33 @@ function required(value: unknown, name: string): string {
     throw new HttpError(400, `${name} is required`);
   }
   return value.trim();
+}
+
+function isFileLike(value: unknown): value is File {
+  return typeof value === "object"
+    && value !== null
+    && typeof (value as File).arrayBuffer === "function"
+    && typeof (value as File).name === "string";
+}
+
+function normalizeImageContentType(value: string): string {
+  const contentType = value.toLowerCase().split(";")[0].trim();
+  return contentType === "image/jpg" ? "image/jpeg" : contentType;
+}
+
+function publicKbAssetUrl(ctx: RequestContext, filename: string): string {
+  return ctx.env.PUBLIC_R2_BASE_URL
+    ? `${ctx.env.PUBLIC_R2_BASE_URL.replace(/\/$/, "")}/kb-assets/${filename}`
+    : `/api/v1/kb/assets/${filename}`;
+}
+
+function requireR2Bucket(ctx: RequestContext): R2Bucket {
+  if (!ctx.env.R2_BUCKET) {
+    throw new HttpError(503, "R2_BUCKET is not configured");
+  }
+  return ctx.env.R2_BUCKET;
+}
+
+function sanitizeMetadata(value: string): string {
+  return value.replace(/[^\x20-\x7E]/g, "").slice(0, 200);
 }

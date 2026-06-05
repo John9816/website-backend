@@ -178,7 +178,7 @@
 | `image.upload.dir` | 生成图片本地存储目录，默认 `uploads/images`（go-file 不可用时回退） |
 | `image.gofile.url` | go-file 服务地址，如 `https://file.example.com`。配置后优先上传到 go-file |
 | `image.gofile.token` | go-file API Token，可为空（取决于 go-file 上传权限设置） |
-| `image.persist.remote-url-mode` | 上游返回 HTTP 图片 URL 时的历史入库策略：`direct` 直接保存 URL（默认），`proxy` 下载后再 go-file/本地保存 |
+| `image.persist.remote-url-mode` | Worker 部署中固定使用 `proxy`：上游返回 HTTP 图片 URL 时下载后写入 R2 |
 | `ai.chat.baseUrl` | AI 对话上游基础地址，代码会自动拼接 `/chat/completions` |
 | `ai.chat.apiKey` | AI 对话上游 Bearer Key，可留空 |
 | `ai.chat.defaultModel` | 默认文本对话模型 |

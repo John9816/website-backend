@@ -3,6 +3,7 @@ import { HttpError, RequestContext } from "../types";
 type Source = "qq" | "netease" | "kuwo";
 type Quality = "128k" | "320k" | "flac" | "flac24bit";
 type SearchType = "song" | "album" | "artist" | "playlist";
+type PlayResolver = "primary" | "qq_text" | "cross_source";
 
 interface SongItem {
   id: string;
@@ -15,6 +16,27 @@ interface SongItem {
   durationMs?: number;
   durationSec?: number;
   availableQualities: Quality[];
+}
+
+interface PlayInfo {
+  id: string;
+  source: Source;
+  actualSource: Source;
+  name: string;
+  artist: string;
+  album: string;
+  coverUrl: string;
+  durationSec?: number;
+  playUrl: string;
+  requestedQuality: string;
+  actualQuality: string;
+  fileSize?: number;
+  expireSec?: number;
+  fromCache?: boolean;
+  lyric?: {
+    lineLyrics: string | null;
+    karaokeLyrics: string | null;
+  };
 }
 
 interface SearchCollectionItem {
@@ -33,6 +55,10 @@ const JSON_HEADERS = {
   accept: "application/json",
   "user-agent": "Mozilla/5.0"
 };
+
+const DEFAULT_PLAY_RESOLVER_ORDER: PlayResolver[] = ["primary", "qq_text", "cross_source"];
+const DEFAULT_CROSS_SOURCE_ORDER: Source[] = ["netease", "qq", "kuwo"];
+const QUALITY_DESC: Quality[] = ["flac24bit", "flac", "320k", "128k"];
 
 export async function musicProviderData(ctx: RequestContext): Promise<any> {
   const path = ctx.url.pathname;
@@ -330,7 +356,43 @@ async function lyric(ctx: RequestContext, source: Source, id: string) {
   return { id, source, lineLyrics: info.lyric?.lineLyrics || null, karaokeLyrics: info.lyric?.karaokeLyrics || null };
 }
 
-async function play(ctx: RequestContext | null, source: Source, id: string, quality: Quality) {
+async function play(ctx: RequestContext | null, source: Source, id: string, quality: Quality): Promise<PlayInfo> {
+  let firstError: unknown = null;
+  let metadata: SongItem | null | undefined;
+
+  for (const resolver of await playResolverOrder(ctx)) {
+    try {
+      if (resolver === "primary") {
+        return await tuneFreePlayWithQualityFallback(ctx, source, id, quality);
+      }
+
+      if (resolver === "qq_text") {
+        if (source !== "qq") continue;
+        metadata = await ensureSongMetadata(source, id, metadata);
+        return await qqTextFallback(id, quality, metadata);
+      }
+
+      metadata = await ensureSongMetadata(source, id, metadata);
+      const fallback = await crossSourceFallback(ctx, source, id, quality, metadata, firstError);
+      if (fallback) return fallback;
+    } catch (error) {
+      if (!firstError) firstError = error;
+      console.warn("Music play resolver failed", {
+        resolver,
+        source,
+        id,
+        quality,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  if (firstError instanceof HttpError) throw firstError;
+  if (firstError instanceof Error) throw new HttpError(502, firstError.message, 1005);
+  throw new HttpError(502, `no playable url for ${source}:${id}`, 1008);
+}
+
+async function tuneFreePlay(ctx: RequestContext | null, source: Source, id: string, quality: Quality): Promise<PlayInfo> {
   const token = await getTuneFreeToken(ctx);
   const json = await fetchJson(withQuery("https://tf-pay.sayqz.com/api/music/", {
     id,
@@ -361,6 +423,197 @@ async function play(ctx: RequestContext | null, source: Source, id: string, qual
     fromCache: bool(data0?.fromCache),
     lyric: line || karaoke ? { lineLyrics: line || null, karaokeLyrics: karaoke || null } : undefined
   };
+}
+
+async function tuneFreePlayWithQualityFallback(ctx: RequestContext | null, source: Source, id: string, requested: Quality): Promise<PlayInfo> {
+  let lastError: unknown = null;
+  for (const quality of degradeChainFrom(requested)) {
+    try {
+      const info = await tuneFreePlay(ctx, source, id, quality);
+      return {
+        ...info,
+        requestedQuality: requested,
+        actualQuality: first(info.actualQuality, quality)
+      };
+    } catch (error) {
+      lastError = error;
+      if (!isNoPlayableUrl(error)) throw error;
+      console.warn("Quality play fallback failed", {
+        source,
+        id,
+        requested,
+        quality,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  if (lastError) throw lastError;
+  throw new HttpError(502, `no playable url for ${source}:${id}`, 1008);
+}
+
+async function qqTextFallback(id: string, quality: Quality, metadata?: SongItem | null): Promise<PlayInfo> {
+  metadata = metadata || await qqSongInfo(id);
+  if (!metadata?.name) {
+    throw new HttpError(404, "qq text fallback requires song metadata", 1007);
+  }
+  const keyword = metadata.artist ? `${metadata.name} ${metadata.artist}` : metadata.name;
+  const json = await fetchJson(withQuery("https://cyapi.top/API/qq_music.php", {
+    apikey: "62ccfd8be755cc5850046044c6348d6cac5ef31bd5874c1352287facc06f94c4",
+    type: "json",
+    n: "1",
+    msg: keyword
+  }), { headers: { ...JSON_HEADERS, referer: "https://cyapi.top/" } }, 1005);
+
+  const data = asObj(json.data);
+  const playUrl = first(
+    readString(data, "music_url"),
+    readString(data, "url"),
+    readString(data, "song_url"),
+    readString(data, "mp3"),
+    readString(asObj(json), "music_url"),
+    readString(asObj(json), "url"),
+    readString(asObj(json), "song_url"),
+    readString(asObj(json), "mp3")
+  );
+  if (!playUrl) throw new HttpError(502, `qq text fallback returned no playable url for ${id}`, 1008);
+
+  const name = first(readString(data, "name"), readString(data, "title"), readString(asObj(json), "name"), readString(asObj(json), "title"), metadata.name);
+  const artist = first(
+    readArtists(data),
+    readArtists(asObj(json)),
+    readString(data, "artist"),
+    readString(data, "singer"),
+    readString(asObj(json), "artist"),
+    readString(asObj(json), "singer"),
+    metadata.artist
+  );
+  const album = first(readAlbum(data), readAlbum(asObj(json)), metadata.album);
+  const coverUrl = first(readCover(data), readCover(asObj(json)), metadata.coverUrl);
+  const durationSec = num(firstValue(
+    data?.duration,
+    data?.interval,
+    asObj(json)?.duration,
+    asObj(json)?.interval,
+    metadata.durationSec
+  ));
+  const actualQuality = first(readQuality(data), readQuality(asObj(json)), quality);
+  const line = first(readLyric(data), readLyric(asObj(json)));
+
+  return {
+    id,
+    source: "qq",
+    actualSource: "qq",
+    name,
+    artist,
+    album,
+    coverUrl,
+    durationSec,
+    playUrl,
+    requestedQuality: quality,
+    actualQuality,
+    lyric: line ? { lineLyrics: line, karaokeLyrics: null } : undefined
+  };
+}
+
+async function crossSourceFallback(ctx: RequestContext | null, requested: Source, requestedId: string, quality: Quality, metadata?: SongItem | null, firstError?: unknown): Promise<PlayInfo | null> {
+  if (isMissingTuneFreeConfig(firstError)) return null;
+  if (!metadata?.name) return null;
+  const keyword = metadata.artist ? `${metadata.name} ${metadata.artist}` : metadata.name;
+  for (const other of await crossSourceOrder(ctx)) {
+    if (other === requested) continue;
+    try {
+      const hits = await search(other, keyword, 1, 3);
+      const pick = pickMatch(hits, metadata);
+      if (!pick) continue;
+      const info = await tuneFreePlayWithQualityFallback(ctx, other, pick.id, quality);
+      return {
+        ...info,
+        source: requested,
+        actualSource: other,
+        id: requestedId,
+        name: first(metadata.name, info.name),
+        artist: first(metadata.artist, info.artist),
+        album: first(metadata.album, info.album),
+        coverUrl: first(metadata.coverUrl, info.coverUrl),
+        durationSec: info.durationSec ?? metadata.durationSec
+      };
+    } catch (error) {
+      console.warn("Cross-source play fallback failed", {
+        requested,
+        requestedId,
+        other,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+  return null;
+}
+
+async function ensureSongMetadata(source: Source, id: string, current: SongItem | null | undefined): Promise<SongItem | null> {
+  if (current !== undefined) return current;
+  if (source === "qq") return qqSongInfo(id);
+  if (source === "netease") return neteaseSongInfo(id);
+  if (source === "kuwo") return kuwoSongInfo(id);
+  return null;
+}
+
+async function qqSongInfo(id: string): Promise<SongItem | null> {
+  try {
+    const json = await qqMusicU({
+      req_1: {
+        module: "music.pf_song_detail_svr",
+        method: "get_song_detail_yqq",
+        param: { song_mid: id }
+      }
+    }, 1005);
+    const track = asObj(asObj(asObj(json.req_1)?.data)?.track_info);
+    if (!track) return null;
+    return toSong(track, "qq");
+  } catch (error) {
+    console.warn("QQ song metadata lookup failed", {
+      id,
+      message: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+async function neteaseSongInfo(id: string): Promise<SongItem | null> {
+  try {
+    const json = await fetchJson(withQuery("https://music.163.com/api/song/detail", { ids: `[${id}]` }), { headers: neteaseHeaders() }, 1005);
+    const song = asObj(arr(json.songs)[0]);
+    if (!song) return null;
+    return toSong(song, "netease");
+  } catch (error) {
+    console.warn("Netease song metadata lookup failed", {
+      id,
+      message: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+async function kuwoSongInfo(id: string): Promise<SongItem | null> {
+  try {
+    const json = await fetchJson(withQuery("http://www.kuwo.cn/api/www/music/musicInfo", { mid: id }), {
+      headers: {
+        ...JSON_HEADERS,
+        referer: "http://www.kuwo.cn/",
+        cookie: "kw_token=BACKEND",
+        csrf: "BACKEND"
+      }
+    }, 1005);
+    const data = asObj(json.data);
+    if (!data) return null;
+    return toSong({ ...data, id }, "kuwo");
+  } catch (error) {
+    console.warn("Kuwo song metadata lookup failed", {
+      id,
+      message: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
 }
 
 async function getTuneFreeToken(ctx: RequestContext | null): Promise<string> {
@@ -802,6 +1055,18 @@ async function config(ctx: RequestContext, key: string): Promise<string> {
   return row?.config_value || "";
 }
 
+async function playResolverOrder(ctx: RequestContext | null): Promise<PlayResolver[]> {
+  const configured = ctx ? await config(ctx, "music.play.resolverOrder") : "";
+  const parsed = parsePlayResolverOrder(configured);
+  return parsed.length > 0 ? parsed : DEFAULT_PLAY_RESOLVER_ORDER;
+}
+
+async function crossSourceOrder(ctx: RequestContext | null): Promise<Source[]> {
+  const configured = ctx ? await config(ctx, "music.play.crossSourceOrder") : "";
+  const parsed = parseCrossSourceOrder(configured);
+  return parsed.length > 0 ? parsed : DEFAULT_CROSS_SOURCE_ORDER;
+}
+
 async function upsertConfig(ctx: RequestContext, key: string, value: string, description: string | null): Promise<void> {
   await ctx.env.DB.prepare(
     `INSERT INTO sys_config(config_key, config_value, description) VALUES(?, ?, ?)
@@ -828,6 +1093,28 @@ function parseSearchType(raw: string | null): SearchType {
   if (value === "artist" || value === "artists" || value === "singer" || value === "singers") return "artist";
   if (value === "playlist" || value === "playlists" || value === "songlist" || value === "songlists") return "playlist";
   return "song";
+}
+
+function parsePlayResolverOrder(raw: string): PlayResolver[] {
+  const out: PlayResolver[] = [];
+  for (const token of raw.split(/[,\r\n]+/)) {
+    const value = token.trim().toLowerCase().replace(/-/g, "_");
+    if ((value === "primary" || value === "qq_text" || value === "cross_source") && !out.includes(value)) {
+      out.push(value);
+    }
+  }
+  return out;
+}
+
+function parseCrossSourceOrder(raw: string): Source[] {
+  const out: Source[] = [];
+  for (const token of raw.split(/[,\r\n]+/)) {
+    const value = token.trim().toLowerCase();
+    if ((value === "qq" || value === "netease" || value === "kuwo") && !out.includes(value)) {
+      out.push(value);
+    }
+  }
+  return out;
 }
 
 function intParam(ctx: RequestContext, name: string, fallback: number, min: number, max: number): number {
@@ -957,6 +1244,66 @@ function joinNamed(value: any): string {
   return arr(value).map((item) => str(asObj(item)?.name)).filter(Boolean).join(" / ");
 }
 
+function readArtists(root: any): string {
+  if (!root) return "";
+  const artists = root.artists;
+  if (Array.isArray(artists)) {
+    return artists.map((artist) => str(asObj(artist)?.name || artist)).filter(Boolean).join(" / ");
+  }
+  return first(str(root.artists), str(root.author));
+}
+
+function readAlbum(root: any): string {
+  if (!root) return "";
+  const album = asObj(root.album);
+  if (album) return first(str(album.name), str(album.title));
+  return str(root.album);
+}
+
+function readCover(root: any): string {
+  if (!root) return "";
+  const cover = asObj(root.cover);
+  if (cover) {
+    const hit = first(str(cover.large), str(cover.medium), str(cover.small), str(cover.url));
+    if (hit) return hit;
+  }
+  return first(str(root.coverUrl), str(root.cover), str(root.pic), str(root.picurl), str(root.img));
+}
+
+function readLyric(root: any): string {
+  if (!root) return "";
+  const direct = first(
+    typeof root.lyric === "object" ? "" : str(root.lyric),
+    typeof root.lrc === "object" ? "" : str(root.lrc)
+  );
+  if (direct) return direct;
+
+  const lyric = asObj(root.lyric);
+  if (lyric) return first(str(lyric.text), str(lyric.lyric), str(lyric.lrc), str(lyric.content));
+
+  const lrc = asObj(root.lrc);
+  if (lrc) return first(str(lrc.text), str(lrc.lyric), str(lrc.lrc), str(lrc.content));
+  return "";
+}
+
+function readQuality(root: any): Quality | "" {
+  const current = str(asObj(root?.quality)?.current);
+  if (!current) return "";
+  const normalized = current.trim().toLowerCase();
+  if (normalized === "standard") return "128k";
+  if (normalized === "high") return "320k";
+  if (normalized === "lossless") return "flac";
+  if (normalized === "master" || normalized === "hires" || normalized === "flac24bit") return "flac24bit";
+  if (normalized === "128k" || normalized === "320k" || normalized === "flac") return normalized;
+  return "";
+}
+
+function readString(root: any, key: string): string {
+  const value = root?.[key];
+  if (value == null || typeof value === "object") return "";
+  return String(value);
+}
+
 function asObj(value: any): Record<string, any> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
@@ -973,6 +1320,50 @@ function matchesKeyword(value: string, keyword: string): boolean {
   const normalizedValue = value.toLowerCase().replace(/\s+/g, "");
   const normalizedKeyword = keyword.toLowerCase().replace(/\s+/g, "");
   return normalizedKeyword === "" || normalizedValue.includes(normalizedKeyword);
+}
+
+function pickMatch(hits: SongItem[], metadata: SongItem): SongItem | null {
+  const requestedName = normalise(metadata.name);
+  const requestedArtist = normaliseArtist(metadata.artist);
+  for (const hit of hits) {
+    if (!hit.id || !hit.name) continue;
+    if (normalise(hit.name) !== requestedName) continue;
+    const hitArtist = normaliseArtist(hit.artist);
+    if (requestedArtist && hitArtist && requestedArtist !== hitArtist) continue;
+    return hit;
+  }
+  return hits.find((hit) => Boolean(hit.id && hit.name)) || null;
+}
+
+function normalise(value?: string): string {
+  return (value || "")
+    .toLowerCase()
+    .replace(/\s*[\(\[\uFF08].*?[\)\]\uFF09]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normaliseArtist(value?: string): string {
+  return (value || "")
+    .toLowerCase()
+    .split(/[\/&,\u3001\uFF0C]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .sort()
+    .join("/");
+}
+
+function degradeChainFrom(requested: Quality): Quality[] {
+  const index = QUALITY_DESC.indexOf(requested);
+  return index >= 0 ? QUALITY_DESC.slice(index) : [requested];
+}
+
+function isNoPlayableUrl(error: unknown): boolean {
+  return error instanceof HttpError && error.code === 1008;
+}
+
+function isMissingTuneFreeConfig(error: unknown): boolean {
+  return error instanceof HttpError && error.code === 1003;
 }
 
 function num(value: any): number | undefined {

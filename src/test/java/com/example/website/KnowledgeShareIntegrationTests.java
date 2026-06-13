@@ -12,6 +12,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.nio.charset.StandardCharsets;
+import java.util.zip.CRC32;
 
 import static org.hamcrest.Matchers.hasSize;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -86,10 +87,22 @@ class KnowledgeShareIntegrationTests {
     private String registerAndExtractToken(String username, String password) throws Exception {
         MvcResult result = mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"username\":\"" + username + "\",\"password\":\"" + password + "\"}"))
+                        .content(registerBody(username, password)))
                 .andExpect(status().isOk())
                 .andReturn();
         return readJson(result).path("data").path("token").asText();
+    }
+
+    private String registerBody(String username, String password) {
+        return "{\"username\":\"" + username + "\",\"email\":\"" + qqEmail(username)
+                + "\",\"password\":\"" + password + "\"}";
+    }
+
+    private String qqEmail(String seed) {
+        CRC32 crc32 = new CRC32();
+        crc32.update(seed.getBytes(StandardCharsets.UTF_8));
+        long number = 10000L + (crc32.getValue() % 9999999999L);
+        return number + "@qq.com";
     }
 
     private Long createSpace(String token, String name) throws Exception {

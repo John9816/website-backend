@@ -34,12 +34,17 @@ public class AuthService {
 
     public LoginResponse register(RegisterRequest req) {
         String username = normalizeUsername(req.getUsername());
+        String email = normalizeEmail(req.getEmail());
         if (userRepository.existsByUsername(username)) {
             throw new BusinessException(409, "Username already exists");
+        }
+        if (userRepository.existsByEmail(email)) {
+            throw new BusinessException(409, "QQ email already exists");
         }
 
         User user = new User();
         user.setUsername(username);
+        user.setEmail(email);
         user.setPassword(passwordEncoder.encode(req.getPassword()));
         user.setRole(User.ROLE_USER);
         userRepository.save(user);
@@ -69,5 +74,9 @@ public class AuthService {
 
     private String normalizeUsername(String username) {
         return username == null ? null : username.trim();
+    }
+
+    private String normalizeEmail(String email) {
+        return email == null ? null : email.trim().toLowerCase();
     }
 }

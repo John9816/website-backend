@@ -8,10 +8,13 @@ const DEFAULT_SECRET_WARNING = "dev-only-change-me";
 interface UserRow {
   id: number;
   username: string;
+  email?: string | null;
   password_hash: string;
   role: string;
   credits?: number;
 }
+
+const QQ_EMAIL_PATTERN = /^[1-9]\d{4,10}@qq\.com$/i;
 
 export async function getAuthUser(request: Request, env: Env): Promise<AuthUser | null> {
   const header = request.headers.get("authorization");
@@ -45,24 +48,34 @@ export async function login(env: Env, username: string, password: string) {
   return loginView(env, user);
 }
 
-export async function register(env: Env, username: string, password: string) {
-  if (!username || username.length < 3 || !password || password.length < 6) {
+export async function register(env: Env, username: string, password: string, email: string) {
+  const normalizedUsername = username.trim();
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedUsername || normalizedUsername.length < 3 || !password || password.length < 6) {
     throw new HttpError(400, "username or password is invalid");
+  }
+  if (!QQ_EMAIL_PATTERN.test(normalizedEmail)) {
+    throw new HttpError(400, "email must be a valid QQ email");
   }
   const credits = await initialCredits(env);
   try {
-    const result = await env.DB.prepare("INSERT INTO users(username, password_hash, role, credits) VALUES(?, ?, 'USER', ?)")
-      .bind(username, await passwordHash(password), credits)
+    const result = await env.DB.prepare("INSERT INTO users(username, email, password_hash, role, credits) VALUES(?, ?, ?, 'USER', ?)")
+      .bind(normalizedUsername, normalizedEmail, await passwordHash(password), credits)
       .run();
     return loginView(env, {
       id: Number(result.meta.last_row_id),
-      username,
+      username: normalizedUsername,
+      email: normalizedEmail,
       password_hash: "",
       role: "USER",
       credits
     });
-  } catch {
-    throw new HttpError(400, "username already exists");
+  } catch (error) {
+    const message = String((error as Error | undefined)?.message || "");
+    if (message.includes("users.email")) {
+      throw new HttpError(409, "QQ email already exists");
+    }
+    throw new HttpError(409, "username already exists");
   }
 }
 

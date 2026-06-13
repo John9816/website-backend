@@ -13,12 +13,14 @@ USE website;
 CREATE TABLE IF NOT EXISTS `user` (
     id          BIGINT       NOT NULL AUTO_INCREMENT,
     username    VARCHAR(50)  NOT NULL,
+    email       VARCHAR(100) DEFAULT NULL,
     password    VARCHAR(255) NOT NULL COMMENT 'BCrypt hash',
     role        VARCHAR(20)  NOT NULL DEFAULT 'USER',
     created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    UNIQUE KEY uk_user_username (username)
+    UNIQUE KEY uk_user_username (username),
+    UNIQUE KEY uk_user_email (email)
  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Application users';
 
 -- Link categories

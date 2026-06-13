@@ -15,7 +15,9 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import java.nio.charset.StandardCharsets;
+import java.util.zip.CRC32;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -41,11 +43,12 @@ class AuthFlowIntegrationTests {
     @Test
     void registerCreatesNormalUserAndReturnsToken() throws Exception {
         String username = "alice_test";
+        String email = qqEmail(username);
         String password = "secret123";
 
         MvcResult result = mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"username\":\"" + username + "\",\"password\":\"" + password + "\"}"))
+                        .content(registerBody(username, password, email)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.username").value(username))
@@ -58,7 +61,8 @@ class AuthFlowIntegrationTests {
         assertTrue(token != null && !token.isEmpty());
 
         User user = userRepository.findByUsername(username).orElseThrow(AssertionError::new);
-        org.junit.jupiter.api.Assertions.assertEquals(User.ROLE_USER, user.getRole());
+        assertEquals(User.ROLE_USER, user.getRole());
+        assertEquals(email, user.getEmail());
         assertNotEquals(password, user.getPassword());
 
         mockMvc.perform(post("/api/auth/login")
@@ -67,6 +71,28 @@ class AuthFlowIntegrationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.role").value(User.ROLE_USER));
+    }
+
+    @Test
+    void registerRequiresUniqueQqEmail() throws Exception {
+        String email = qqEmail("duplicate_email");
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(registerBody("qq_email_one", "secret123", email)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
+
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(registerBody("qq_email_two", "secret123", email)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(409));
+
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(registerBody("not_qq_email", "secret123", "user@example.com")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
     }
 
     @Test
@@ -215,10 +241,22 @@ class AuthFlowIntegrationTests {
     private String registerAndExtractToken(String username, String password) throws Exception {
         MvcResult result = mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"username\":\"" + username + "\",\"password\":\"" + password + "\"}"))
+                        .content(registerBody(username, password, qqEmail(username))))
                 .andExpect(status().isOk())
                 .andReturn();
         return readJson(result).path("data").path("token").asText();
+    }
+
+    private String registerBody(String username, String password, String email) {
+        return "{\"username\":\"" + username + "\",\"email\":\"" + email
+                + "\",\"password\":\"" + password + "\"}";
+    }
+
+    private String qqEmail(String seed) {
+        CRC32 crc32 = new CRC32();
+        crc32.update(seed.getBytes(StandardCharsets.UTF_8));
+        long number = 10000L + (crc32.getValue() % 9999999999L);
+        return number + "@qq.com";
     }
 
     private String loginAndExtractToken(String username, String password) throws Exception {

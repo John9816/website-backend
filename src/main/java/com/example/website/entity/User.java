@@ -11,7 +11,10 @@ import javax.persistence.*;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "user", uniqueConstraints = @UniqueConstraint(columnNames = "username"))
+@Table(name = "user", uniqueConstraints = {
+        @UniqueConstraint(columnNames = "username"),
+        @UniqueConstraint(columnNames = "email")
+})
 @EntityListeners(AuditingEntityListener.class)
 @Getter
 @Setter
@@ -27,6 +30,9 @@ public class User {
 
     @Column(nullable = false, length = 50)
     private String username;
+
+    @Column(length = 100)
+    private String email;
 
     @Column(nullable = false, length = 255)
     private String password;

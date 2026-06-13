@@ -12,8 +12,8 @@ import * as credits from "./credits";
 const router = new Router();
 
 router.on("POST", "/api/auth/register", async (ctx) => {
-  const body = await readJson<{ username?: string; password?: string }>(ctx.request);
-  return ok(await register(ctx.env, body.username || "", body.password || ""));
+  const body = await readJson<{ username?: string; email?: string; password?: string }>(ctx.request);
+  return ok(await register(ctx.env, body.username || "", body.password || "", body.email || ""));
 });
 
 router.on("POST", "/api/auth/login", async (ctx) => {

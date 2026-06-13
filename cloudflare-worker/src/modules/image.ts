@@ -7,6 +7,9 @@ import { intParam } from "../http";
 
 const IMAGE_UPSTREAM_TIMEOUT_MS = 170_000;
 const REMOTE_IMAGE_TIMEOUT_MS = 30_000;
+const PUBLIC_SHARED_IMAGES_CACHE_KEY = "public:image:shared:0:20";
+const PUBLIC_SHARED_IMAGES_CACHE_TTL_SECONDS = 120;
+const PUBLIC_SHARED_IMAGES_CACHE_CONTROL = "public, max-age=60, stale-while-revalidate=300";
 
 interface EditImageInput {
   prompt: string;
@@ -200,6 +203,7 @@ export async function toggleImageShare(ctx: RequestContext): Promise<Response> {
   await ctx.env.DB.prepare("UPDATE generated_image SET is_shared = ? WHERE id = ? AND user_id = ?")
     .bind(shared ? 1 : 0, Number(ctx.params.id), user.id)
     .run();
+  invalidateSharedImagesCache(ctx);
   const row = await firstRequired<any>(
     ctx.env.DB.prepare("SELECT * FROM generated_image WHERE id = ? AND user_id = ?").bind(Number(ctx.params.id), user.id)
   );
@@ -218,6 +222,7 @@ export async function deleteImageHistory(ctx: RequestContext): Promise<Response>
       .bind(id, user.id)
       .run();
   }
+  invalidateSharedImagesCache(ctx);
   return emptyOk();
 }
 
@@ -259,6 +264,14 @@ async function failRetriedEditTask(ctx: RequestContext, taskId: number): Promise
 export async function publicSharedImages(ctx: RequestContext): Promise<Response> {
   const page = intParam(ctx.url, "page", 0, 0, 10000);
   const size = intParam(ctx.url, "size", 20, 1, 100);
+  const headers = { "cache-control": PUBLIC_SHARED_IMAGES_CACHE_CONTROL };
+  const canCache = page === 0 && size === 20;
+  if (canCache) {
+    const cached = await ctx.env.APP_KV.get<unknown>(PUBLIC_SHARED_IMAGES_CACHE_KEY, "json");
+    if (cached) {
+      return ok(cached, { headers });
+    }
+  }
   const countRow = await ctx.env.DB.prepare(
     "SELECT COUNT(*) AS total FROM generated_image WHERE is_shared IN (1, '1', 'true', 'b''\\x01''')"
   ).first<{ total: number }>();
@@ -266,7 +279,15 @@ export async function publicSharedImages(ctx: RequestContext): Promise<Response>
   const rows = await ctx.env.DB.prepare(
     "SELECT * FROM generated_image WHERE is_shared IN (1, '1', 'true', 'b''\\x01''') ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
   ).bind(size, page * size).all();
-  return ok(pageOf((rows.results ?? []).map(imageView), page, size, total));
+  const data = pageOf((rows.results ?? []).map(imageView), page, size, total);
+  if (canCache) {
+    runInBackground(ctx, ctx.env.APP_KV.put(
+      PUBLIC_SHARED_IMAGES_CACHE_KEY,
+      JSON.stringify(data),
+      { expirationTtl: PUBLIC_SHARED_IMAGES_CACHE_TTL_SECONDS }
+    ));
+  }
+  return ok(data, { headers });
 }
 
 export async function testTelegramImage(ctx: RequestContext): Promise<Response> {
@@ -855,4 +876,17 @@ function upstreamErrorMessage(data: any, status: number): string {
   return typeof message === "string" && message.trim()
     ? `Upstream image API returned ${status}: ${message}`
     : `Upstream image API returned ${status}`;
+}
+
+function invalidateSharedImagesCache(ctx: RequestContext): void {
+  runInBackground(ctx, ctx.env.APP_KV.delete(PUBLIC_SHARED_IMAGES_CACHE_KEY));
+}
+
+function runInBackground(ctx: RequestContext, promise: Promise<unknown>): void {
+  const guarded = promise.catch(() => undefined);
+  if (ctx.waitUntil) {
+    ctx.waitUntil(guarded);
+    return;
+  }
+  void guarded;
 }

@@ -25,6 +25,10 @@ interface LinkRow {
   updated_at: string;
 }
 
+const PUBLIC_NAV_CACHE_TTL_SECONDS = 180;
+const PUBLIC_NAV_CACHE_CONTROL = "public, max-age=60, stale-while-revalidate=300";
+const PRIVATE_NAV_CACHE_CONTROL = "private, max-age=60";
+
 export async function publicCategories(ctx: RequestContext): Promise<Response> {
   return ok(await listCategories(ctx, await publicUserId(ctx)));
 }
@@ -37,12 +41,20 @@ export async function publicLinks(ctx: RequestContext): Promise<Response> {
 
 export async function publicNav(ctx: RequestContext): Promise<Response> {
   const userId = await publicUserId(ctx);
+  const cacheKey = publicNavCacheKey(userId);
+  const headers = publicNavHeaders(ctx);
+  const cached = await ctx.env.APP_KV.get<unknown>(cacheKey, "json");
+  if (cached) {
+    return ok(cached, { headers });
+  }
   const categories = await listCategories(ctx, userId);
   const links = await listLinks(ctx, userId, null);
-  return ok(categories.map((category) => ({
+  const data = categories.map((category) => ({
     ...category,
     links: links.filter((link) => link.categoryId === category.id)
-  })));
+  }));
+  runInBackground(ctx, ctx.env.APP_KV.put(cacheKey, JSON.stringify(data), { expirationTtl: PUBLIC_NAV_CACHE_TTL_SECONDS }));
+  return ok(data, { headers });
 }
 
 export async function listUserCategories(ctx: RequestContext): Promise<Response> {
@@ -65,7 +77,7 @@ export async function createCategory(ctx: RequestContext): Promise<Response> {
   const result = await ctx.env.DB.prepare(
     "INSERT INTO category(user_id, name, icon, sort_order) VALUES(?, ?, ?, ?)"
   ).bind(user.id, name, nullableString(body.icon), intValue(body.sortOrder, 0)).run();
-  ctx.env.APP_KV.delete(`public:user:${user.id}`).catch(() => undefined);
+  invalidatePublicNav(ctx, user.id);
   return ok(await getCategoryById(ctx, user.id, Number(result.meta.last_row_id)));
 }
 
@@ -77,13 +89,14 @@ export async function updateCategory(ctx: RequestContext): Promise<Response> {
   await ctx.env.DB.prepare(
     "UPDATE category SET name = ?, icon = ?, sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?"
   ).bind(stringField(body.name, "name"), nullableString(body.icon), intValue(body.sortOrder, 0), id, user.id).run();
-  ctx.env.APP_KV.delete(`public:user:${user.id}`).catch(() => undefined);
+  invalidatePublicNav(ctx, user.id);
   return ok(await getCategoryById(ctx, user.id, id));
 }
 
 export async function deleteCategory(ctx: RequestContext): Promise<Response> {
   const user = requireUser(ctx);
   await ctx.env.DB.prepare("DELETE FROM category WHERE id = ? AND user_id = ?").bind(Number(ctx.params.id), user.id).run();
+  invalidatePublicNav(ctx, user.id);
   return emptyOk();
 }
 
@@ -117,6 +130,7 @@ export async function createLink(ctx: RequestContext): Promise<Response> {
     nullableString(body.icon),
     intValue(body.sortOrder, 0)
   ).run();
+  invalidatePublicNav(ctx, user.id);
   return ok(await getLinkById(ctx, user.id, Number(result.meta.last_row_id)));
 }
 
@@ -138,12 +152,14 @@ export async function updateLink(ctx: RequestContext): Promise<Response> {
     id,
     user.id
   ).run();
+  invalidatePublicNav(ctx, user.id);
   return ok(await getLinkById(ctx, user.id, id));
 }
 
 export async function deleteLink(ctx: RequestContext): Promise<Response> {
   const user = requireUser(ctx);
   await ctx.env.DB.prepare("DELETE FROM nav_link WHERE id = ? AND user_id = ?").bind(Number(ctx.params.id), user.id).run();
+  invalidatePublicNav(ctx, user.id);
   return emptyOk();
 }
 
@@ -293,4 +309,30 @@ function nullableString(value: unknown): string | null {
 function intValue(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
+}
+
+function publicNavCacheKey(userId: number): string {
+  return `public:nav:${userId}`;
+}
+
+function publicNavHeaders(ctx: RequestContext): HeadersInit {
+  return {
+    "cache-control": ctx.user ? PRIVATE_NAV_CACHE_CONTROL : PUBLIC_NAV_CACHE_CONTROL
+  };
+}
+
+function invalidatePublicNav(ctx: RequestContext, userId: number): void {
+  runInBackground(ctx, Promise.all([
+    ctx.env.APP_KV.delete(publicNavCacheKey(userId)),
+    ctx.env.APP_KV.delete(`public:user:${userId}`)
+  ]));
+}
+
+function runInBackground(ctx: RequestContext, promise: Promise<unknown>): void {
+  const guarded = promise.catch(() => undefined);
+  if (ctx.waitUntil) {
+    ctx.waitUntil(guarded);
+    return;
+  }
+  void guarded;
 }

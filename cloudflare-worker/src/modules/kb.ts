@@ -23,7 +23,7 @@ export async function spaces(ctx: RequestContext): Promise<Response> {
 export async function createSpace(ctx: RequestContext): Promise<Response> {
   const user = requireUser(ctx);
   const body = await readJson<any>(ctx.request);
-  const result = await ctx.env.DB.prepare("INSERT INTO kb_space(user_id, name, description, sort_order) VALUES(?, ?, ?, ?)")
+  const result = await ctx.env.DB.prepare("INSERT INTO kb_space(user_id, name, description, sort_order, doc_count) VALUES(?, ?, ?, ?, 0)")
     .bind(user.id, required(body.name, "name"), body.description || null, Number(body.sortOrder || 0))
     .run();
   return ok(spaceView(await rowByOwner(ctx, "kb_space", user.id, Number(result.meta.last_row_id))));
@@ -51,10 +51,17 @@ export async function deleteSpace(ctx: RequestContext): Promise<Response> {
 
 export async function tree(ctx: RequestContext): Promise<Response> {
   const user = requireUser(ctx);
-  const rows = await ctx.env.DB.prepare("SELECT id, parent_id, title, sort_order FROM kb_doc WHERE user_id = ? AND space_id = ? ORDER BY sort_order, id")
+  const rows = await ctx.env.DB.prepare("SELECT id, parent_id, title, status, sort_order FROM kb_doc WHERE user_id = ? AND space_id = ? ORDER BY sort_order, id")
     .bind(user.id, Number(ctx.params.id))
     .all<any>();
-  const nodes = (rows.results ?? []).map((row) => ({ id: row.id, parentId: row.parent_id, title: row.title, sortOrder: row.sort_order, children: [] as any[] }));
+  const nodes = (rows.results ?? []).map((row) => ({
+    id: row.id,
+    parentId: row.parent_id,
+    title: row.title,
+    status: normalizeStatus(row.status),
+    sortOrder: row.sort_order,
+    children: [] as any[]
+  }));
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const roots: any[] = [];
   for (const node of nodes) {
@@ -96,30 +103,54 @@ export async function deleteTag(ctx: RequestContext): Promise<Response> {
 
 export async function docs(ctx: RequestContext): Promise<Response> {
   const user = requireUser(ctx);
-  const clauses = ["user_id = ?"];
+  const clauses = ["d.user_id = ?"];
   const params: unknown[] = [user.id];
   for (const [query, column] of [["spaceId", "space_id"], ["parentId", "parent_id"]] as const) {
     const value = ctx.url.searchParams.get(query);
     if (value) {
-      clauses.push(`${column} = ?`);
+      clauses.push(`d.${column} = ?`);
       params.push(Number(value));
     }
   }
+  const tagId = ctx.url.searchParams.get("tagId");
+  if (tagId) {
+    clauses.push("EXISTS (SELECT 1 FROM kb_doc_tag dt WHERE dt.doc_id = d.id AND dt.tag_id = ?)");
+    params.push(Number(tagId));
+  }
   const keyword = ctx.url.searchParams.get("keyword");
   if (keyword) {
-    clauses.push("title LIKE ?");
-    params.push(`%${keyword}%`);
+    clauses.push("(d.title LIKE ? OR d.summary LIKE ?)");
+    params.push(`%${keyword}%`, `%${keyword}%`);
   }
   const where = clauses.join(" AND ");
-  return pagedQuery(ctx, `SELECT * FROM kb_doc WHERE ${where} ORDER BY sort_order, id`, `SELECT COUNT(*) AS total FROM kb_doc WHERE ${where}`, params, docSummaryView);
+  return pagedQuery(
+    ctx,
+    `SELECT d.* FROM kb_doc d WHERE ${where} ORDER BY d.sort_order, d.id`,
+    `SELECT COUNT(*) AS total FROM kb_doc d WHERE ${where}`,
+    params,
+    docSummaryView
+  );
 }
 
 export async function createDoc(ctx: RequestContext): Promise<Response> {
   const user = requireUser(ctx);
   const body = await readJson<any>(ctx.request);
+  const content = contentFields(body);
   const result = await ctx.env.DB.prepare(
-    "INSERT INTO kb_doc(user_id, space_id, parent_id, title, content, status, sort_order) VALUES(?, ?, ?, ?, ?, ?, ?)"
-  ).bind(user.id, Number(body.spaceId), body.parentId || null, required(body.title, "title"), body.content || "", body.status || "ACTIVE", Number(body.sortOrder || 0)).run();
+    "INSERT INTO kb_doc(user_id, space_id, parent_id, title, summary, content, content_json, content_html, status, sort_order, version_no) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)"
+  ).bind(
+    user.id,
+    Number(body.spaceId),
+    body.parentId || null,
+    required(body.title, "title"),
+    nullableString(body.summary),
+    content.legacy,
+    content.json,
+    content.html,
+    normalizeStatus(body.status || "draft"),
+    Number(body.sortOrder || 0)
+  ).run();
+  await refreshSpaceDocCount(ctx, Number(body.spaceId));
   return ok(await docViewById(ctx, user.id, Number(result.meta.last_row_id)));
 }
 
@@ -133,34 +164,66 @@ export async function updateDoc(ctx: RequestContext): Promise<Response> {
   const id = Number(ctx.params.id);
   const current = await rowByOwner(ctx, "kb_doc", user.id, id);
   const body = await readJson<any>(ctx.request);
-  await ctx.env.DB.prepare("INSERT INTO kb_doc_version(doc_id, title, content) VALUES(?, ?, ?)").bind(id, current.title, current.content).run();
+  const content = contentFields(body, current);
   await ctx.env.DB.prepare(
-    "UPDATE kb_doc SET space_id = ?, parent_id = ?, title = ?, content = ?, status = ?, sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?"
+    "INSERT INTO kb_doc_version(doc_id, version_no, title, summary, content, content_json, content_html, editor_user_id, change_note) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).bind(
+    id,
+    Number(current.version_no || 1),
+    current.title,
+    current.summary || null,
+    current.content || "",
+    current.content_json || null,
+    current.content_html || current.content || null,
+    user.id,
+    nullableString(body.changeNote)
+  ).run();
+  await ctx.env.DB.prepare(
+    "UPDATE kb_doc SET space_id = ?, parent_id = ?, title = ?, summary = ?, content = ?, content_json = ?, content_html = ?, status = ?, sort_order = ?, version_no = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?"
   ).bind(
     Number(body.spaceId || current.space_id),
     body.parentId ?? current.parent_id,
     required(body.title ?? current.title, "title"),
-    body.content ?? current.content,
-    body.status || current.status,
+    body.summary === undefined ? current.summary : nullableString(body.summary),
+    content.legacy,
+    content.json,
+    content.html,
+    normalizeStatus(body.status || current.status),
     Number(body.sortOrder ?? current.sort_order),
+    Number(current.version_no || 1) + 1,
     id,
     user.id
   ).run();
+  if (Number(body.spaceId || current.space_id) !== Number(current.space_id)) {
+    await Promise.all([
+      refreshSpaceDocCount(ctx, Number(current.space_id)),
+      refreshSpaceDocCount(ctx, Number(body.spaceId || current.space_id))
+    ]);
+  }
   return ok(await docViewById(ctx, user.id, id));
 }
 
 export async function deleteDoc(ctx: RequestContext): Promise<Response> {
   const user = requireUser(ctx);
+  const current = await rowByOwner(ctx, "kb_doc", user.id, Number(ctx.params.id));
   await ctx.env.DB.prepare("DELETE FROM kb_doc WHERE id = ? AND user_id = ?").bind(Number(ctx.params.id), user.id).run();
+  await refreshSpaceDocCount(ctx, Number(current.space_id));
   return emptyOk();
 }
 
 export async function moveDoc(ctx: RequestContext): Promise<Response> {
   const user = requireUser(ctx);
   const body = await readJson<any>(ctx.request);
+  const current = await rowByOwner(ctx, "kb_doc", user.id, Number(ctx.params.id));
   await ctx.env.DB.prepare("UPDATE kb_doc SET space_id = ?, parent_id = ?, sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")
     .bind(Number(body.spaceId), body.parentId || null, Number(body.sortOrder || 0), Number(ctx.params.id), user.id)
     .run();
+  if (Number(body.spaceId) !== Number(current.space_id)) {
+    await Promise.all([
+      refreshSpaceDocCount(ctx, Number(current.space_id)),
+      refreshSpaceDocCount(ctx, Number(body.spaceId))
+    ]);
+  }
   return ok(await docViewById(ctx, user.id, Number(ctx.params.id)));
 }
 
@@ -197,8 +260,16 @@ export async function versionDetail(ctx: RequestContext): Promise<Response> {
 export async function restoreVersion(ctx: RequestContext): Promise<Response> {
   const user = requireUser(ctx);
   const version = await firstRequired<any>(ctx.env.DB.prepare("SELECT * FROM kb_doc_version WHERE id = ? AND doc_id = ?").bind(Number(ctx.params.versionId), Number(ctx.params.id)));
-  await ctx.env.DB.prepare("UPDATE kb_doc SET title = ?, content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")
-    .bind(version.title, version.content, Number(ctx.params.id), user.id)
+  await ctx.env.DB.prepare("UPDATE kb_doc SET title = ?, summary = ?, content = ?, content_json = ?, content_html = ?, version_no = version_no + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")
+    .bind(
+      version.title,
+      version.summary || null,
+      version.content || "",
+      version.content_json || null,
+      version.content_html || version.content || null,
+      Number(ctx.params.id),
+      user.id
+    )
     .run();
   return ok(await docViewById(ctx, user.id, Number(ctx.params.id)));
 }
@@ -234,10 +305,14 @@ export async function publicShare(ctx: RequestContext): Promise<Response> {
   );
   const doc = await docViewById(ctx, share.user_id, share.doc_id);
   const docs = await ctx.env.DB.prepare(
-    "SELECT d.* FROM kb_doc d JOIN kb_doc_share s ON s.doc_id = d.id WHERE d.user_id = ? AND (s.expires_at IS NULL OR s.expires_at > CURRENT_TIMESTAMP) ORDER BY d.sort_order, d.id"
+    "SELECT d.*, s.token FROM kb_doc d JOIN kb_doc_share s ON s.doc_id = d.id WHERE d.user_id = ? AND (s.expires_at IS NULL OR s.expires_at > CURRENT_TIMESTAMP) ORDER BY d.sort_order, d.id"
   ).bind(share.user_id).all();
   await ctx.env.DB.prepare("UPDATE kb_doc_share SET view_count = view_count + 1 WHERE id = ?").bind(share.id).run();
-  return ok({ doc, docs: (docs.results ?? []).map(docSummaryView), share: shareView(share) });
+  return ok({
+    ...doc,
+    token: share.token,
+    documents: (docs.results ?? []).map(publicDocItemView)
+  });
 }
 
 export async function uploadAsset(ctx: RequestContext): Promise<Response> {
@@ -320,7 +395,13 @@ export async function assetFile(ctx: RequestContext): Promise<Response> {
 async function docViewById(ctx: RequestContext, userId: number, id: number) {
   const row = await rowByOwner(ctx, "kb_doc", userId, id);
   const tags = await ctx.env.DB.prepare("SELECT t.* FROM kb_tag t JOIN kb_doc_tag dt ON dt.tag_id = t.id WHERE dt.doc_id = ?").bind(id).all();
-  return { ...docSummaryView(row), content: row.content, tags: (tags.results ?? []).map(tagView) };
+  return {
+    ...docSummaryView(row),
+    content: row.content,
+    contentJson: row.content_json || null,
+    contentHtml: row.content_html || row.content || null,
+    tags: (tags.results ?? []).map(tagView)
+  };
 }
 
 async function rowByOwner(ctx: RequestContext, table: string, userId: number, id: number): Promise<any> {
@@ -329,7 +410,15 @@ async function rowByOwner(ctx: RequestContext, table: string, userId: number, id
 }
 
 function spaceView(row: any) {
-  return { id: row.id, name: row.name, description: row.description, sortOrder: row.sort_order, createdAt: row.created_at, updatedAt: row.updated_at };
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    sortOrder: row.sort_order,
+    docCount: Number(row.doc_count || 0),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 
 function tagView(row: any) {
@@ -342,19 +431,90 @@ function docSummaryView(row: any) {
     spaceId: row.space_id,
     parentId: row.parent_id,
     title: row.title,
-    status: row.status,
+    summary: row.summary || null,
+    status: normalizeStatus(row.status),
     sortOrder: row.sort_order,
+    versionNo: Number(row.version_no || 1),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
 }
 
 function versionView(row: any) {
-  return { id: row.id, docId: row.doc_id, title: row.title, content: row.content, createdAt: row.created_at };
+  return {
+    id: row.id,
+    docId: row.doc_id,
+    versionNo: Number(row.version_no || row.id || 1),
+    title: row.title,
+    summary: row.summary || null,
+    content: row.content,
+    contentJson: row.content_json || null,
+    contentHtml: row.content_html || row.content || null,
+    editorUserId: Number(row.editor_user_id || 0),
+    changeNote: row.change_note || null,
+    createdAt: row.created_at
+  };
 }
 
 function shareView(row: any) {
-  return { id: row.id, docId: row.doc_id, token: row.token, expiresAt: row.expires_at, viewCount: row.view_count, createdAt: row.created_at };
+  return {
+    id: row.id,
+    docId: row.doc_id,
+    token: row.token,
+    enabled: true,
+    expiresAt: row.expires_at,
+    viewCount: row.view_count,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function publicDocItemView(row: any) {
+  return {
+    id: row.id,
+    token: row.token,
+    parentId: row.parent_id,
+    title: row.title,
+    summary: row.summary || null,
+    sortOrder: row.sort_order,
+    updatedAt: row.updated_at
+  };
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function contentFields(body: any, fallback?: any) {
+  const hasJson = Object.prototype.hasOwnProperty.call(body, "contentJson");
+  const hasHtml = Object.prototype.hasOwnProperty.call(body, "contentHtml");
+  const jsonValue = hasJson ? String(body.contentJson ?? "") : String(fallback?.content_json ?? "");
+  const htmlValue = hasHtml
+    ? String(body.contentHtml ?? "")
+    : String(fallback?.content_html ?? fallback?.content ?? "");
+  const legacy = Object.prototype.hasOwnProperty.call(body, "content")
+    ? String(body.content ?? "")
+    : hasHtml
+      ? htmlValue
+      : hasJson
+        ? jsonValue
+        : htmlValue || jsonValue || String(fallback?.content ?? "");
+  return {
+    json: jsonValue || null,
+    html: htmlValue || null,
+    legacy
+  };
+}
+
+function normalizeStatus(value: unknown): "draft" | "published" {
+  return value === "published" || value === "ACTIVE" ? "published" : "draft";
+}
+
+async function refreshSpaceDocCount(ctx: RequestContext, spaceId: number): Promise<void> {
+  if (!Number.isFinite(spaceId) || spaceId <= 0) return;
+  await ctx.env.DB.prepare(
+    "UPDATE kb_space SET doc_count = (SELECT COUNT(*) FROM kb_doc WHERE space_id = ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+  ).bind(spaceId, spaceId).run();
 }
 
 function required(value: unknown, name: string): string {

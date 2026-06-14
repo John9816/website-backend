@@ -7,6 +7,7 @@ import * as music from "./modules/music";
 import * as image from "./modules/image";
 import * as ai from "./modules/ai";
 import * as kb from "./modules/kb";
+import * as content from "./modules/content";
 import * as credits from "./credits";
 
 const router = new Router();
@@ -51,6 +52,15 @@ router.on("GET", "/api/admin/configs", nav.listConfigs);
 router.on("POST", "/api/admin/configs", nav.createConfig);
 router.on("PUT", "/api/admin/configs/:id", nav.updateConfig);
 router.on("DELETE", "/api/admin/configs/:id", nav.deleteConfig);
+
+router.on("GET", "/api/admin/content/status", content.status);
+router.on("GET", "/api/admin/content/hot", content.hotTopics);
+router.on("GET", "/api/admin/content/articles", content.articles);
+router.on("POST", "/api/admin/content/articles/generate", content.generateArticle);
+router.on("GET", "/api/admin/content/articles/:id", content.getArticle);
+router.on("PUT", "/api/admin/content/articles/:id", content.updateArticle);
+router.on("POST", "/api/admin/content/articles/:id/wechat-draft", content.createWechatDraft);
+router.on("POST", "/api/admin/content/articles/:id/publish", content.publishWechat);
 
 for (const prefix of ["/api/user/image", "/api/admin/image"]) {
   router.on("POST", `${prefix}/generate`, image.generateImage);
@@ -113,6 +123,7 @@ for (const prefix of ["/api/user/kb/docs", "/api/admin/kb/docs"]) {
 }
 router.on("GET", "/api/public/kb/share/:token", kb.publicShare);
 router.on("GET", "/api/v1/kb/assets/:filename", kb.assetFile);
+router.on("GET", "/api/v1/content/assets/:filename", content.contentAssetFile);
 
 router.on("GET", "/api/v1/music/search", music.musicProxy);
 router.on("GET", "/api/v1/music/play", music.musicProxy);

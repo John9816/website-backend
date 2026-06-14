@@ -20,9 +20,18 @@ interface HotTopic {
   capturedAt: string;
 }
 
+type ContentCategory = "emotion_psychology" | "history_philosophy" | "society_livelihood";
+type ContentLayoutTheme = "clean" | "warm" | "magazine";
+type ContentImageMode = "generate" | "fetch" | "none";
+
 interface ArticleGenerateBody {
   topics?: HotTopic[];
   topicIds?: string[];
+  category?: ContentCategory;
+  layoutTheme?: ContentLayoutTheme;
+  imageMode?: ContentImageMode;
+  autoWechatDraft?: boolean;
+  autoPublish?: boolean;
   angle?: string;
   audience?: string;
   tone?: string;
@@ -42,47 +51,161 @@ interface ArticleDraft {
   riskTips: string[];
 }
 
+interface CategoryProfile {
+  id: ContentCategory;
+  label: string;
+  angle: string;
+  audience: string;
+  tone: string;
+  coreConcern: string;
+  promptFocus: string[];
+  riskBoundaries: string[];
+  keywords: string[];
+  coverKeywords: string;
+  tags: string[];
+  color: string;
+  accent: string;
+  softBg: string;
+}
+
+const DEFAULT_CATEGORY: ContentCategory = "emotion_psychology";
+const DEFAULT_LAYOUT_THEME: ContentLayoutTheme = "clean";
+const DEFAULT_IMAGE_MODE: ContentImageMode = "generate";
+
+const CATEGORY_PROFILES: Record<ContentCategory, CategoryProfile> = {
+  emotion_psychology: {
+    id: "emotion_psychology",
+    label: "情感心理",
+    angle: "从真实关系、情绪需求和自我成长切入，给读者可复盘、可练习的理解框架",
+    audience: "正在处理亲密关系、家庭沟通、职场情绪和自我成长的公众号读者",
+    tone: "温暖、清醒、克制，不鸡汤、不诊断",
+    coreConcern: "情绪、关系和自我理解",
+    promptFocus: [
+      "用生活场景开头，让读者先看见自己",
+      "解释心理机制时保持通俗，不做医学诊断",
+      "结尾给出可执行的沟通或自我照顾动作"
+    ],
+    riskBoundaries: [
+      "避免把复杂心理问题简单归因",
+      "避免使用治疗、诊断、痊愈等医疗承诺",
+      "涉及亲密关系冲突时避免煽动对立"
+    ],
+    keywords: ["情绪", "心理", "婚姻", "恋爱", "亲密关系", "家庭", "沟通", "焦虑", "成长", "疗愈", "人格", "边界感"],
+    coverKeywords: "柔和人文、情绪曲线、关系线索、温暖但不甜腻",
+    tags: ["情感心理", "关系", "自我成长"],
+    color: "#b8326f",
+    accent: "#f08ab8",
+    softBg: "#fff4f8"
+  },
+  history_philosophy: {
+    id: "history_philosophy",
+    label: "历史哲学",
+    angle: "从历史人物、事件脉络或思想命题切入，把旧问题讲成今天仍然有用的判断力",
+    audience: "喜欢历史故事、思想辨析和长期主义思考的公众号读者",
+    tone: "沉稳、有证据、有思辨感，避免故作玄虚",
+    coreConcern: "历史经验、思想命题和现实判断",
+    promptFocus: [
+      "先交代人物、时代或概念背景，再进入观点",
+      "区分史实、解释和作者判断",
+      "用今天的生活问题承接历史经验"
+    ],
+    riskBoundaries: [
+      "不要编造史料、引文和具体年代",
+      "不把复杂历史事件写成单一阴谋论",
+      "涉及历史评价时保留多角度表述"
+    ],
+    keywords: ["历史", "哲学", "人物", "王朝", "战争", "思想", "文明", "古代", "近代", "孔子", "庄子", "苏格拉底", "权力"],
+    coverKeywords: "纸本文献、时间轴、古籍纹理、克制高级的历史感",
+    tags: ["历史哲学", "思想", "长期主义"],
+    color: "#7c4a21",
+    accent: "#d59f55",
+    softBg: "#fff8ec"
+  },
+  society_livelihood: {
+    id: "society_livelihood",
+    label: "社会民生",
+    angle: "从公共议题背后的生活成本、教育就业、城市生活和普通人处境切入",
+    audience: "关心现实生活、公共议题和社会变化的公众号读者",
+    tone: "客观、克制、有温度，不煽动",
+    coreConcern: "公共议题与普通人的日常处境",
+    promptFocus: [
+      "用可核验的信息和生活场景建立问题",
+      "把宏观议题落到普通人的选择和影响",
+      "提供审慎判断，不制造恐慌"
+    ],
+    riskBoundaries: [
+      "避免传播未证实消息和极端判断",
+      "避免地域、职业、群体对立表达",
+      "涉及政策和公共事件时保留信息来源线索"
+    ],
+    keywords: ["社会", "民生", "就业", "教育", "房价", "城市", "消费", "医疗", "养老", "收入", "政策", "公共", "年轻人"],
+    coverKeywords: "城市街景、民生数据、公共议题、清晰可信的新闻杂志感",
+    tags: ["社会民生", "公共议题", "生活观察"],
+    color: "#0f766e",
+    accent: "#54b9ad",
+    softBg: "#effdfa"
+  }
+};
+
+const CATEGORY_FALLBACK_TOPICS: Record<ContentCategory, Array<{ title: string; hot: string; summary: string }>> = {
+  emotion_psychology: [
+    {
+      title: "为什么很多关系不是不爱了，而是不会好好说话",
+      hot: "关系沟通",
+      summary: "亲密关系和家庭沟通相关话题长期有讨论度，适合从情绪表达和边界感切入。"
+    },
+    {
+      title: "成年人最容易忽视的情绪成本",
+      hot: "情绪管理",
+      summary: "职场压力、家庭责任和自我期待叠加，让情绪消耗成为高共鸣选题。"
+    },
+    {
+      title: "边界感不是冷漠，而是一种稳定关系的能力",
+      hot: "自我成长",
+      summary: "边界感、讨好型人格、关系修复等关键词持续受到关注。"
+    }
+  ],
+  history_philosophy: [
+    {
+      title: "历史上真正改变局势的，往往不是最响亮的人",
+      hot: "历史人物",
+      summary: "适合用人物命运和时代结构讨论选择、判断和长期影响。"
+    },
+    {
+      title: "一个古老问题：人为什么总在确定性里失去自由",
+      hot: "哲学命题",
+      summary: "从思想命题切入现实焦虑，兼顾故事性和思辨性。"
+    },
+    {
+      title: "读历史最重要的不是记结论，而是训练判断力",
+      hot: "历史方法",
+      summary: "可把历史事件转化为当代生活中的决策方法。"
+    }
+  ],
+  society_livelihood: [
+    {
+      title: "普通人越来越关心的，不是宏大叙事，而是生活确定性",
+      hot: "民生观察",
+      summary: "就业、教育、消费和城市生活成本是持续高关注方向。"
+    },
+    {
+      title: "年轻人的消费变化，背后是对风险的重新计算",
+      hot: "消费趋势",
+      summary: "适合从社会变化落到普通人的预算、选择和安全感。"
+    },
+    {
+      title: "一座城市是否友好，最终会体现在普通人的日常里",
+      hot: "城市生活",
+      summary: "公共服务、通勤、住房和生活便利性都能生成有温度的民生文章。"
+    }
+  ]
+};
+
 const DEFAULT_HOT_SOURCES: HotSource[] = [
   { id: "weibo", name: "微博", url: "https://api-hot.imsyy.top/weibo" },
   { id: "zhihu", name: "知乎", url: "https://api-hot.imsyy.top/zhihu" },
   { id: "toutiao", name: "头条", url: "https://api-hot.imsyy.top/toutiao" },
   { id: "baidu", name: "百度", url: "https://api-hot.imsyy.top/baidu" }
-];
-
-const FALLBACK_TOPICS: HotTopic[] = [
-  {
-    id: "fallback:1",
-    source: "fallback",
-    sourceName: "趋势观察",
-    rank: 1,
-    title: "AI 工具正在重塑个人效率工作流",
-    url: null,
-    hot: "趋势",
-    summary: "围绕效率、自动化、内容生产和个人知识管理的讨论持续升温。",
-    capturedAt: new Date().toISOString()
-  },
-  {
-    id: "fallback:2",
-    source: "fallback",
-    sourceName: "趋势观察",
-    rank: 2,
-    title: "普通人如何用数据判断一个选题值不值得写",
-    url: null,
-    hot: "方法论",
-    summary: "热点选择从直觉走向数据化，选题、标题和转化链路成为内容创作重点。",
-    capturedAt: new Date().toISOString()
-  },
-  {
-    id: "fallback:3",
-    source: "fallback",
-    sourceName: "趋势观察",
-    rank: 3,
-    title: "公众号文章的阅读完成率比标题点击更值得关注",
-    url: null,
-    hot: "内容运营",
-    summary: "内容平台更看重真实停留、互动和转发，单纯标题党越来越难持续。",
-    capturedAt: new Date().toISOString()
-  }
 ];
 
 export async function status(ctx: RequestContext): Promise<Response> {
@@ -113,17 +236,24 @@ export async function status(ctx: RequestContext): Promise<Response> {
 
 export async function hotTopics(ctx: RequestContext): Promise<Response> {
   requireAdmin(ctx);
-  const sources = await hotSources(ctx);
+  const category = normalizeCategory(ctx.url.searchParams.get("category"));
+  const sources = await hotSources(ctx, category);
   const limit = intParam(ctx.url, "limit", 12, 1, 50);
   const settled = await Promise.allSettled(sources.map((source) => fetchHotSource(source, limit)));
   const topics = settled
     .flatMap((item) => item.status === "fulfilled" ? item.value : [])
     .slice(0, Math.max(limit, sources.length * limit));
+  const rankedTopics = rankTopicsByCategory(topics, category);
+  const items = rankedTopics.length
+    ? [...rankedTopics, ...fallbackTopics(category)].slice(0, limit)
+    : fallbackTopics(category).slice(0, limit);
 
   return ok({
+    category,
+    categories: categoryOptions(),
     capturedAt: new Date().toISOString(),
     sources: sources.map(({ id, name }) => ({ id, name })),
-    items: topics.length ? topics : FALLBACK_TOPICS
+    items
   });
 }
 
@@ -150,23 +280,28 @@ export async function generateArticle(ctx: RequestContext): Promise<Response> {
   const user = requireAdmin(ctx);
   await ensureContentTables(ctx);
   const body = await readJson<ArticleGenerateBody>(ctx.request);
+  const category = normalizeCategory(body.category);
+  const layoutTheme = normalizeLayoutTheme(body.layoutTheme);
+  const imageMode = normalizeImageMode(body.imageMode, body.generateCover);
+  const normalizedBody: ArticleGenerateBody = { ...body, category, layoutTheme, imageMode };
   const topics = normalizeSelectedTopics(body.topics).slice(0, 8);
-  const selectedTopics = topics.length ? topics : (await collectDefaultTopics(ctx)).slice(0, 5);
+  const selectedTopics = topics.length ? topics : (await collectDefaultTopics(ctx, category)).slice(0, 5);
   const model = body.model || await config(ctx, "content.article.model", await config(ctx, "ai.chat.defaultModel", "gpt-4.1-mini"));
 
   let draft: ArticleDraft;
   let articleError: string | null = null;
   try {
-    draft = await createArticleDraft(ctx, selectedTopics, body, model);
+    draft = await createArticleDraft(ctx, selectedTopics, normalizedBody, model);
   } catch (error) {
     articleError = error instanceof Error ? error.message : "article generation failed";
-    draft = fallbackArticle(selectedTopics, body);
+    draft = fallbackArticle(selectedTopics, normalizedBody);
   }
+  draft = formatDraftForWechat(draft, category, layoutTheme);
   let coverImageUrl: string | null = null;
   let coverError: string | null = null;
-  if (body.generateCover !== false) {
+  if (imageMode !== "none") {
     try {
-      coverImageUrl = await generateCoverImage(ctx, buildCoverPrompt(draft, body.coverStyle));
+      coverImageUrl = await resolveCoverImage(ctx, draft, selectedTopics, normalizedBody, category);
     } catch (error) {
       coverError = error instanceof Error ? error.message : "cover generation failed";
     }
@@ -175,8 +310,9 @@ export async function generateArticle(ctx: RequestContext): Promise<Response> {
   const result = await ctx.env.DB.prepare(
     `INSERT INTO content_article(
       user_id, title, digest, content_markdown, content_html, cover_prompt, cover_image_url,
-      topics_json, tags_json, risk_tips_json, model, status, error_message
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?)`
+      topics_json, tags_json, risk_tips_json, model, category, layout_theme, image_mode,
+      automation_json, status, error_message
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?)`
   ).bind(
     user.id,
     draft.title,
@@ -189,10 +325,23 @@ export async function generateArticle(ctx: RequestContext): Promise<Response> {
     JSON.stringify(draft.tags),
     JSON.stringify(draft.riskTips),
     model,
+    category,
+    layoutTheme,
+    imageMode,
+    JSON.stringify({
+      requestedDraft: Boolean(body.autoWechatDraft),
+      requestedPublish: Boolean(body.autoPublish),
+      createdAt: new Date().toISOString()
+    }),
     [articleError, coverError].filter(Boolean).join("\n") || null
   ).run();
 
-  return ok(await articleById(ctx, user.id, Number(result.meta.last_row_id)));
+  let article = await articleById(ctx, user.id, Number(result.meta.last_row_id));
+  if (body.autoPublish || body.autoWechatDraft) {
+    article = await runGenerationAutomation(ctx, user.id, article, body.autoPublish ? "publish" : "draft");
+  }
+
+  return ok(article);
 }
 
 export async function updateArticle(ctx: RequestContext): Promise<Response> {
@@ -219,12 +368,7 @@ export async function createWechatDraft(ctx: RequestContext): Promise<Response> 
   const user = requireAdmin(ctx);
   await ensureContentTables(ctx);
   const article = await articleById(ctx, user.id, Number(ctx.params.id));
-  const result = await pushArticleToWechat(ctx, article, false);
-  await ctx.env.DB.prepare(
-    `UPDATE content_article
-     SET status = 'WECHAT_DRAFT', wechat_media_id = ?, wechat_url = ?, error_message = NULL, updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND user_id = ?`
-  ).bind(result.mediaId, result.url, article.id, user.id).run();
+  const result = await createWechatDraftForArticle(ctx, user.id, article);
   return ok({ article: await articleById(ctx, user.id, article.id), draft: result });
 }
 
@@ -232,22 +376,8 @@ export async function publishWechat(ctx: RequestContext): Promise<Response> {
   const user = requireAdmin(ctx);
   await ensureContentTables(ctx);
   const article = await articleById(ctx, user.id, Number(ctx.params.id));
-  const draft = await pushArticleToWechat(ctx, article, false);
-  const token = await wechatAccessToken(ctx);
-  const response = await fetch(`https://api.weixin.qq.com/cgi-bin/freepublish/submit?access_token=${encodeURIComponent(token)}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ media_id: draft.mediaId })
-  });
-  const data = await parseWechatJson(response, "publish article");
-  const publishId = stringOrNull(data.publish_id) || stringOrNull(data.publishId) || null;
-
-  await ctx.env.DB.prepare(
-    `UPDATE content_article
-     SET status = 'PUBLISHED', wechat_media_id = ?, wechat_publish_id = ?, wechat_url = ?, error_message = NULL, updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND user_id = ?`
-  ).bind(draft.mediaId, publishId, draft.url, article.id, user.id).run();
-  return ok({ article: await articleById(ctx, user.id, article.id), draft, publish: data });
+  const result = await publishWechatForArticle(ctx, user.id, article);
+  return ok({ article: await articleById(ctx, user.id, article.id), ...result });
 }
 
 export async function contentAssetFile(ctx: RequestContext): Promise<Response> {
@@ -268,23 +398,30 @@ export async function contentAssetFile(ctx: RequestContext): Promise<Response> {
 async function createArticleDraft(ctx: RequestContext, topics: HotTopic[], body: ArticleGenerateBody, model: string): Promise<ArticleDraft> {
   const base = await config(ctx, "ai.chat.baseUrl", ctx.env.AI_CHAT_BASE_URL || "");
   const apiKey = await config(ctx, "ai.chat.apiKey", ctx.env.AI_CHAT_API_KEY || "");
+  const category = normalizeCategory(body.category);
+  const profile = CATEGORY_PROFILES[category];
   if (!base) {
     return fallbackArticle(topics, body);
   }
 
   const prompt = [
     "你是资深微信公众号主编和增长编辑。",
+    `当前公众号栏目：${profile.label}。`,
     "基于输入的热榜数据，写一篇可直接发公众号的原创文章。",
     "要求：不编造事实；引用热点时保留来源线索；标题有传播力但不夸大；正文结构适合手机阅读；输出严格 JSON。",
+    `栏目写作重点：${profile.promptFocus.join("；")}。`,
+    `风险边界：${profile.riskBoundaries.join("；")}。`,
     "JSON 字段：title, digest, contentMarkdown, contentHtml, coverPrompt, tags, riskTips。",
     "contentHtml 使用 p/h2/blockquote/ul/li/strong 标签，不要包含 script/style。",
     "",
     JSON.stringify({
       topics,
-      angle: body.angle || "从热点中提炼普通人可执行的方法",
-      audience: body.audience || "关注效率、AI、内容运营和个人成长的读者",
-      tone: body.tone || "清醒、有洞察、有行动感",
-      length: body.length || "standard"
+      category: profile.label,
+      angle: body.angle || profile.angle,
+      audience: body.audience || profile.audience,
+      tone: body.tone || profile.tone,
+      length: body.length || "standard",
+      layoutTheme: body.layoutTheme || DEFAULT_LAYOUT_THEME
     })
   ].join("\n");
 
@@ -316,27 +453,29 @@ async function createArticleDraft(ctx: RequestContext, topics: HotTopic[], body:
 }
 
 function fallbackArticle(topics: HotTopic[], body: ArticleGenerateBody): ArticleDraft {
-  const main = topics[0] ?? FALLBACK_TOPICS[0];
-  const title = `从“${main.title}”看见一个正在变热的机会`;
+  const category = normalizeCategory(body.category);
+  const profile = CATEGORY_PROFILES[category];
+  const main = topics[0] ?? fallbackTopics(category)[0];
+  const title = `从“${main.title}”看见${profile.coreConcern}的新变化`;
   const topicItems = topics.map((topic) => `- ${topic.sourceName} #${topic.rank}：${topic.title}${topic.hot ? `（${topic.hot}）` : ""}`).join("\n");
   const contentMarkdown = [
     `# ${title}`,
     "",
-    `今天的热榜里，最值得关注的不是单个话题本身，而是它背后反复出现的需求：人们想更快判断趋势、更低成本做选择，也更希望把复杂信息变成可执行动作。`,
+    `今天的热榜里，最值得关注的不是单个话题本身，而是它背后反复出现的需求：人们正在重新理解${profile.coreConcern}。`,
     "",
     "## 热点信号",
     topicItems,
     "",
-    "## 为什么它会被转发",
-    "一个话题能被持续讨论，通常同时满足三个条件：和当下生活有关、能提供新鲜视角、能让读者立刻联想到自己。",
+    "## 为什么它值得写",
+    `一个话题能被持续讨论，通常同时满足三个条件：和读者当下的生活有关，能提供新的解释框架，也能让人重新理解自己的处境。放在「${profile.label}」栏目里，它最适合从具体场景切入，再回到稳定的判断。`,
     "",
-    "## 可以怎么写",
-    "先用一个具体场景切入，再给出可验证的数据线索，最后落到三个行动建议。这样的结构比单纯追热点更稳，也更容易形成收藏和转发。",
+    "## 可以怎么展开",
+    `先写一个读者熟悉的场景，再解释背后的关键矛盾，最后给出克制、可执行的行动建议。这样的结构比单纯追热点更稳，也更适合公众号长读。`,
     "",
-    "## 今天就能做的三件事",
-    "1. 把热榜里的高频词归类，而不是只看排名。",
-    "2. 为每个选题写一句“和读者有什么关系”。",
-    "3. 在发布前删掉无法验证的判断，保留可以行动的结论。"
+    "## 发布前再检查三件事",
+    `1. 文章是否真的回应了${profile.coreConcern}，而不只是复述热榜。`,
+    "2. 每个判断是否有来源线索或生活经验支撑。",
+    "3. 结尾是否给了读者一个可以带走的理解或动作。"
   ].join("\n");
 
   return {
@@ -344,9 +483,9 @@ function fallbackArticle(topics: HotTopic[], body: ArticleGenerateBody): Article
     digest: `围绕 ${main.title}，拆解热点背后的传播逻辑和可执行写法。`,
     contentMarkdown,
     contentHtml: markdownToHtml(contentMarkdown),
-    coverPrompt: buildFallbackCoverPrompt(main, body.coverStyle),
-    tags: ["热点", "内容运营", "公众号"],
-    riskTips: ["AI 未配置时生成的是规则草稿，发布前建议人工复核。"]
+    coverPrompt: buildFallbackCoverPrompt(main, body.coverStyle, category),
+    tags: uniqueStrings([...profile.tags, "热点", "公众号"]),
+    riskTips: uniqueStrings(["AI 未配置时生成的是规则草稿，发布前建议人工复核。", ...profile.riskBoundaries])
   };
 }
 
@@ -360,9 +499,29 @@ function normalizeArticleDraft(value: Record<string, unknown>, topics: HotTopic[
     contentMarkdown,
     contentHtml: sanitizeArticleHtml(contentHtml),
     coverPrompt: stringOrNull(value.coverPrompt) || fallback.coverPrompt,
-    tags: stringArray(value.tags).slice(0, 8),
-    riskTips: stringArray(value.riskTips).slice(0, 6)
+    tags: uniqueStrings([...CATEGORY_PROFILES[normalizeCategory(body.category)].tags, ...stringArray(value.tags)]).slice(0, 8),
+    riskTips: uniqueStrings([...stringArray(value.riskTips), ...CATEGORY_PROFILES[normalizeCategory(body.category)].riskBoundaries]).slice(0, 8)
   };
+}
+
+async function resolveCoverImage(
+  ctx: RequestContext,
+  draft: ArticleDraft,
+  topics: HotTopic[],
+  body: ArticleGenerateBody,
+  category: ContentCategory
+): Promise<string | null> {
+  const imageMode = normalizeImageMode(body.imageMode, body.generateCover);
+  if (imageMode === "none") {
+    return null;
+  }
+  if (imageMode === "fetch") {
+    const fetched = await fetchCoverImage(ctx, topics, body, category);
+    if (fetched) {
+      return fetched;
+    }
+  }
+  return generateCoverImage(ctx, buildCoverPrompt(draft, body.coverStyle, category));
 }
 
 async function generateCoverImage(ctx: RequestContext, prompt: string): Promise<string | null> {
@@ -401,9 +560,55 @@ async function generateCoverImage(ctx: RequestContext, prompt: string): Promise<
   return url ? storeRemoteImage(ctx, url) : null;
 }
 
+async function fetchCoverImage(ctx: RequestContext, topics: HotTopic[], body: ArticleGenerateBody, category: ContentCategory): Promise<string | null> {
+  const fromTopic = await fetchTopicImage(ctx, topics);
+  if (fromTopic) {
+    return fromTopic;
+  }
+
+  const template = await config(ctx, "content.image.searchBaseUrl", "");
+  if (!template) {
+    return null;
+  }
+  const imageUrl = buildConfiguredImageUrl(template, topics[0], body, category);
+  return imageUrl ? storeRemoteImage(ctx, imageUrl) : null;
+}
+
+async function fetchTopicImage(ctx: RequestContext, topics: HotTopic[]): Promise<string | null> {
+  for (const topic of topics) {
+    if (!topic.url || !/^https?:\/\//i.test(topic.url)) {
+      continue;
+    }
+    try {
+      const response = await fetch(topic.url, {
+        headers: { "user-agent": "website-content-factory/1.0 (+wechat-content)" }
+      });
+      if (!response.ok) {
+        continue;
+      }
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.startsWith("image/")) {
+        return storeRemoteImage(ctx, topic.url);
+      }
+      if (!contentType.includes("text/html") && !contentType.includes("application/xhtml")) {
+        continue;
+      }
+      const html = await response.text();
+      const imageUrl = extractPageImageUrl(html, topic.url);
+      if (imageUrl) {
+        return storeRemoteImage(ctx, imageUrl);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 async function pushArticleToWechat(ctx: RequestContext, article: any, publish: boolean) {
   const token = await wechatAccessToken(ctx);
   const coverMediaId = await ensureWechatCoverMedia(ctx, article);
+  const content = await prepareWechatContent(ctx, article, token);
   const author = await config(ctx, "wechat.author", "");
   const contentSourceUrl = await config(ctx, "wechat.contentSourceUrl", "");
   const response = await fetch(`https://api.weixin.qq.com/cgi-bin/draft/add?access_token=${encodeURIComponent(token)}`, {
@@ -415,7 +620,7 @@ async function pushArticleToWechat(ctx: RequestContext, article: any, publish: b
           title: article.title,
           author,
           digest: article.digest || "",
-          content: sanitizeWechatContent(article.contentHtml),
+          content,
           content_source_url: contentSourceUrl,
           thumb_media_id: coverMediaId,
           need_open_comment: 0,
@@ -429,6 +634,106 @@ async function pushArticleToWechat(ctx: RequestContext, article: any, publish: b
     mediaId: stringOrNull(data.media_id) || "",
     url: stringOrNull(data.url)
   };
+}
+
+async function prepareWechatContent(ctx: RequestContext, article: any, token: string): Promise<string> {
+  const content = sanitizeWechatContent(article.contentHtml, normalizeCategory(article.category), normalizeLayoutTheme(article.layoutTheme));
+  return uploadWechatInlineImages(ctx, content, token);
+}
+
+async function uploadWechatInlineImages(ctx: RequestContext, html: string, token: string): Promise<string> {
+  const imageUrls = uniqueStrings(
+    Array.from(html.matchAll(/<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi))
+      .map((match) => match[1])
+      .filter((url) => Boolean(url) && !url.includes("mmbiz.qpic.cn"))
+  ).slice(0, 12);
+  let nextHtml = html;
+  for (const imageUrl of imageUrls) {
+    try {
+      const image = await loadImageBytes(ctx, imageUrl);
+      const form = new FormData();
+      form.set("media", new File([image.bytes], "inline.png", { type: image.contentType || "image/png" }));
+      const response = await fetch(`https://api.weixin.qq.com/cgi-bin/media/uploadimg?access_token=${encodeURIComponent(token)}`, {
+        method: "POST",
+        body: form
+      });
+      const data = await parseWechatJson(response, "upload content image");
+      const wechatUrl = stringOrNull(data.url);
+      if (wechatUrl) {
+        nextHtml = replaceImageSource(nextHtml, imageUrl, wechatUrl);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return nextHtml;
+}
+
+async function createWechatDraftForArticle(ctx: RequestContext, userId: number, article: any) {
+  const result = await pushArticleToWechat(ctx, article, false);
+  await ctx.env.DB.prepare(
+    `UPDATE content_article
+     SET status = 'WECHAT_DRAFT', wechat_media_id = ?, wechat_url = ?, error_message = NULL,
+         automation_json = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ?`
+  ).bind(
+    result.mediaId,
+    result.url,
+    JSON.stringify({ lastAction: "draft", ok: true, at: new Date().toISOString() }),
+    article.id,
+    userId
+  ).run();
+  return result;
+}
+
+async function publishWechatForArticle(ctx: RequestContext, userId: number, article: any) {
+  const draft = await pushArticleToWechat(ctx, article, true);
+  const token = await wechatAccessToken(ctx);
+  const response = await fetch(`https://api.weixin.qq.com/cgi-bin/freepublish/submit?access_token=${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ media_id: draft.mediaId })
+  });
+  const data = await parseWechatJson(response, "publish article");
+  const publishId = stringOrNull(data.publish_id) || stringOrNull(data.publishId) || null;
+
+  await ctx.env.DB.prepare(
+    `UPDATE content_article
+     SET status = 'PUBLISHED', wechat_media_id = ?, wechat_publish_id = ?, wechat_url = ?,
+         error_message = NULL, automation_json = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ?`
+  ).bind(
+    draft.mediaId,
+    publishId,
+    draft.url,
+    JSON.stringify({ lastAction: "publish", ok: true, publishId, at: new Date().toISOString() }),
+    article.id,
+    userId
+  ).run();
+  return { draft, publish: data };
+}
+
+async function runGenerationAutomation(ctx: RequestContext, userId: number, article: any, action: "draft" | "publish") {
+  try {
+    if (action === "publish") {
+      await publishWechatForArticle(ctx, userId, article);
+    } else {
+      await createWechatDraftForArticle(ctx, userId, article);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "wechat automation failed";
+    await ctx.env.DB.prepare(
+      `UPDATE content_article
+       SET error_message = ?, automation_json = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`
+    ).bind(
+      message,
+      JSON.stringify({ lastAction: action, ok: false, error: message, at: new Date().toISOString() }),
+      article.id,
+      userId
+    ).run();
+  }
+  return articleById(ctx, userId, article.id);
 }
 
 async function ensureWechatCoverMedia(ctx: RequestContext, article: any): Promise<string> {
@@ -491,15 +796,15 @@ async function parseWechatJson(response: Response, action: string): Promise<Reco
   return data;
 }
 
-async function collectDefaultTopics(ctx: RequestContext): Promise<HotTopic[]> {
-  const sources = await hotSources(ctx);
+async function collectDefaultTopics(ctx: RequestContext, category: ContentCategory): Promise<HotTopic[]> {
+  const sources = await hotSources(ctx, category);
   const settled = await Promise.allSettled(sources.slice(0, 3).map((source) => fetchHotSource(source, 5)));
   const topics = settled.flatMap((item) => item.status === "fulfilled" ? item.value : []);
-  return topics.length ? topics : FALLBACK_TOPICS;
+  return topics.length ? rankTopicsByCategory(topics, category) : fallbackTopics(category);
 }
 
-async function hotSources(ctx: RequestContext): Promise<HotSource[]> {
-  const configured = await config(ctx, "content.hot.sources", "");
+async function hotSources(ctx: RequestContext, category: ContentCategory): Promise<HotSource[]> {
+  const configured = await config(ctx, `content.hot.sources.${category}`, await config(ctx, "content.hot.sources", ""));
   if (!configured.trim()) {
     return DEFAULT_HOT_SOURCES;
   }
@@ -527,6 +832,41 @@ async function hotSources(ctx: RequestContext): Promise<HotSource[]> {
     })
     .filter((item): item is HotSource => Boolean(item));
   return lineSources.length ? lineSources : DEFAULT_HOT_SOURCES;
+}
+
+function categoryOptions() {
+  return Object.values(CATEGORY_PROFILES).map((item) => ({
+    value: item.id,
+    label: item.label
+  }));
+}
+
+function fallbackTopics(category: ContentCategory = DEFAULT_CATEGORY): HotTopic[] {
+  const profile = CATEGORY_PROFILES[category];
+  return CATEGORY_FALLBACK_TOPICS[category].map((item, index) => ({
+    id: `fallback:${category}:${index + 1}`,
+    source: "fallback",
+    sourceName: `${profile.label}选题库`,
+    rank: index + 1,
+    title: item.title,
+    url: null,
+    hot: item.hot,
+    summary: item.summary,
+    capturedAt: new Date().toISOString()
+  }));
+}
+
+function rankTopicsByCategory(topics: HotTopic[], category: ContentCategory): HotTopic[] {
+  const profile = CATEGORY_PROFILES[category];
+  return topics
+    .map((topic, index) => ({ topic, index, score: topicCategoryScore(topic, profile) }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .map((item) => item.topic);
+}
+
+function topicCategoryScore(topic: HotTopic, profile: CategoryProfile): number {
+  const text = `${topic.title} ${topic.summary || ""} ${topic.hot || ""}`.toLowerCase();
+  return profile.keywords.reduce((score, keyword) => score + (text.includes(keyword.toLowerCase()) ? 6 : 0), 0);
 }
 
 async function fetchHotSource(source: HotSource, limit: number): Promise<HotTopic[]> {
@@ -595,6 +935,10 @@ function articleView(row: any) {
     tags: parseJsonArray(row.tags_json),
     riskTips: parseJsonArray(row.risk_tips_json),
     model: row.model,
+    category: row.category || null,
+    layoutTheme: row.layout_theme || null,
+    imageMode: row.image_mode || null,
+    automation: parseJsonObject(row.automation_json) || null,
     status: row.status,
     wechatMediaId: row.wechat_media_id,
     wechatPublishId: row.wechat_publish_id,
@@ -620,6 +964,10 @@ async function ensureContentTables(ctx: RequestContext): Promise<void> {
       tags_json TEXT,
       risk_tips_json TEXT,
       model TEXT,
+      category TEXT,
+      layout_theme TEXT,
+      image_mode TEXT,
+      automation_json TEXT,
       status TEXT NOT NULL DEFAULT 'DRAFT',
       wechat_media_id TEXT,
       wechat_publish_id TEXT,
@@ -633,14 +981,19 @@ async function ensureContentTables(ctx: RequestContext): Promise<void> {
   await ctx.env.DB.prepare(
     "CREATE INDEX IF NOT EXISTS idx_content_article_user_updated ON content_article(user_id, updated_at DESC, id DESC)"
   ).run();
+  await ctx.env.DB.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_content_article_user_category_updated ON content_article(user_id, category, updated_at DESC)"
+  ).run();
 }
 
-function buildCoverPrompt(draft: ArticleDraft, style?: string) {
-  return `${draft.coverPrompt}\n微信公众号封面，比例 2.35:1，中文互联网内容风格，主题清晰，视觉干净，有传播感。${style ? `风格：${style}` : ""}`;
+function buildCoverPrompt(draft: ArticleDraft, style?: string, category: ContentCategory = DEFAULT_CATEGORY) {
+  const profile = CATEGORY_PROFILES[category];
+  return `${draft.coverPrompt}\n栏目：${profile.label}。微信公众号封面，比例 2.35:1，主题清晰，视觉干净，有传播感。画面关键词：${profile.coverKeywords}。${style ? `风格：${style}` : ""}`;
 }
 
-function buildFallbackCoverPrompt(topic: HotTopic, style?: string) {
-  return `围绕“${topic.title}”创作一张公众号封面图，画面包含热榜数据、趋势洞察、内容创作工作台元素，避免真实人物肖像。${style ? `风格：${style}` : ""}`;
+function buildFallbackCoverPrompt(topic: HotTopic, style?: string, category: ContentCategory = DEFAULT_CATEGORY) {
+  const profile = CATEGORY_PROFILES[category];
+  return `围绕“${topic.title}”创作一张公众号封面图，栏目为${profile.label}，画面包含${profile.coverKeywords}，避免真实人物肖像。${style ? `风格：${style}` : ""}`;
 }
 
 function imageEndpoint(base: string): string {
@@ -701,58 +1054,227 @@ function sanitizeArticleHtml(html: string): string {
   return html
     .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, "")
-    .replace(/\son\w+="[^"]*"/gi, "");
+    .replace(/\son\w+=("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
 }
 
-function sanitizeWechatContent(html: string): string {
-  return sanitizeArticleHtml(html).replace(/<h1([\s>])/gi, "<h2$1").replace(/<\/h1>/gi, "</h2>");
+function sanitizeWechatContent(html: string, category: ContentCategory = DEFAULT_CATEGORY, layoutTheme: ContentLayoutTheme = DEFAULT_LAYOUT_THEME): string {
+  const cleaned = sanitizeArticleHtml(html).replace(/<h1([\s>])/gi, "<h2$1").replace(/<\/h1>/gi, "</h2>");
+  if (/data-content-factory=["']wechat["']/i.test(cleaned)) {
+    return cleaned;
+  }
+  return formatWechatArticleHtml(cleaned, category, layoutTheme);
+}
+
+function formatDraftForWechat(draft: ArticleDraft, category: ContentCategory, layoutTheme: ContentLayoutTheme): ArticleDraft {
+  const profile = CATEGORY_PROFILES[category];
+  return {
+    ...draft,
+    contentHtml: formatWechatArticleHtml(draft.contentHtml, category, layoutTheme),
+    tags: uniqueStrings([...profile.tags, ...draft.tags]).slice(0, 8),
+    riskTips: uniqueStrings([...draft.riskTips, ...profile.riskBoundaries]).slice(0, 8)
+  };
+}
+
+function formatWechatArticleHtml(html: string, category: ContentCategory, layoutTheme: ContentLayoutTheme): string {
+  const profile = CATEGORY_PROFILES[category];
+  const base = sanitizeArticleHtml(html)
+    .replace(/<h1\b[^>]*>/gi, "<h2>")
+    .replace(/<\/h1>/gi, "</h2>")
+    .replace(/<section\b[^>]*data-content-factory=["']wechat["'][^>]*>/gi, "")
+    .replace(/<\/section>\s*$/i, "");
+  const theme = wechatTheme(profile, layoutTheme);
+  const body = base
+    .replace(/<h2\b[^>]*>/gi, `<h2 style="${theme.h2}">`)
+    .replace(/<h3\b[^>]*>/gi, `<h3 style="${theme.h3}">`)
+    .replace(/<p\b[^>]*>/gi, `<p style="${theme.p}">`)
+    .replace(/<blockquote\b[^>]*>/gi, `<blockquote style="${theme.blockquote}">`)
+    .replace(/<ul\b[^>]*>/gi, `<ul style="${theme.ul}">`)
+    .replace(/<ol\b[^>]*>/gi, `<ol style="${theme.ol}">`)
+    .replace(/<li\b[^>]*>/gi, `<li style="${theme.li}">`)
+    .replace(/<strong\b[^>]*>/gi, `<strong style="${theme.strong}">`)
+    .replace(/<img\b([^>]*)>/gi, `<img$1 style="${theme.img}">`)
+    .replace(/<hr\b[^>]*>/gi, `<hr style="${theme.hr}">`);
+
+  return [
+    `<section data-content-factory="wechat" style="${theme.section}">`,
+    body,
+    "</section>"
+  ].join("\n");
+}
+
+function wechatTheme(profile: CategoryProfile, layoutTheme: ContentLayoutTheme) {
+  const themeOffset = layoutTheme === "magazine"
+    ? {
+        section: "letter-spacing:0;",
+        h2Extra: `padding:10px 12px;border-left:5px solid ${profile.color};background:${profile.softBg};`,
+        blockquoteExtra: `border:1px solid ${profile.accent};`
+      }
+    : layoutTheme === "warm"
+      ? {
+          section: `background:${profile.softBg};padding:18px 14px;border-radius:8px;letter-spacing:0;`,
+          h2Extra: `padding-bottom:8px;border-bottom:2px solid ${profile.accent};`,
+          blockquoteExtra: ""
+        }
+      : {
+          section: "letter-spacing:0;",
+          h2Extra: `padding-left:12px;border-left:4px solid ${profile.color};`,
+          blockquoteExtra: ""
+        };
+  return {
+    section: `box-sizing:border-box;max-width:100%;font-size:16px;line-height:1.78;color:#1f2937;${themeOffset.section}`,
+    h2: `margin:28px 0 14px;color:${profile.color};font-size:20px;line-height:1.45;font-weight:700;${themeOffset.h2Extra}`,
+    h3: `margin:22px 0 10px;color:#374151;font-size:17px;line-height:1.5;font-weight:700;`,
+    p: "margin:0 0 16px;color:#1f2937;font-size:16px;line-height:1.78;",
+    blockquote: `margin:18px 0;padding:14px 16px;border-left:4px solid ${profile.accent};border-radius:8px;background:${profile.softBg};color:#374151;font-size:15px;line-height:1.75;${themeOffset.blockquoteExtra}`,
+    ul: "margin:0 0 16px;padding-left:1.2em;color:#1f2937;",
+    ol: "margin:0 0 16px;padding-left:1.35em;color:#1f2937;",
+    li: "margin:0 0 8px;color:#1f2937;font-size:16px;line-height:1.7;",
+    strong: `color:${profile.color};font-weight:700;`,
+    img: "display:block;max-width:100%;height:auto;margin:18px auto;border-radius:8px;",
+    hr: `height:1px;border:0;background:${profile.accent};opacity:.35;margin:24px 0;`
+  };
+}
+
+function normalizeCategory(value: unknown): ContentCategory {
+  return value === "history_philosophy" || value === "society_livelihood" || value === "emotion_psychology"
+    ? value
+    : DEFAULT_CATEGORY;
+}
+
+function normalizeLayoutTheme(value: unknown): ContentLayoutTheme {
+  return value === "warm" || value === "magazine" || value === "clean"
+    ? value
+    : DEFAULT_LAYOUT_THEME;
+}
+
+function normalizeImageMode(value: unknown, generateCover?: boolean): ContentImageMode {
+  if (value === "fetch" || value === "none" || value === "generate") {
+    return value;
+  }
+  return generateCover === false ? "none" : DEFAULT_IMAGE_MODE;
 }
 
 function markdownToHtml(markdown: string): string {
   const lines = markdown.split(/\r?\n/);
   const html: string[] = [];
   let listOpen = false;
+  let orderedListOpen = false;
+  const closeLists = () => {
+    if (listOpen) {
+      html.push("</ul>");
+      listOpen = false;
+    }
+    if (orderedListOpen) {
+      html.push("</ol>");
+      orderedListOpen = false;
+    }
+  };
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) {
-      if (listOpen) {
-        html.push("</ul>");
-        listOpen = false;
-      }
+      closeLists();
       continue;
     }
     if (trimmed.startsWith("# ")) {
-      if (listOpen) {
-        html.push("</ul>");
-        listOpen = false;
-      }
-      html.push(`<h1>${escapeHtml(trimmed.slice(2))}</h1>`);
+      closeLists();
+      html.push(`<h1>${renderInlineMarkdown(trimmed.slice(2))}</h1>`);
     } else if (trimmed.startsWith("## ")) {
-      if (listOpen) {
-        html.push("</ul>");
-        listOpen = false;
-      }
-      html.push(`<h2>${escapeHtml(trimmed.slice(3))}</h2>`);
+      closeLists();
+      html.push(`<h2>${renderInlineMarkdown(trimmed.slice(3))}</h2>`);
+    } else if (trimmed.startsWith("### ")) {
+      closeLists();
+      html.push(`<h3>${renderInlineMarkdown(trimmed.slice(4))}</h3>`);
+    } else if (trimmed.startsWith("> ")) {
+      closeLists();
+      html.push(`<blockquote>${renderInlineMarkdown(trimmed.slice(2))}</blockquote>`);
     } else if (trimmed.startsWith("- ")) {
+      if (orderedListOpen) {
+        html.push("</ol>");
+        orderedListOpen = false;
+      }
       if (!listOpen) {
         html.push("<ul>");
         listOpen = true;
       }
-      html.push(`<li>${escapeHtml(trimmed.slice(2))}</li>`);
-    } else {
+      html.push(`<li>${renderInlineMarkdown(trimmed.slice(2))}</li>`);
+    } else if (/^\d+\.\s+/.test(trimmed)) {
       if (listOpen) {
         html.push("</ul>");
         listOpen = false;
       }
-      html.push(`<p>${escapeHtml(trimmed)}</p>`);
+      if (!orderedListOpen) {
+        html.push("<ol>");
+        orderedListOpen = true;
+      }
+      html.push(`<li>${renderInlineMarkdown(trimmed.replace(/^\d+\.\s+/, ""))}</li>`);
+    } else {
+      closeLists();
+      html.push(`<p>${renderInlineMarkdown(trimmed)}</p>`);
     }
   }
-  if (listOpen) html.push("</ul>");
+  closeLists();
   return html.join("\n");
 }
 
 function htmlToPlainText(html: string): string {
   return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function renderInlineMarkdown(value: string): string {
+  return escapeHtml(value)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2">$1</a>');
+}
+
+function buildConfiguredImageUrl(template: string, topic: HotTopic | undefined, body: ArticleGenerateBody, category: ContentCategory): string | null {
+  const profile = CATEGORY_PROFILES[category];
+  const query = [profile.label, topic?.title, profile.coverKeywords, body.coverStyle]
+    .filter(Boolean)
+    .join(" ");
+  const encoded = encodeURIComponent(query);
+  if (template.includes("{query}") || template.includes("{keyword}") || template.includes("{category}") || template.includes("{topic}")) {
+    return template
+      .replace(/\{query\}/g, encoded)
+      .replace(/\{keyword\}/g, encoded)
+      .replace(/\{category\}/g, encodeURIComponent(profile.label))
+      .replace(/\{topic\}/g, encodeURIComponent(topic?.title || profile.label));
+  }
+  try {
+    const url = new URL(template);
+    if (!url.searchParams.has("q")) {
+      url.searchParams.set("q", query);
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function extractPageImageUrl(html: string, pageUrl: string): string | null {
+  const patterns = [
+    /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["'][^>]*>/i,
+    /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["'][^>]*>/i,
+    /<link[^>]+rel=["']image_src["'][^>]+href=["']([^"']+)["'][^>]*>/i,
+    /<img[^>]+src=["']([^"']+)["'][^>]*>/i
+  ];
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    const value = match?.[1]?.trim();
+    if (value && !value.startsWith("data:")) {
+      return absolutizeUrl(value, pageUrl);
+    }
+  }
+  return null;
+}
+
+function absolutizeUrl(value: string, baseUrl: string): string | null {
+  try {
+    return new URL(value, baseUrl).toString();
+  } catch {
+    return null;
+  }
 }
 
 function normalizeSelectedTopics(value: unknown): HotTopic[] {
@@ -822,6 +1344,22 @@ function requiredString(value: unknown, name: string): string {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((item) => item.trim()).filter(Boolean))];
+}
+
+function replaceImageSource(html: string, source: string, target: string): string {
+  const sourcePattern = escapeRegExp(source);
+  return html.replace(
+    new RegExp(`(<img\\b[^>]*\\bsrc=["'])${sourcePattern}(["'][^>]*>)`, "gi"),
+    `$1${target}$2`
+  );
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function escapeHtml(value: string): string {

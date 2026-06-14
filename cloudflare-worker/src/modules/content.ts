@@ -23,13 +23,18 @@ interface HotTopic {
 type ContentCategory = "emotion_psychology" | "history_philosophy" | "society_livelihood";
 type ContentLayoutTheme = "clean" | "warm" | "magazine";
 type ContentImageMode = "generate" | "fetch" | "none";
+type ContentResearchDepth = "quick" | "standard" | "deep";
 
 interface ArticleGenerateBody {
   topics?: HotTopic[];
   topicIds?: string[];
+  topic?: string;
   category?: ContentCategory;
   layoutTheme?: ContentLayoutTheme;
   imageMode?: ContentImageMode;
+  researchEnabled?: boolean;
+  researchDepth?: ContentResearchDepth;
+  searchQueries?: string[];
   autoWechatDraft?: boolean;
   autoPublish?: boolean;
   angle?: string;
@@ -49,6 +54,14 @@ interface ArticleDraft {
   coverPrompt: string;
   tags: string[];
   riskTips: string[];
+}
+
+interface ResearchSource {
+  title: string;
+  url: string;
+  snippet: string | null;
+  content: string | null;
+  sourceName: string | null;
 }
 
 interface CategoryProfile {
@@ -283,18 +296,29 @@ export async function generateArticle(ctx: RequestContext): Promise<Response> {
   const category = normalizeCategory(body.category);
   const layoutTheme = normalizeLayoutTheme(body.layoutTheme);
   const imageMode = normalizeImageMode(body.imageMode, body.generateCover);
-  const normalizedBody: ArticleGenerateBody = { ...body, category, layoutTheme, imageMode };
-  const topics = normalizeSelectedTopics(body.topics).slice(0, 8);
+  const researchDepth = normalizeResearchDepth(body.researchDepth);
+  const normalizedBody: ArticleGenerateBody = { ...body, category, layoutTheme, imageMode, researchDepth };
+  const manualTopic = stringOrNull(body.topic);
+  const topics = manualTopic ? [manualTopicView(manualTopic, category)] : normalizeSelectedTopics(body.topics).slice(0, 8);
   const selectedTopics = topics.length ? topics : (await collectDefaultTopics(ctx, category)).slice(0, 5);
   const model = body.model || await config(ctx, "content.article.model", await config(ctx, "ai.chat.defaultModel", "gpt-4.1-mini"));
+  let researchSources: ResearchSource[] = [];
+  let researchError: string | null = null;
+  if (body.researchEnabled !== false) {
+    try {
+      researchSources = await collectResearch(ctx, selectedTopics, normalizedBody, category);
+    } catch (error) {
+      researchError = error instanceof Error ? error.message : "web research failed";
+    }
+  }
 
   let draft: ArticleDraft;
   let articleError: string | null = null;
   try {
-    draft = await createArticleDraft(ctx, selectedTopics, normalizedBody, model);
+    draft = await createArticleDraft(ctx, selectedTopics, normalizedBody, model, researchSources);
   } catch (error) {
     articleError = error instanceof Error ? error.message : "article generation failed";
-    draft = fallbackArticle(selectedTopics, normalizedBody);
+    draft = fallbackArticle(selectedTopics, normalizedBody, researchSources);
   }
   draft = formatDraftForWechat(draft, category, layoutTheme);
   let coverImageUrl: string | null = null;
@@ -331,9 +355,18 @@ export async function generateArticle(ctx: RequestContext): Promise<Response> {
     JSON.stringify({
       requestedDraft: Boolean(body.autoWechatDraft),
       requestedPublish: Boolean(body.autoPublish),
+      researchEnabled: body.researchEnabled !== false,
+      researchDepth,
+      researchError,
+      researchSources: researchSources.map((item) => ({
+        title: item.title,
+        url: item.url,
+        snippet: item.snippet,
+        sourceName: item.sourceName
+      })),
       createdAt: new Date().toISOString()
     }),
-    [articleError, coverError].filter(Boolean).join("\n") || null
+    [researchError, articleError, coverError].filter(Boolean).join("\n") || null
   ).run();
 
   let article = await articleById(ctx, user.id, Number(result.meta.last_row_id));
@@ -395,33 +428,51 @@ export async function contentAssetFile(ctx: RequestContext): Promise<Response> {
   return new Response(object.body, { headers });
 }
 
-async function createArticleDraft(ctx: RequestContext, topics: HotTopic[], body: ArticleGenerateBody, model: string): Promise<ArticleDraft> {
+async function createArticleDraft(
+  ctx: RequestContext,
+  topics: HotTopic[],
+  body: ArticleGenerateBody,
+  model: string,
+  researchSources: ResearchSource[] = []
+): Promise<ArticleDraft> {
   const base = await config(ctx, "ai.chat.baseUrl", ctx.env.AI_CHAT_BASE_URL || "");
   const apiKey = await config(ctx, "ai.chat.apiKey", ctx.env.AI_CHAT_API_KEY || "");
   const category = normalizeCategory(body.category);
   const profile = CATEGORY_PROFILES[category];
   if (!base) {
-    return fallbackArticle(topics, body);
+    return fallbackArticle(topics, body, researchSources);
   }
 
   const prompt = [
-    "你是资深微信公众号主编和增长编辑。",
+    "你是资深微信公众号主编和爆款选题策划。",
     `当前公众号栏目：${profile.label}。`,
-    "基于输入的热榜数据，写一篇可直接发公众号的原创文章。",
-    "要求：不编造事实；引用热点时保留来源线索；标题有传播力但不夸大；正文结构适合手机阅读；输出严格 JSON。",
+    "任务：围绕给定话题，先消化网页搜索资料，再写一篇可直接发公众号的原创爆文正文。",
+    "注意：最终 contentMarkdown/contentHtml 必须是完整公众号正文，不要输出选题方案、写作提纲、素材清单或运营建议。",
+    "爆文不是标题党，而是：开头强共鸣、有冲突问题、观点有反常识、论证有资料支撑、段落适合手机阅读、结尾让读者愿意转发或留言。",
+    "硬性要求：不得编造事实、数据、人物经历、政策和史料；网页资料不够时必须降级为观点分析，并在 riskTips 说明。",
+    "标题要有传播力但不夸大；正文不要写成资料汇编；把搜索资料消化成观点、故事线和可读表达。",
+    "文章结构建议：痛点/场景开头 → 抛出核心矛盾 → 3-5 个小标题展开 → 给出有记忆点的金句/判断 → 结尾收束到读者处境。",
+    "正文末尾可以用简短“参考资料”列出 3-6 个来源标题，不要堆 URL。",
     `栏目写作重点：${profile.promptFocus.join("；")}。`,
     `风险边界：${profile.riskBoundaries.join("；")}。`,
     "JSON 字段：title, digest, contentMarkdown, contentHtml, coverPrompt, tags, riskTips。",
-    "contentHtml 使用 p/h2/blockquote/ul/li/strong 标签，不要包含 script/style。",
+    "contentMarkdown 至少 1200 字；contentHtml 使用 p/h2/blockquote/ul/li/strong 标签，不要包含 script/style。",
     "",
     JSON.stringify({
       topics,
+      mainTopic: body.topic || topics[0]?.title || "",
       category: profile.label,
       angle: body.angle || profile.angle,
       audience: body.audience || profile.audience,
       tone: body.tone || profile.tone,
       length: body.length || "standard",
-      layoutTheme: body.layoutTheme || DEFAULT_LAYOUT_THEME
+      layoutTheme: body.layoutTheme || DEFAULT_LAYOUT_THEME,
+      researchSources: researchSources.map((item) => ({
+        title: item.title,
+        url: item.url,
+        snippet: item.snippet,
+        content: item.content
+      }))
     })
   ].join("\n");
 
@@ -447,50 +498,56 @@ async function createArticleDraft(ctx: RequestContext, topics: HotTopic[], body:
   }
   const content = data?.choices?.[0]?.message?.content;
   if (typeof content !== "string" || !content.trim()) {
-    return fallbackArticle(topics, body);
+    return fallbackArticle(topics, body, researchSources);
   }
-  return normalizeArticleDraft(parseJsonObject(content) ?? {}, topics, body);
+  return normalizeArticleDraft(parseJsonObject(content) ?? {}, topics, body, researchSources);
 }
 
-function fallbackArticle(topics: HotTopic[], body: ArticleGenerateBody): ArticleDraft {
+function fallbackArticle(topics: HotTopic[], body: ArticleGenerateBody, researchSources: ResearchSource[] = []): ArticleDraft {
   const category = normalizeCategory(body.category);
   const profile = CATEGORY_PROFILES[category];
   const main = topics[0] ?? fallbackTopics(category)[0];
-  const title = `从“${main.title}”看见${profile.coreConcern}的新变化`;
-  const topicItems = topics.map((topic) => `- ${topic.sourceName} #${topic.rank}：${topic.title}${topic.hot ? `（${topic.hot}）` : ""}`).join("\n");
+  const title = `围绕“${main.title}”，真正值得写的不是热闹`;
+  const sourceItems = researchSources.length
+    ? researchSources.slice(0, 6).map((source) => `- ${source.title}：${source.snippet || source.content?.slice(0, 90) || source.url}`).join("\n")
+    : topics.map((topic) => `- ${topic.sourceName} #${topic.rank}：${topic.title}${topic.hot ? `（${topic.hot}）` : ""}`).join("\n");
   const contentMarkdown = [
     `# ${title}`,
     "",
-    `今天的热榜里，最值得关注的不是单个话题本身，而是它背后反复出现的需求：人们正在重新理解${profile.coreConcern}。`,
+    `一个话题能不能写成公众号爆文，关键不在于它排第几，而在于它能不能说出读者心里已经有、但还没被清楚表达出来的东西。围绕“${main.title}”，真正值得抓住的是它背后的${profile.coreConcern}。`,
     "",
-    "## 热点信号",
-    topicItems,
+    "## 先看资料里出现了什么",
+    sourceItems,
     "",
-    "## 为什么它值得写",
-    `一个话题能被持续讨论，通常同时满足三个条件：和读者当下的生活有关，能提供新的解释框架，也能让人重新理解自己的处境。放在「${profile.label}」栏目里，它最适合从具体场景切入，再回到稳定的判断。`,
+    "## 这篇文章真正的矛盾",
+    `表面上，这是一个关于“${main.title}”的话题；更深一层，它讨论的是普通人如何在变化里重新理解自己的处境。放在「${profile.label}」栏目里，文章应该先写具体生活场景，再写背后的结构性问题。`,
     "",
-    "## 可以怎么展开",
-    `先写一个读者熟悉的场景，再解释背后的关键矛盾，最后给出克制、可执行的行动建议。这样的结构比单纯追热点更稳，也更适合公众号长读。`,
+    "## 爆文写法不是夸张，而是让读者点头",
+    "开头要让读者觉得“这说的是我”；中段要给一个不同于常识的解释；结尾要把复杂判断落到一句能被转发的话。信息只是原料，观点和表达才是文章被读完的原因。",
     "",
-    "## 发布前再检查三件事",
-    `1. 文章是否真的回应了${profile.coreConcern}，而不只是复述热榜。`,
-    "2. 每个判断是否有来源线索或生活经验支撑。",
-    "3. 结尾是否给了读者一个可以带走的理解或动作。"
+    "## 可以这样收束",
+    `不要把读者推向情绪，而是给他一个更清楚的理解：他遇到的不是孤立问题，而是很多人正在共同面对的${profile.coreConcern}变化。`,
+    "",
+    "## 参考资料",
+    sourceItems
   ].join("\n");
 
   return {
     title,
-    digest: `围绕 ${main.title}，拆解热点背后的传播逻辑和可执行写法。`,
+    digest: `围绕 ${main.title}，结合网页资料梳理可写成公众号爆文的核心矛盾。`,
     contentMarkdown,
     contentHtml: markdownToHtml(contentMarkdown),
     coverPrompt: buildFallbackCoverPrompt(main, body.coverStyle, category),
     tags: uniqueStrings([...profile.tags, "热点", "公众号"]),
-    riskTips: uniqueStrings(["AI 未配置时生成的是规则草稿，发布前建议人工复核。", ...profile.riskBoundaries])
+    riskTips: uniqueStrings([
+      researchSources.length ? "当前为规则兜底草稿，已使用网页资料摘要，但仍建议人工复核来源。" : "未获得足够网页资料，当前为规则兜底草稿。",
+      ...profile.riskBoundaries
+    ])
   };
 }
 
-function normalizeArticleDraft(value: Record<string, unknown>, topics: HotTopic[], body: ArticleGenerateBody): ArticleDraft {
-  const fallback = fallbackArticle(topics, body);
+function normalizeArticleDraft(value: Record<string, unknown>, topics: HotTopic[], body: ArticleGenerateBody, researchSources: ResearchSource[] = []): ArticleDraft {
+  const fallback = fallbackArticle(topics, body, researchSources);
   const contentMarkdown = stringOrNull(value.contentMarkdown) || stringOrNull(value.markdown) || fallback.contentMarkdown;
   const contentHtml = stringOrNull(value.contentHtml) || stringOrNull(value.html) || markdownToHtml(contentMarkdown);
   return {
@@ -869,6 +926,215 @@ function topicCategoryScore(topic: HotTopic, profile: CategoryProfile): number {
   return profile.keywords.reduce((score, keyword) => score + (text.includes(keyword.toLowerCase()) ? 6 : 0), 0);
 }
 
+async function collectResearch(
+  ctx: RequestContext,
+  topics: HotTopic[],
+  body: ArticleGenerateBody,
+  category: ContentCategory
+): Promise<ResearchSource[]> {
+  const profile = CATEGORY_PROFILES[category];
+  const depth = researchDepthConfig(normalizeResearchDepth(body.researchDepth));
+  const queries = buildResearchQueries(topics, body, profile).slice(0, depth.queryCount);
+  const searchSettled = await Promise.allSettled(queries.map((query) => searchWeb(ctx, query, depth.resultsPerQuery)));
+  const searchResults = searchSettled.flatMap((item) => item.status === "fulfilled" ? item.value : []);
+
+  const byUrl = new Map<string, ResearchSource>();
+  for (const result of searchResults) {
+    const normalizedUrl = normalizeResearchUrl(result.url);
+    if (!normalizedUrl || byUrl.has(normalizedUrl)) continue;
+    byUrl.set(normalizedUrl, { ...result, url: normalizedUrl });
+  }
+
+  const selected = [...byUrl.values()].slice(0, depth.pageLimit);
+  const enriched = await Promise.allSettled(
+    selected.map(async (source) => {
+      const content = await readResearchContent(ctx, source.url, depth.contentChars);
+      return {
+        ...source,
+        title: content.title || source.title,
+        content: content.content || source.content,
+        sourceName: source.sourceName || hostName(source.url)
+      };
+    })
+  );
+
+  const sources = enriched
+    .map((item, index) => item.status === "fulfilled" ? item.value : selected[index])
+    .filter((item) => item.title || item.snippet || item.content)
+    .slice(0, depth.pageLimit);
+  return sources.length ? sources : searchResults.slice(0, depth.pageLimit);
+}
+
+function buildResearchQueries(topics: HotTopic[], body: ArticleGenerateBody, profile: CategoryProfile): string[] {
+  const mainTopic = stringOrNull(body.topic) || topics[0]?.title || profile.label;
+  const configured = Array.isArray(body.searchQueries) ? body.searchQueries.map((item) => String(item || "")) : [];
+  return uniqueStrings([
+    ...configured,
+    `${mainTopic} ${profile.label}`,
+    `${mainTopic} 原因 影响 分析`,
+    `${mainTopic} 观点 评论`,
+    `${mainTopic} 数据 案例`
+  ]).slice(0, 6);
+}
+
+async function searchWeb(ctx: RequestContext, query: string, limit: number): Promise<ResearchSource[]> {
+  const apiUrl = await config(ctx, "content.search.apiUrl", "");
+  if (apiUrl) {
+    const apiKey = await config(ctx, "content.search.apiKey", "");
+    const configured = await configuredSearch(apiUrl, apiKey, query, limit);
+    if (configured.length) return configured;
+  }
+  return duckDuckGoSearch(query, limit);
+}
+
+async function configuredSearch(apiUrl: string, apiKey: string, query: string, limit: number): Promise<ResearchSource[]> {
+  const url = buildSearchApiUrl(apiUrl, query, limit);
+  const response = await fetchWithTimeout(url, {
+    headers: {
+      "accept": "application/json",
+      ...(apiKey ? { authorization: `Bearer ${apiKey}`, "x-api-key": apiKey } : {})
+    }
+  }, 10_000);
+  const data = await response.json<any>().catch(() => null);
+  if (!response.ok || !data) return [];
+  return parseSearchJson(data).slice(0, limit);
+}
+
+function buildSearchApiUrl(apiUrl: string, query: string, limit: number): string {
+  const encoded = encodeURIComponent(query);
+  if (apiUrl.includes("{query}") || apiUrl.includes("{q}") || apiUrl.includes("{limit}")) {
+    return apiUrl
+      .replace(/\{query\}/g, encoded)
+      .replace(/\{q\}/g, encoded)
+      .replace(/\{limit\}/g, String(limit));
+  }
+  const url = new URL(apiUrl);
+  if (!url.searchParams.has("q") && !url.searchParams.has("query")) {
+    url.searchParams.set("q", query);
+  }
+  if (!url.searchParams.has("limit") && !url.searchParams.has("count") && !url.searchParams.has("num")) {
+    url.searchParams.set("limit", String(limit));
+  }
+  return url.toString();
+}
+
+function parseSearchJson(data: any): ResearchSource[] {
+  const rows = Array.isArray(data?.results)
+    ? data.results
+    : Array.isArray(data?.organic_results)
+      ? data.organic_results
+      : Array.isArray(data?.items)
+        ? data.items
+        : Array.isArray(data?.data)
+          ? data.data
+          : Array.isArray(data)
+            ? data
+            : [];
+  return rows.map((item: any) => {
+    const url = stringOrNull(item.url) || stringOrNull(item.link) || stringOrNull(item.href);
+    if (!url) return null;
+    return {
+      title: stringOrNull(item.title) || stringOrNull(item.name) || hostName(url),
+      url,
+      snippet: stringOrNull(item.snippet) || stringOrNull(item.summary) || stringOrNull(item.content) || stringOrNull(item.description),
+      content: null,
+      sourceName: stringOrNull(item.source) || stringOrNull(item.siteName) || hostName(url)
+    };
+  }).filter((item: ResearchSource | null): item is ResearchSource => Boolean(item));
+}
+
+async function duckDuckGoSearch(query: string, limit: number): Promise<ResearchSource[]> {
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const response = await fetchWithTimeout(url, {
+    headers: {
+      "accept": "text/html,application/xhtml+xml",
+      "user-agent": "Mozilla/5.0 website-content-factory/1.0"
+    }
+  }, 10_000);
+  if (!response.ok) return [];
+  const html = await response.text();
+  const results: ResearchSource[] = [];
+  const pattern = /<a[^>]+class=["'][^"']*result__a[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(html)) && results.length < limit) {
+    const href = decodeDuckDuckGoUrl(htmlDecode(match[1]));
+    if (!href) continue;
+    const tail = html.slice(pattern.lastIndex, pattern.lastIndex + 1600);
+    const snippetMatch = tail.match(/<a[^>]+class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/a>|<div[^>]+class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
+    results.push({
+      title: cleanResearchText(stripTags(match[2])).slice(0, 120) || hostName(href),
+      url: href,
+      snippet: snippetMatch ? cleanResearchText(stripTags(snippetMatch[1] || snippetMatch[2] || "")).slice(0, 220) : null,
+      content: null,
+      sourceName: hostName(href)
+    });
+  }
+  return results;
+}
+
+function decodeDuckDuckGoUrl(value: string): string | null {
+  if (!value) return null;
+  const absolute = value.startsWith("//") ? `https:${value}` : value;
+  try {
+    const url = new URL(absolute, "https://duckduckgo.com");
+    const uddg = url.searchParams.get("uddg");
+    return uddg ? decodeURIComponent(uddg) : url.toString();
+  } catch {
+    return null;
+  }
+}
+
+async function readResearchContent(ctx: RequestContext, url: string, maxChars: number): Promise<{ title: string | null; content: string | null }> {
+  const reader = await readWithJinaReader(url, maxChars);
+  if (reader.content) return reader;
+  return readDirectPage(ctx, url, maxChars);
+}
+
+async function readWithJinaReader(url: string, maxChars: number): Promise<{ title: string | null; content: string | null }> {
+  const readerUrl = `https://r.jina.ai/http://${url}`;
+  const response = await fetchWithTimeout(readerUrl, {
+    headers: { "accept": "text/plain", "user-agent": "website-content-factory/1.0" }
+  }, 12_000);
+  if (!response.ok) return { title: null, content: null };
+  const text = (await response.text()).slice(0, 80_000);
+  const title = text.match(/^Title:\s*(.+)$/m)?.[1]?.trim() || null;
+  const content = cleanResearchText(text.replace(/^Title:.+$/m, "").replace(/^URL Source:.+$/m, "").replace(/^Published Time:.+$/m, ""));
+  return { title, content: content.slice(0, maxChars) || null };
+}
+
+async function readDirectPage(ctx: RequestContext, url: string, maxChars: number): Promise<{ title: string | null; content: string | null }> {
+  const response = await fetchWithTimeout(url, {
+    headers: { "accept": "text/html,text/plain", "user-agent": "Mozilla/5.0 website-content-factory/1.0" }
+  }, 10_000);
+  if (!response.ok) return { title: null, content: null };
+  const contentType = response.headers.get("content-type") || "";
+  const text = (await response.text()).slice(0, 120_000);
+  if (!contentType.includes("html")) {
+    const content = cleanResearchText(text).slice(0, maxChars);
+    return { title: hostName(url), content: content || null };
+  }
+  const title = htmlDecode(text.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "").trim() || null;
+  const meta = htmlDecode(text.match(/<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)["'][^>]*>/i)?.[1] || "");
+  const content = cleanResearchText(`${meta}\n${stripTags(text)}`).slice(0, maxChars);
+  return { title, content: content || null };
+}
+
+async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function researchDepthConfig(depth: ContentResearchDepth) {
+  if (depth === "quick") return { queryCount: 1, resultsPerQuery: 4, pageLimit: 2, contentChars: 1200 };
+  if (depth === "deep") return { queryCount: 3, resultsPerQuery: 6, pageLimit: 6, contentChars: 2200 };
+  return { queryCount: 2, resultsPerQuery: 5, pageLimit: 4, contentChars: 1700 };
+}
+
 async function fetchHotSource(source: HotSource, limit: number): Promise<HotTopic[]> {
   const response = await fetch(source.url, {
     headers: { "user-agent": "website-content-factory/1.0" }
@@ -1154,6 +1420,10 @@ function normalizeImageMode(value: unknown, generateCover?: boolean): ContentIma
   return generateCover === false ? "none" : DEFAULT_IMAGE_MODE;
 }
 
+function normalizeResearchDepth(value: unknown): ContentResearchDepth {
+  return value === "quick" || value === "deep" || value === "standard" ? value : "standard";
+}
+
 function markdownToHtml(markdown: string): string {
   const lines = markdown.split(/\r?\n/);
   const html: string[] = [];
@@ -1220,6 +1490,20 @@ function htmlToPlainText(html: string): string {
   return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function manualTopicView(title: string, category: ContentCategory): HotTopic {
+  return {
+    id: `manual:${category}:${hashText(title).slice(0, 10)}`,
+    source: "manual",
+    sourceName: `${CATEGORY_PROFILES[category].label}手动话题`,
+    rank: 1,
+    title,
+    url: null,
+    hot: "手动话题",
+    summary: `围绕“${title}”进行网页搜索和公众号写作。`,
+    capturedAt: new Date().toISOString()
+  };
+}
+
 function renderInlineMarkdown(value: string): string {
   return escapeHtml(value)
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
@@ -1275,6 +1559,42 @@ function absolutizeUrl(value: string, baseUrl: string): string | null {
   } catch {
     return null;
   }
+}
+
+function normalizeResearchUrl(value: string): string | null {
+  if (!/^https?:\/\//i.test(value)) return null;
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function hostName(value: string): string {
+  try {
+    return new URL(value).hostname.replace(/^www\./, "");
+  } catch {
+    return "网页资料";
+  }
+}
+
+function stripTags(value: string): string {
+  return htmlDecode(value)
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ");
+}
+
+function cleanResearchText(value: string): string {
+  return htmlDecode(value)
+    .replace(/!\[[^\]]*]\([^)]+\)/g, " ")
+    .replace(/\[[^\]]*]\((javascript:|#)[^)]+\)/gi, " ")
+    .replace(/\[(.*?)\]\((https?:\/\/[^)]+)\)/g, "$1")
+    .replace(/^\s*(Warning|Markdown Content):.*$/gim, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizeSelectedTopics(value: unknown): HotTopic[] {
@@ -1348,6 +1668,18 @@ function stringArray(value: unknown): string[] {
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((item) => item.trim()).filter(Boolean))];
+}
+
+function htmlDecode(value: string): string {
+  return value
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
 }
 
 function replaceImageSource(html: string, source: string, target: string): string {

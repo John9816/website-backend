@@ -154,7 +154,14 @@ export async function generateArticle(ctx: RequestContext): Promise<Response> {
   const selectedTopics = topics.length ? topics : (await collectDefaultTopics(ctx)).slice(0, 5);
   const model = body.model || await config(ctx, "content.article.model", await config(ctx, "ai.chat.defaultModel", "gpt-4.1-mini"));
 
-  const draft = await createArticleDraft(ctx, selectedTopics, body, model);
+  let draft: ArticleDraft;
+  let articleError: string | null = null;
+  try {
+    draft = await createArticleDraft(ctx, selectedTopics, body, model);
+  } catch (error) {
+    articleError = error instanceof Error ? error.message : "article generation failed";
+    draft = fallbackArticle(selectedTopics, body);
+  }
   let coverImageUrl: string | null = null;
   let coverError: string | null = null;
   if (body.generateCover !== false) {
@@ -182,7 +189,7 @@ export async function generateArticle(ctx: RequestContext): Promise<Response> {
     JSON.stringify(draft.tags),
     JSON.stringify(draft.riskTips),
     model,
-    coverError
+    [articleError, coverError].filter(Boolean).join("\n") || null
   ).run();
 
   return ok(await articleById(ctx, user.id, Number(result.meta.last_row_id)));
@@ -281,7 +288,7 @@ async function createArticleDraft(ctx: RequestContext, topics: HotTopic[], body:
     })
   ].join("\n");
 
-  const response = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
+  const response = await fetch(chatEndpoint(base), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -643,6 +650,13 @@ function imageEndpoint(base: string): string {
   return `${trimmed}/images/generations`;
 }
 
+function chatEndpoint(base: string): string {
+  const trimmed = base.trim().replace(/\/$/, "");
+  if (trimmed.includes("/chat/completions")) return trimmed;
+  if (trimmed.endsWith("/v1")) return `${trimmed}/chat/completions`;
+  return `${trimmed}/chat/completions`;
+}
+
 async function storeRemoteImage(ctx: RequestContext, url: string): Promise<string> {
   const response = await fetch(url);
   if (!response.ok) {
@@ -850,8 +864,9 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 function upstreamMessage(data: any, status: number, label: string): string {
-  return data?.error?.message
-    ? `${label} upstream returned ${status}: ${data.error.message}`
+  const message = data?.error?.message || data?.message || data?.msg || (typeof data?.error === "string" ? data.error : "");
+  return message
+    ? `${label} upstream returned ${status}: ${message}`
     : `${label} upstream returned HTTP ${status}`;
 }
 

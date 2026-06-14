@@ -1,5 +1,5 @@
 import { count, pageOf } from "../db";
-import { intParam, ok, readJson, requireAdmin } from "../http";
+import { emptyOk, intParam, ok, readJson, requireAdmin } from "../http";
 import { HttpError, RequestContext } from "../types";
 
 interface HotSource {
@@ -395,6 +395,15 @@ export async function updateArticle(ctx: RequestContext): Promise<Response> {
      WHERE id = ? AND user_id = ?`
   ).bind(title, digest, contentMarkdown, contentHtml, coverImageUrl, id, user.id).run();
   return ok(await articleById(ctx, user.id, id));
+}
+
+export async function deleteArticle(ctx: RequestContext): Promise<Response> {
+  const user = requireAdmin(ctx);
+  await ensureContentTables(ctx);
+  const id = Number(ctx.params.id);
+  await articleById(ctx, user.id, id);
+  await ctx.env.DB.prepare("DELETE FROM content_article WHERE id = ? AND user_id = ?").bind(id, user.id).run();
+  return emptyOk();
 }
 
 export async function createWechatDraft(ctx: RequestContext): Promise<Response> {

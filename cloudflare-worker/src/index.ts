@@ -59,6 +59,7 @@ router.on("GET", "/api/admin/content/articles", content.articles);
 router.on("POST", "/api/admin/content/articles/generate", content.generateArticle);
 router.on("GET", "/api/admin/content/articles/:id", content.getArticle);
 router.on("PUT", "/api/admin/content/articles/:id", content.updateArticle);
+router.on("DELETE", "/api/admin/content/articles/:id", content.deleteArticle);
 router.on("POST", "/api/admin/content/articles/:id/wechat-draft", content.createWechatDraft);
 router.on("POST", "/api/admin/content/articles/:id/publish", content.publishWechat);
 

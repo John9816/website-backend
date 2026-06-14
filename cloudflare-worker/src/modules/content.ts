@@ -448,6 +448,7 @@ async function createArticleDraft(
   const apiKey = await config(ctx, "ai.chat.apiKey", ctx.env.AI_CHAT_API_KEY || "");
   const category = normalizeCategory(body.category);
   const profile = CATEGORY_PROFILES[category];
+  const lengthSpec = articleLengthSpec(body.length);
   if (!base) {
     return fallbackArticle(topics, body, researchSources);
   }
@@ -456,16 +457,22 @@ async function createArticleDraft(
     "你是资深微信公众号主编和爆款选题策划。",
     `当前公众号栏目：${profile.label}。`,
     "任务：围绕给定话题，先消化网页搜索资料，再写一篇可直接发公众号的原创爆文正文。",
-    "注意：最终 contentMarkdown/contentHtml 必须是完整公众号正文，不要输出选题方案、写作提纲、素材清单或运营建议。",
+    "交付标准：你输出的 contentMarkdown/contentHtml 必须就是读者打开公众号后看到的最终文章正文。",
+    "严禁输出：选题方案、写作提纲、素材清单、资料整理、运营建议、创作说明、文章结构说明、提示词说明、可选标题列表。",
+    "不要写“下面是一篇文章”“本文将”“可以这样写”“建议从以下角度”等幕后话术。",
+    "contentMarkdown 必须从文章标题开始，随后是完整导语、正文小标题、段落、金句或引用、结尾互动和参考资料。",
+    "contentHtml 必须与 contentMarkdown 内容一致，是可直接提交微信公众号草稿的 HTML 正文。",
     "爆文不是标题党，而是：开头强共鸣、有冲突问题、观点有反常识、论证有资料支撑、段落适合手机阅读、结尾让读者愿意转发或留言。",
     "硬性要求：不得编造事实、数据、人物经历、政策和史料；网页资料不够时必须降级为观点分析，并在 riskTips 说明。",
     "标题要有传播力但不夸大；正文不要写成资料汇编；把搜索资料消化成观点、故事线和可读表达。",
-    "文章结构建议：痛点/场景开头 → 抛出核心矛盾 → 3-5 个小标题展开 → 给出有记忆点的金句/判断 → 结尾收束到读者处境。",
+    "文章结构：痛点/场景开头 → 抛出核心矛盾 → 4-6 个小标题展开 → 给出有记忆点的金句/判断 → 结尾收束到读者处境并邀请留言。",
+    "手机阅读要求：段落短，单段尽量 80 字以内；小标题有信息量；不要连续堆砌资料。",
     "正文末尾可以用简短“参考资料”列出 3-6 个来源标题，不要堆 URL。",
     `栏目写作重点：${profile.promptFocus.join("；")}。`,
     `风险边界：${profile.riskBoundaries.join("；")}。`,
+    `篇幅要求：${lengthSpec.label}，contentMarkdown 正文字数不少于 ${lengthSpec.minChars} 个中文字符，目标 ${lengthSpec.targetChars} 字左右。`,
     "JSON 字段：title, digest, contentMarkdown, contentHtml, coverPrompt, tags, riskTips。",
-    "contentMarkdown 至少 1200 字；contentHtml 使用 p/h2/blockquote/ul/li/strong 标签，不要包含 script/style。",
+    "contentHtml 使用 p/h2/blockquote/ul/li/strong 标签，不要包含 script/style，不要把 JSON 字段名写进正文。",
     "",
     JSON.stringify({
       topics,
@@ -475,6 +482,7 @@ async function createArticleDraft(
       audience: body.audience || profile.audience,
       tone: body.tone || profile.tone,
       length: body.length || "standard",
+      lengthSpec,
       layoutTheme: body.layoutTheme || DEFAULT_LAYOUT_THEME,
       researchSources: researchSources.map((item) => ({
         title: item.title,
@@ -516,26 +524,71 @@ function fallbackArticle(topics: HotTopic[], body: ArticleGenerateBody, research
   const category = normalizeCategory(body.category);
   const profile = CATEGORY_PROFILES[category];
   const main = topics[0] ?? fallbackTopics(category)[0];
-  const title = `围绕“${main.title}”，真正值得写的不是热闹`;
-  const sourceItems = researchSources.length
-    ? researchSources.slice(0, 6).map((source) => `- ${source.title}：${source.snippet || source.content?.slice(0, 90) || source.url}`).join("\n")
-    : topics.map((topic) => `- ${topic.sourceName} #${topic.rank}：${topic.title}${topic.hot ? `（${topic.hot}）` : ""}`).join("\n");
+  const title = `“${main.title}”刷屏背后，真正值得警惕的不是热闹`;
+  const sourceItems = referenceItems(topics, researchSources);
+  const sourceSummary = researchSources.length
+    ? `从已经抓取到的资料看，至少有几个信号反复出现：${researchSources.slice(0, 3).map((source) => source.title).join("、")}。这些信息本身并不等于结论，但它们说明，这个话题不是孤立的情绪波动，而是有现实背景和公共讨论基础。`
+    : `目前能看到的公开资料还不够完整，所以这篇文章不急着给出夸张结论。更稳妥的写法，是把“${main.title}”当作一个入口，去观察它背后更长期的${profile.coreConcern}。`;
   const contentMarkdown = [
     `# ${title}`,
     "",
-    `一个话题能不能写成公众号爆文，关键不在于它排第几，而在于它能不能说出读者心里已经有、但还没被清楚表达出来的东西。围绕“${main.title}”，真正值得抓住的是它背后的${profile.coreConcern}。`,
+    `这两天，“${main.title}”被很多人讨论。表面看，它只是一个热点；但如果只把它当成热闹，就会错过真正值得写的部分。`,
     "",
-    "## 先看资料里出现了什么",
-    sourceItems,
+    `真正让读者停下来的，往往不是事件本身，而是它刚好说中了某种共同处境：关于${profile.coreConcern}，很多人心里早有感受，只是一直没有被清楚地表达出来。`,
     "",
-    "## 这篇文章真正的矛盾",
-    `表面上，这是一个关于“${main.title}”的话题；更深一层，它讨论的是普通人如何在变化里重新理解自己的处境。放在「${profile.label}」栏目里，文章应该先写具体生活场景，再写背后的结构性问题。`,
+    `所以这篇文章不想追着情绪跑，也不急着站队。我们要问的是：为什么这个话题会在此刻被看见？它戳中的到底是哪一层不安？普通人又能从中得到什么更清醒的判断？`,
     "",
-    "## 爆文写法不是夸张，而是让读者点头",
-    "开头要让读者觉得“这说的是我”；中段要给一个不同于常识的解释；结尾要把复杂判断落到一句能被转发的话。信息只是原料，观点和表达才是文章被读完的原因。",
+    "> 一个能被转发的公众号选题，不是替读者喊口号，而是替读者把模糊的感受说清楚。",
     "",
-    "## 可以这样收束",
-    `不要把读者推向情绪，而是给他一个更清楚的理解：他遇到的不是孤立问题，而是很多人正在共同面对的${profile.coreConcern}变化。`,
+    "## 一、它表面上是热点，实际上是很多人的现实投影",
+    "",
+    `如果只看“${main.title}”这几个字，容易把它理解成一个孤立事件。但真正能引发讨论的热点，通常都不只是“发生了什么”，而是“为什么我也有类似的感觉”。`,
+    "",
+    category === "emotion_psychology"
+      ? "很多情感和心理话题之所以会传播，是因为它们把日常关系里的隐痛照了出来。那些说不出口的委屈、反复消耗的沟通、明明想靠近却总是彼此伤害的瞬间，都会让读者在一个热点里看到自己的影子。"
+      : category === "history_philosophy"
+        ? "历史和哲学类话题之所以耐读，是因为它们不只提供故事，还提供判断。一个人物、一次选择、一段时代变化，真正吸引人的地方，是它让今天的人重新理解权力、命运、秩序和自由。"
+        : "社会民生话题之所以容易引发共鸣，是因为它最后都会落到日常生活里。收入、教育、就业、住房、消费、城市运行，这些词看起来很大，但每一个都对应普通人的具体选择。",
+    "",
+    sourceSummary,
+    "",
+    "## 二、真正的矛盾，不在事件里，而在读者心里",
+    "",
+    `这个话题最值得写的矛盾，并不是“大家怎么看”，而是读者自己正在面对的拉扯：一方面，人们希望生活更稳定、更可控；另一方面，现实变化又不断提醒我们，过去那套理解世界的方法可能不够用了。`,
+    "",
+    `这也是为什么，单纯复述资料不会成为好文章。资料只能告诉读者“外面发生了什么”，但读者真正想知道的是：“这和我有什么关系？我该如何理解自己的处境？”`,
+    "",
+    `放在「${profile.label}」这个栏目里，这个问题的核心不是制造焦虑，而是把复杂感受拆开：哪些是事实，哪些是情绪，哪些是长期结构，哪些又只是短期噪音。`,
+    "",
+    "## 三、别急着下结论，先把问题放回生活现场",
+    "",
+    "一篇能真正发布的公众号文章，不能停在观点上。它要把读者带回具体场景：一次沟通、一笔开支、一次选择、一段关系、一种时代情绪。只有落到生活现场，观点才不会飘。",
+    "",
+    category === "emotion_psychology"
+      ? `比如谈${profile.coreConcern}，最容易写坏的地方，是把所有问题都归结成“你不够清醒”或“对方不够爱”。但真实关系从来没有这么简单。很多时候，人们不是不知道道理，而是在情绪、期待和边界之间反复拉扯。`
+      : category === "history_philosophy"
+        ? `比如谈${profile.coreConcern}，最容易写浅的地方，是把历史当成现成答案。历史真正有用的地方，不是替今天做决定，而是提醒我们：任何判断都发生在限制之中，任何选择都要付出代价。`
+        : `比如谈${profile.coreConcern}，最容易写偏的地方，是把宏大议题写成口号。可普通人关心的不是抽象概念，而是明天的工作、孩子的教育、父母的照护、城市里的通勤和生活成本。`,
+    "",
+    "所以，真正好的表达不是把情绪推高，而是让读者在读完之后更稳一点：他能看清问题的层次，也能找到自己可以行动的一小步。",
+    "",
+    "## 四、值得记住的不是热点，而是背后的判断",
+    "",
+    `围绕“${main.title}”，我们至少可以得到三个更稳的判断：`,
+    "",
+    `- 第一，热点只是入口，真正被讨论的是${profile.coreConcern}。`,
+    "- 第二，读者需要的不是情绪宣泄，而是能解释自己处境的语言。",
+    "- 第三，越是容易刷屏的话题，越要把事实、感受和判断分开。",
+    "",
+    `这三个判断，比单纯追逐热度更重要。因为热度会过去，但${profile.coreConcern}带来的现实感受不会立刻消失。下一次类似话题出现时，读者仍然会被同样的问题击中。`,
+    "",
+    "## 五、写在最后",
+    "",
+    `“${main.title}”真正提醒我们的，也许不是要立刻得出一个标准答案，而是要承认：很多人的生活感受正在发生变化。`,
+    "",
+    "当一个话题被反复讨论，背后往往不是大家太敏感，而是某种共同经验终于浮出水面。我们需要的不是更响的情绪，而是更清楚的表达；不是把复杂问题简单化，而是在复杂里保留判断力。",
+    "",
+    `如果你也被这个话题触动，欢迎在留言区说说：你看到的“${main.title}”，背后真正的问题是什么？`,
     "",
     "## 参考资料",
     sourceItems
@@ -543,13 +596,13 @@ function fallbackArticle(topics: HotTopic[], body: ArticleGenerateBody, research
 
   return {
     title,
-    digest: `围绕 ${main.title}，结合网页资料梳理可写成公众号爆文的核心矛盾。`,
+    digest: `围绕 ${main.title}，把热点背后的真实处境、核心矛盾和可转发判断讲清楚。`,
     contentMarkdown,
     contentHtml: markdownToHtml(contentMarkdown),
     coverPrompt: buildFallbackCoverPrompt(main, body.coverStyle, category),
     tags: uniqueStrings([...profile.tags, "热点", "公众号"]),
     riskTips: uniqueStrings([
-      researchSources.length ? "当前为规则兜底草稿，已使用网页资料摘要，但仍建议人工复核来源。" : "未获得足够网页资料，当前为规则兜底草稿。",
+      researchSources.length ? "已使用网页资料生成完整正文，发布前仍建议核对来源事实。" : "网页资料不足，正文已降级为观点分析，发布前建议补充事实来源。",
       ...profile.riskBoundaries
     ])
   };
@@ -557,16 +610,27 @@ function fallbackArticle(topics: HotTopic[], body: ArticleGenerateBody, research
 
 function normalizeArticleDraft(value: Record<string, unknown>, topics: HotTopic[], body: ArticleGenerateBody, researchSources: ResearchSource[] = []): ArticleDraft {
   const fallback = fallbackArticle(topics, body, researchSources);
-  const contentMarkdown = stringOrNull(value.contentMarkdown) || stringOrNull(value.markdown) || fallback.contentMarkdown;
-  const contentHtml = stringOrNull(value.contentHtml) || stringOrNull(value.html) || markdownToHtml(contentMarkdown);
+  const title = (stringOrNull(value.title) || fallback.title).slice(0, 96);
+  const rawMarkdown = stringOrNull(value.contentMarkdown) || stringOrNull(value.markdown) || "";
+  const contentMarkdown = ensureMarkdownTitle(rawMarkdown || fallback.contentMarkdown, title);
+  const rawHtml = stringOrNull(value.contentHtml) || stringOrNull(value.html);
+  const contentHtml = rawHtml || markdownToHtml(contentMarkdown);
+  const publishable = isPublishableArticleDraft(contentMarkdown, contentHtml, body);
+  const finalMarkdown = publishable ? contentMarkdown : fallback.contentMarkdown;
+  const finalHtml = publishable ? contentHtml : fallback.contentHtml;
+  const digest = stringOrNull(value.digest) || stringOrNull(value.summary) || fallback.digest;
   return {
-    title: (stringOrNull(value.title) || fallback.title).slice(0, 96),
-    digest: (stringOrNull(value.digest) || stringOrNull(value.summary) || fallback.digest).slice(0, 120),
-    contentMarkdown,
-    contentHtml: sanitizeArticleHtml(contentHtml),
+    title: publishable ? title : fallback.title,
+    digest: (publishable ? digest : fallback.digest).slice(0, 120),
+    contentMarkdown: finalMarkdown,
+    contentHtml: sanitizeArticleHtml(finalHtml),
     coverPrompt: stringOrNull(value.coverPrompt) || fallback.coverPrompt,
     tags: uniqueStrings([...CATEGORY_PROFILES[normalizeCategory(body.category)].tags, ...stringArray(value.tags)]).slice(0, 8),
-    riskTips: uniqueStrings([...stringArray(value.riskTips), ...CATEGORY_PROFILES[normalizeCategory(body.category)].riskBoundaries]).slice(0, 8)
+    riskTips: uniqueStrings([
+      ...(publishable ? [] : ["AI 返回内容未达到可发布正文标准，已自动替换为完整公众号正文。"]),
+      ...stringArray(value.riskTips),
+      ...CATEGORY_PROFILES[normalizeCategory(body.category)].riskBoundaries
+    ]).slice(0, 8)
   };
 }
 
@@ -1433,6 +1497,16 @@ function normalizeResearchDepth(value: unknown): ContentResearchDepth {
   return value === "quick" || value === "deep" || value === "standard" ? value : "standard";
 }
 
+function articleLengthSpec(value: unknown): { label: string; minChars: number; targetChars: number } {
+  if (value === "short") {
+    return { label: "短文", minChars: 800, targetChars: 1100 };
+  }
+  if (value === "long") {
+    return { label: "长文", minChars: 1800, targetChars: 2400 };
+  }
+  return { label: "标准公众号文章", minChars: 1200, targetChars: 1600 };
+}
+
 function markdownToHtml(markdown: string): string {
   const lines = markdown.split(/\r?\n/);
   const html: string[] = [];
@@ -1497,6 +1571,50 @@ function markdownToHtml(markdown: string): string {
 
 function htmlToPlainText(html: string): string {
   return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function ensureMarkdownTitle(markdown: string, title: string): string {
+  const trimmed = markdown.trim();
+  if (!trimmed) return `# ${title}`;
+  if (/^#\s+/.test(trimmed)) return trimmed;
+  return `# ${title}\n\n${trimmed}`;
+}
+
+function isPublishableArticleDraft(markdown: string, html: string, body: ArticleGenerateBody): boolean {
+  const plain = htmlToPlainText(html || markdownToHtml(markdown)).replace(/\s+/g, "");
+  const spec = articleLengthSpec(body.length);
+  if (plain.length < spec.minChars) return false;
+
+  const normalized = `${markdown}\n${htmlToPlainText(html)}`;
+  const forbiddenPatterns = [
+    /选题方案/,
+    /写作提纲/,
+    /素材清单/,
+    /运营建议/,
+    /文章结构建议/,
+    /创作说明/,
+    /提示词/,
+    /可选标题/,
+    /下面是[一篇这份]?/,
+    /可以这样写/,
+    /建议从以下角度/,
+    /本文将从/
+  ];
+  if (forbiddenPatterns.some((pattern) => pattern.test(normalized))) return false;
+
+  const h2Count = (markdown.match(/^##\s+/gm) || []).length + (html.match(/<h2\b/gi) || []).length;
+  const paragraphCount = (html.match(/<p\b/gi) || []).length || markdown.split(/\n\s*\n/).filter((part) => part.trim()).length;
+  return h2Count >= 3 && paragraphCount >= 8;
+}
+
+function referenceItems(topics: HotTopic[], researchSources: ResearchSource[]): string {
+  const rows = researchSources.length
+    ? researchSources.slice(0, 6).map((source) => {
+        const snippet = source.snippet || source.content?.slice(0, 90) || source.sourceName || hostName(source.url);
+        return `- ${source.title}${snippet ? `：${snippet}` : ""}`;
+      })
+    : topics.slice(0, 6).map((topic) => `- ${topic.sourceName} #${topic.rank}：${topic.title}${topic.hot ? `（${topic.hot}）` : ""}`);
+  return rows.length ? rows.join("\n") : "- 暂无可用来源，发布前建议补充并复核公开资料。";
 }
 
 function manualTopicView(title: string, category: ContentCategory): HotTopic {

@@ -21,6 +21,7 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
     private final AppProperties props;
+    private final AuthUserCacheService authUserCacheService;
 
     public LoginResponse login(LoginRequest req) {
         String username = normalizeUsername(req.getUsername());
@@ -33,6 +34,7 @@ public class AuthService {
             user.setPassword(passwordEncoder.encode(req.getPassword()));
             userRepository.save(user);
         }
+        authUserCacheService.evict(user.getId());
         return buildLoginResponse(user);
     }
 
@@ -52,6 +54,7 @@ public class AuthService {
         user.setPassword(passwordEncoder.encode(req.getPassword()));
         user.setRole(User.ROLE_USER);
         userRepository.save(user);
+        authUserCacheService.evict(user.getId());
         return buildLoginResponse(user);
     }
 
@@ -63,6 +66,7 @@ public class AuthService {
         }
         user.setPassword(passwordEncoder.encode(newPassword));
         userRepository.save(user);
+        authUserCacheService.evict(user.getId());
     }
 
     private LoginResponse buildLoginResponse(User user) {

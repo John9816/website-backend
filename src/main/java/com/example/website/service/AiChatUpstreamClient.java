@@ -34,6 +34,8 @@ public class AiChatUpstreamClient {
 
     @Qualifier(OkHttpConfig.CLIENT_AI_UPSTREAM)
     private final OkHttpClient okHttpClient;
+    @Qualifier(OkHttpConfig.CLIENT_QUICK)
+    private final OkHttpClient quickHttpClient;
     private final ObjectMapper objectMapper;
 
     public ChatCompletionResult complete(String baseUrl,
@@ -48,6 +50,22 @@ public class AiChatUpstreamClient {
                                          String model,
                                          List<ChatMessage> messages,
                                          ChatAudioRequest audioRequest) {
+        return completeWithClient(okHttpClient, baseUrl, apiKey, model, messages, audioRequest);
+    }
+
+    public ChatCompletionResult completeQuick(String baseUrl,
+                                              String apiKey,
+                                              String model,
+                                              List<ChatMessage> messages) {
+        return completeWithClient(quickHttpClient, baseUrl, apiKey, model, messages, null);
+    }
+
+    private ChatCompletionResult completeWithClient(OkHttpClient client,
+                                                    String baseUrl,
+                                                    String apiKey,
+                                                    String model,
+                                                    List<ChatMessage> messages,
+                                                    ChatAudioRequest audioRequest) {
         Request.Builder requestBuilder = new Request.Builder()
                 .url(resolveChatCompletionsUrl(baseUrl))
                 .header("Accept", "application/json")
@@ -59,7 +77,7 @@ public class AiChatUpstreamClient {
 
         String rawBody;
         int status;
-        try (Response response = okHttpClient.newCall(requestBuilder.build()).execute()) {
+        try (Response response = client.newCall(requestBuilder.build()).execute()) {
             status = response.code();
             ResponseBody body = response.body();
             rawBody = body == null ? "" : body.string();

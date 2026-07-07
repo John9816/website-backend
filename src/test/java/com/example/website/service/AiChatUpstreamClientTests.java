@@ -38,7 +38,7 @@ class AiChatUpstreamClientTests {
 
     @BeforeEach
     void setUp() {
-        client = new AiChatUpstreamClient(okHttpClient, new ObjectMapper());
+        client = new AiChatUpstreamClient(okHttpClient, okHttpClient, new ObjectMapper());
     }
 
     @Test

@@ -6,7 +6,9 @@ import com.example.website.common.MusicErrorCode;
 import com.example.website.config.OkHttpConfig;
 import com.example.website.dto.PageView;
 import com.example.website.dto.music.MusicSource;
+import com.example.website.dto.music.PlaylistCreateRequest;
 import com.example.website.dto.music.PlaylistDetailView;
+import com.example.website.dto.music.PlaylistItemRequest;
 import com.example.website.dto.music.SongSearchItem;
 import com.example.website.dto.music.UserPlaylistDetailView;
 import com.example.website.dto.music.UserPlaylistItemView;
@@ -32,6 +34,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -44,6 +47,7 @@ public class UserPlaylistService {
     private static final int IMPORT_PAGE_SIZE = 100;
     private static final int DEFAULT_PAGE_SIZE = 30;
     private static final int MAX_PAGE_SIZE = 200;
+    private static final String LOCAL_PLAYLIST_SOURCE = "local";
 
     private static final Pattern QQ_PATH_ID = Pattern.compile("/playlist/(\\d+)");
     private static final Pattern NUMERIC_ID = Pattern.compile("(\\d+)");
@@ -146,6 +150,20 @@ public class UserPlaylistService {
         return PageView.from(result, UserPlaylistView::from);
     }
 
+    @Transactional
+    public UserPlaylistView create(Long userId, PlaylistCreateRequest req) {
+        UserPlaylist entity = new UserPlaylist();
+        entity.setUserId(userId);
+        entity.setSource(LOCAL_PLAYLIST_SOURCE);
+        entity.setSourceId("local-" + UUID.randomUUID());
+        entity.setName(limit(requireText(req.getName(), "name is required"), 300));
+        entity.setDescription(limit(trimmedOrNull(req.getDescription()), 2000));
+        entity.setCoverUrl(limit(trimmedOrNull(req.getCoverUrl()), 1000));
+        entity.setCreatorName("Me");
+        entity.setTrackCount(0);
+        return UserPlaylistView.from(playlistRepository.save(entity));
+    }
+
     public UserPlaylistDetailView detail(Long userId, Long playlistId, int page, int size) {
         UserPlaylist playlist = requireOwned(userId, playlistId);
         Pageable pageable = PageRequest.of(Math.max(page, 0), normalizeSize(size));
@@ -171,6 +189,37 @@ public class UserPlaylistService {
         long remaining = itemRepository.countByPlaylistId(playlist.getId());
         playlist.setTrackCount((int) remaining);
         playlistRepository.save(playlist);
+    }
+
+    @Transactional
+    public UserPlaylistItemView addItem(Long userId, Long playlistId, PlaylistItemRequest req) {
+        UserPlaylist playlist = requireOwned(userId, playlistId);
+        String source = limit(requireText(req.getSource(), "source is required"), 20);
+        String songId = limit(requireText(req.getSongId(), "songId is required"), 100);
+
+        return itemRepository.findByPlaylistIdAndSourceAndSongId(playlist.getId(), source, songId)
+                .map(UserPlaylistItemView::from)
+                .orElseGet(() -> {
+                    UserPlaylistItem item = new UserPlaylistItem();
+                    item.setPlaylistId(playlist.getId());
+                    item.setSource(source);
+                    item.setSongId(songId);
+                    item.setName(limit(requireText(req.getName(), "name is required"), 300));
+                    item.setArtist(limit(trimmedOrNull(req.getArtist()), 300));
+                    item.setAlbum(limit(trimmedOrNull(req.getAlbum()), 300));
+                    item.setCoverUrl(limit(trimmedOrNull(req.getCoverUrl()), 1000));
+                    item.setDurationSec(normalizeDuration(req.getDurationSec()));
+                    item.setSortOrder((int) Math.min(itemRepository.countByPlaylistId(playlist.getId()), Integer.MAX_VALUE));
+
+                    UserPlaylistItem saved = itemRepository.save(item);
+                    long count = itemRepository.countByPlaylistId(playlist.getId());
+                    playlist.setTrackCount((int) Math.min(count, Integer.MAX_VALUE));
+                    if (trimmedOrNull(playlist.getCoverUrl()) == null) {
+                        playlist.setCoverUrl(limit(trimmedOrNull(req.getCoverUrl()), 1000));
+                    }
+                    playlistRepository.save(playlist);
+                    return UserPlaylistItemView.from(saved);
+                });
     }
 
     @Transactional

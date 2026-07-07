@@ -9,9 +9,12 @@ import com.example.website.dto.music.MusicFavoriteView;
 import com.example.website.dto.music.MusicHistoryView;
 import com.example.website.dto.music.MusicShareRequest;
 import com.example.website.dto.music.MusicShareView;
+import com.example.website.dto.music.PlaylistCreateRequest;
 import com.example.website.dto.music.PlaylistImportRequest;
+import com.example.website.dto.music.PlaylistItemRequest;
 import com.example.website.dto.music.PlaylistRenameRequest;
 import com.example.website.dto.music.UserPlaylistDetailView;
+import com.example.website.dto.music.UserPlaylistItemView;
 import com.example.website.dto.music.UserPlaylistView;
 import com.example.website.service.UserScopeService;
 import com.example.website.service.music.MusicLibraryService;
@@ -128,6 +131,13 @@ public class UserMusicController {
         return ApiResponse.ok(userPlaylistService.importFromUrl(userId, req.getUrl()));
     }
 
+    @PostMapping("/playlists")
+    public ApiResponse<UserPlaylistView> createPlaylist(HttpServletRequest request,
+                                                        @Valid @RequestBody PlaylistCreateRequest req) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(userPlaylistService.create(userId, req));
+    }
+
     @GetMapping("/playlists")
     public ApiResponse<PageView<UserPlaylistView>> listPlaylists(HttpServletRequest request,
                                                                  @RequestParam(defaultValue = "0") int page,
@@ -159,6 +169,14 @@ public class UserMusicController {
         Long userId = userScopeService.requireAuthenticatedUserId(request);
         userPlaylistService.removeItem(userId, id, itemId);
         return ApiResponse.ok();
+    }
+
+    @PostMapping("/playlists/{id}/items")
+    public ApiResponse<UserPlaylistItemView> addPlaylistItem(HttpServletRequest request,
+                                                             @PathVariable Long id,
+                                                             @Valid @RequestBody PlaylistItemRequest req) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(userPlaylistService.addItem(userId, id, req));
     }
 
     @PatchMapping("/playlists/{id}")

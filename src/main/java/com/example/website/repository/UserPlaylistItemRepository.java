@@ -13,6 +13,8 @@ public interface UserPlaylistItemRepository extends JpaRepository<UserPlaylistIt
 
     Optional<UserPlaylistItem> findByIdAndPlaylistId(Long id, Long playlistId);
 
+    Optional<UserPlaylistItem> findByPlaylistIdAndSourceAndSongId(Long playlistId, String source, String songId);
+
     long countByPlaylistId(Long playlistId);
 
     void deleteByPlaylistId(Long playlistId);

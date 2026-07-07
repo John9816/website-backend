@@ -244,6 +244,53 @@ class MusicLibraryIntegrationTests {
                 .andExpect(jsonPath("$.code").value(404));
     }
 
+    @Test
+    void userCanCreatePlaylistAndAddSongsManually() throws Exception {
+        String token = registerAndExtractToken("music_playlist_manual", "secret123");
+
+        JsonNode playlist = readJson(mockMvc.perform(post("/api/user/music/playlists")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Road Trip\",\"description\":\"Manual picks\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.source").value("local"))
+                .andExpect(jsonPath("$.data.trackCount").value(0))
+                .andReturn()).path("data");
+
+        long playlistId = playlist.path("id").asLong();
+        String itemBody = "{\"source\":\"qq\",\"songId\":\"manual-song-1\",\"name\":\"Manual Song\",\"artist\":\"Artist M\",\"album\":\"Album M\",\"coverUrl\":\"https://example.com/manual.jpg\",\"durationSec\":201}";
+
+        JsonNode firstAdd = readJson(mockMvc.perform(post("/api/user/music/playlists/{id}/items", playlistId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(itemBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.songId").value("manual-song-1"))
+                .andReturn()).path("data");
+
+        JsonNode duplicateAdd = readJson(mockMvc.perform(post("/api/user/music/playlists/{id}/items", playlistId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(itemBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andReturn()).path("data");
+
+        assertEquals(firstAdd.path("id").asLong(), duplicateAdd.path("id").asLong());
+
+        JsonNode detail = getJson("/api/user/music/playlists/" + playlistId + "?page=0&size=20", token)
+                .path("data");
+        assertEquals(1, detail.path("playlist").path("trackCount").asInt());
+        assertEquals(1, detail.path("items").path("total").asInt());
+        assertEquals("manual-song-1", detail.path("items").path("items").get(0).path("songId").asText());
+
+        JsonNode list = getJson("/api/user/music/playlists?page=0&size=20", token).path("data");
+        assertEquals(1, list.path("total").asInt());
+        assertEquals(1, list.path("items").get(0).path("trackCount").asInt());
+    }
+
     private void mockPlayResponses() {
         when(tuneFreePayClient.play(any(MusicSource.class), anyString(), any(MusicQuality.class)))
                 .thenAnswer(invocation -> {

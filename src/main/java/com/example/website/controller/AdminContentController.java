@@ -2,6 +2,8 @@ package com.example.website.controller;
 
 import com.example.website.common.ApiResponse;
 import com.example.website.dto.PageView;
+import com.example.website.dto.content.ContentAgentRunRequest;
+import com.example.website.dto.content.ContentAgentRunResult;
 import com.example.website.dto.content.ContentArticleGenerateRequest;
 import com.example.website.dto.content.ContentArticleUpdateRequest;
 import com.example.website.dto.content.ContentArticleView;
@@ -89,6 +91,12 @@ public class AdminContentController {
     public ApiResponse<ContentAutomationView> automation(HttpServletRequest request,
                                                          @RequestParam(required = false) Long articleId) {
         return ApiResponse.ok(contentArticleService.automation(currentUserId(request), articleId));
+    }
+
+    @PostMapping("/automation/run")
+    public ApiResponse<ContentAgentRunResult> runAutomationAgent(HttpServletRequest request,
+                                                                 @RequestBody(required = false) ContentAgentRunRequest body) {
+        return ApiResponse.ok(contentArticleService.runAgent(currentUserId(request), body));
     }
 
     @PostMapping("/automation/jobs/retry")

@@ -4,6 +4,8 @@ import com.example.website.common.BusinessException;
 import com.example.website.dto.ImageGenerateRequest;
 import com.example.website.dto.ImageGenerationsResponse;
 import com.example.website.dto.PageView;
+import com.example.website.dto.content.ContentAgentRunRequest;
+import com.example.website.dto.content.ContentAgentRunResult;
 import com.example.website.dto.content.ContentArticleGenerateRequest;
 import com.example.website.dto.content.ContentArticleUpdateRequest;
 import com.example.website.dto.content.ContentArticleView;
@@ -37,6 +39,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -98,6 +101,44 @@ public class ContentArticleService {
         sources.add(source("manual", "手动选题"));
         List<Map<String, Object>> items = new ArrayList<>();
         return new ContentHotTopicsView(LocalDateTime.now(), sources, items);
+    }
+
+    @Transactional
+    public ContentAgentRunResult runAgent(Long userId, ContentAgentRunRequest req) {
+        ContentAgentRunRequest payload = req == null ? new ContentAgentRunRequest() : req;
+        String category = normalizeCategory(payload.getCategory());
+        Map<String, Object> selectedTopic = selectAgentTopic(payload, category);
+
+        ContentArticleGenerateRequest generateRequest = new ContentArticleGenerateRequest();
+        generateRequest.setTopic(asString(selectedTopic.get("title")));
+        generateRequest.setCategory(category);
+        generateRequest.setAngle(defaultText(asString(selectedTopic.get("angle")), defaultAgentAngle(category)));
+        generateRequest.setAudience(defaultText(asString(selectedTopic.get("audience")), "想快速看懂热点、不想被标题带节奏的读者"));
+        generateRequest.setTone("像朋友聊天，口语化，有判断但不端着，拒绝正式、学术和研报腔");
+        generateRequest.setLength(defaultText(payload.getLength(), "standard"));
+        generateRequest.setLayoutTheme(DEFAULT_LAYOUT);
+        generateRequest.setImageMode(DEFAULT_IMAGE_MODE);
+        generateRequest.setResearchEnabled(true);
+        generateRequest.setResearchDepth("standard");
+        generateRequest.setGenerateCover(Boolean.TRUE.equals(payload.getGenerateCover()));
+        generateRequest.setAutoWechatDraft(false);
+        generateRequest.setAutoPublish(false);
+        generateRequest.setTopics(Collections.singletonList(selectedTopic));
+
+        ContentArticleView generated = generate(userId, generateRequest);
+        ContentArticle article = requireArticle(userId, generated.getId());
+        if (!Boolean.FALSE.equals(payload.getAutoWechatDraft())) {
+            article = createWechatDraftArticle(article);
+        }
+        ContentAutomationView automation = buildAgentAutomation(article, selectedTopic);
+        article.setAutomationJson(writeJson(automation));
+        article = articleRepository.save(article);
+
+        Map<String, Object> draft = new LinkedHashMap<>();
+        draft.put("mediaId", article.getWechatMediaId());
+        draft.put("url", article.getWechatUrl());
+        draft.put("mode", article.getWechatMediaId() != null && article.getWechatMediaId().startsWith("local-") ? "local" : "wechat");
+        return new ContentAgentRunResult(view(article), automation, selectedTopic, draft);
     }
 
     public PageView<ContentArticleView> list(Long userId, int page, int size) {
@@ -502,6 +543,145 @@ public class ContentArticleService {
 
     private String valueOrNow(LocalDateTime value, String now) {
         return value == null ? now : value.toString();
+    }
+
+    private Map<String, Object> selectAgentTopic(ContentAgentRunRequest req, String category) {
+        String manualTopic = trimToNull(req.getTopic());
+        if (manualTopic != null) {
+            Map<String, Object> topic = fallbackAgentTopic(category, req.getInstruction());
+            topic.put("title", manualTopic);
+            topic.put("source", "agent_manual");
+            topic.put("sourceName", "Agent 手动主题");
+            return topic;
+        }
+        if (hasText(config("ai.chat.baseUrl"))) {
+            try {
+                List<AiChatUpstreamClient.ChatMessage> messages = new ArrayList<>();
+                messages.add(new AiChatUpstreamClient.ChatMessage("system",
+                        "你是公众号「早一步信息差」的自动选题 Agent。只输出 JSON，不要 Markdown 代码块。"));
+                messages.add(new AiChatUpstreamClient.ChatMessage("user", buildTopicPrompt(category, req.getInstruction())));
+                AiChatUpstreamClient.ChatCompletionResult result = aiChatUpstreamClient.completeQuick(
+                        config("ai.chat.baseUrl"),
+                        config("ai.chat.apiKey"),
+                        defaultText(config("ai.chat.defaultModel"), "mimo-v2.5-pro"),
+                        messages
+                );
+                Map<String, Object> parsed = tryReadMap(extractJsonObject(result.getContent()));
+                if (parsed != null && hasText(asString(parsed.get("title")))) {
+                    return normalizeAgentTopic(parsed, category);
+                }
+            } catch (Exception ignored) {
+                // Fallback below keeps the automation agent usable when topic selection times out.
+            }
+        }
+        return fallbackAgentTopic(category, req.getInstruction());
+    }
+
+    private String buildTopicPrompt(String category, String instruction) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("请为订阅号「早一步信息差」自动选择 1 个今天值得写的公众号选题。\n");
+        prompt.append("账号定位：信息差型热点解读。栏目：").append(category).append("。\n");
+        prompt.append("偏好：口语化，像朋友聊天；拒绝正式、学术、研报腔。\n");
+        prompt.append("参考方向：科技 / 互联网、教育 / 职场、财政金融，以及普通人容易忽略的信息差。\n");
+        if (hasText(instruction)) {
+            prompt.append("额外要求：").append(instruction.trim()).append("\n");
+        }
+        prompt.append("请输出 JSON：title,summary,angle,audience,tags,reason。tags 是字符串数组。\n");
+        prompt.append("选题要具体，不要写成泛泛的行业观察。");
+        return prompt.toString();
+    }
+
+    private Map<String, Object> normalizeAgentTopic(Map<String, Object> parsed, String category) {
+        Map<String, Object> topic = new LinkedHashMap<>();
+        topic.put("id", "agent-" + UUID.randomUUID().toString());
+        topic.put("source", "agent");
+        topic.put("sourceName", "自动选题 Agent");
+        topic.put("rank", 1);
+        topic.put("title", defaultText(asString(parsed.get("title")), fallbackTopicTitle(category)));
+        topic.put("summary", trimToNull(asString(parsed.get("summary"))));
+        topic.put("angle", defaultText(asString(parsed.get("angle")), defaultAgentAngle(category)));
+        topic.put("audience", defaultText(asString(parsed.get("audience")), "想快速看懂热点、不想被标题带节奏的读者"));
+        topic.put("reason", trimToNull(asString(parsed.get("reason"))));
+        topic.put("tags", readStringList(parsed.get("tags")));
+        topic.put("capturedAt", LocalDateTime.now().toString());
+        return topic;
+    }
+
+    private Map<String, Object> fallbackAgentTopic(String category, String instruction) {
+        Map<String, Object> topic = new LinkedHashMap<>();
+        topic.put("id", "agent-fallback-" + UUID.randomUUID().toString());
+        topic.put("source", "agent_fallback");
+        topic.put("sourceName", "自动选题 Agent");
+        topic.put("rank", 1);
+        topic.put("title", fallbackTopicTitle(category));
+        topic.put("summary", "围绕今天读者可能忽略的信息差，生成一篇可编辑的公众号草稿。");
+        topic.put("angle", hasText(instruction) ? instruction.trim() : defaultAgentAngle(category));
+        topic.put("audience", "想快速看懂热点、不想被标题带节奏的读者");
+        topic.put("reason", "AI 选题不可用或超时，使用本地兜底选题保证自动化链路继续运行。");
+        topic.put("tags", defaultTags(category));
+        topic.put("capturedAt", LocalDateTime.now().toString());
+        return topic;
+    }
+
+    private String fallbackTopicTitle(String category) {
+        String day = LocalDate.now().toString();
+        if (category != null && category.contains("教育")) {
+            return day + " 职场和教育里的新信息差，普通人该先看懂什么";
+        }
+        if (category != null && category.contains("财政")) {
+            return day + " 财经热点背后的信息差，和普通人的钱包有什么关系";
+        }
+        return day + " 科技互联网热点背后的信息差，普通人别只看标题";
+    }
+
+    private String defaultAgentAngle(String category) {
+        if (category != null && category.contains("教育")) {
+            return "从升学、就业、转行和职场选择里的具体成本切入，讲清楚普通人该注意什么";
+        }
+        if (category != null && category.contains("财政")) {
+            return "先翻译政策、市场和公司新闻里的关键信息差，再落到钱包、工作和决策影响";
+        }
+        return "先讲热点和普通人有什么关系，再拆平台、产品、公司和行业里的信息差";
+    }
+
+    private ContentAutomationView buildAgentAutomation(ContentArticle article, Map<String, Object> topic) {
+        String now = LocalDateTime.now().toString();
+        String error = article.getErrorMessage();
+        boolean localDraft = article.getWechatMediaId() != null && article.getWechatMediaId().startsWith("local-");
+        boolean draftOk = hasText(article.getWechatMediaId()) && !localDraft && !hasText(error);
+
+        List<Object> logs = new ArrayList<>();
+        logs.add(logItem(article.getId() + "-agent-topic", "topic", "SUCCESS",
+                "已自动选题：" + defaultText(asString(topic.get("title")), article.getTitle()),
+                asString(topic.get("reason")), now));
+        logs.add(logItem(article.getId() + "-agent-research", "research", "SUCCESS",
+                "已生成选题角度、读者画像和写作方向", asString(topic.get("summary")), now));
+        logs.add(logItem(article.getId() + "-agent-generate", "generate", "SUCCESS",
+                "已自动编写正文并转换为公众号 HTML", null, valueOrNow(article.getCreatedAt(), now)));
+        logs.add(logItem(article.getId() + "-agent-review", "review", article.getRiskTipsJson() == null ? "SKIPPED" : "SUCCESS",
+                "已生成发布前复核提示", null, now));
+        logs.add(logItem(article.getId() + "-agent-wechat-draft", "wechat_draft", draftOk ? "SUCCESS" : (localDraft ? "FAILED" : "PENDING"),
+                draftOk ? "已创建微信草稿" : (localDraft ? "微信草稿失败，已保留本地草稿" : "等待创建微信草稿"),
+                error, now));
+
+        List<Object> jobs = new ArrayList<>();
+        jobs.add(jobItem(article.getId() + "-agent-run", "generate", "SUCCESS", null, now));
+        jobs.add(jobItem(article.getId() + "-agent-wechat-draft-job", "wechat_draft", draftOk ? "SUCCESS" : (localDraft ? "FAILED" : "PENDING"), error, now));
+
+        List<Object> records = new ArrayList<>();
+        if (hasText(article.getWechatMediaId())) {
+            Map<String, Object> record = new LinkedHashMap<>();
+            record.put("id", article.getId() + "-agent-wechat");
+            record.put("action", "draft");
+            record.put("status", draftOk ? "SUCCESS" : "FAILED");
+            record.put("mediaId", article.getWechatMediaId());
+            record.put("publishId", article.getWechatPublishId());
+            record.put("url", article.getWechatUrl());
+            record.put("errorMessage", error);
+            record.put("createdAt", now);
+            records.add(record);
+        }
+        return new ContentAutomationView("wechat_draft", logs, jobs, records);
     }
 
     private ContentArticle requireArticle(Long userId, Long id) {

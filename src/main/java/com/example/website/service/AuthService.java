@@ -29,6 +29,10 @@ public class AuthService {
         if (!passwordEncoder.matches(req.getPassword(), user.getPassword())) {
             throw new BadCredentialsException("Invalid username or password");
         }
+        if (passwordEncoder.upgradeEncoding(user.getPassword())) {
+            user.setPassword(passwordEncoder.encode(req.getPassword()));
+            userRepository.save(user);
+        }
         return buildLoginResponse(user);
     }
 

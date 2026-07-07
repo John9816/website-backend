@@ -15,6 +15,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -105,6 +106,27 @@ class AuthFlowIntegrationTests {
                 .andExpect(jsonPath("$.message").value(
                         "Malformed JSON request body. Example: {\"username\":\"alice\",\"password\":\"secret123\"}"
                 ));
+    }
+
+    @Test
+    void loginAcceptsLegacyWorkerSha256PasswordAndUpgradesHash() throws Exception {
+        User user = new User();
+        user.setUsername("legacy_worker");
+        user.setEmail(qqEmail("legacy_worker"));
+        user.setPassword("sha256:" + sha256Hex("secret123"));
+        user.setRole(User.ROLE_USER);
+        userRepository.save(user);
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"legacy_worker\",\"password\":\"secret123\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.role").value(User.ROLE_USER));
+
+        User upgraded = userRepository.findByUsername("legacy_worker").orElseThrow(AssertionError::new);
+        assertFalse(upgraded.getPassword().startsWith("sha256:"));
+        assertTrue(upgraded.getPassword().startsWith("$2"));
     }
 
     @Test
@@ -257,6 +279,16 @@ class AuthFlowIntegrationTests {
         crc32.update(seed.getBytes(StandardCharsets.UTF_8));
         long number = 10000L + (crc32.getValue() % 9999999999L);
         return number + "@qq.com";
+    }
+
+    private String sha256Hex(String value) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+        StringBuilder hex = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) {
+            hex.append(String.format("%02x", b));
+        }
+        return hex.toString();
     }
 
     private String loginAndExtractToken(String username, String password) throws Exception {

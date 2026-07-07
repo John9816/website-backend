@@ -1,0 +1,15 @@
+[Unit]
+Description=Website API runtime
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/website-api
+EnvironmentFile=/opt/website-api/.env
+Environment=HOST=127.0.0.1
+ExecStart=/usr/local/bin/node /opt/website-api/node-server.mjs
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

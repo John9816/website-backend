@@ -87,6 +87,36 @@ public class ImageTaskService {
         return ImageTaskView.from(task);
     }
 
+    public ImageTaskView retry(Long userId, Long taskId) {
+        ImageGenerationTask task = taskRepository.findByIdAndUserId(taskId, userId)
+                .orElseThrow(() -> new BusinessException(404, "Task not found"));
+        if (!ImageGenerationTask.STATUS_FAILED.equals(task.getStatus())) {
+            throw new BusinessException(400, "Only failed tasks can be retried");
+        }
+
+        ImageGenerateRequest req = new ImageGenerateRequest();
+        req.setPrompt(task.getPrompt());
+        req.setSize(task.getSize());
+        req.setN(task.getN());
+
+        task.setStatus(ImageGenerationTask.STATUS_PROCESSING);
+        task.setErrorMessage(null);
+        task.setResultJson(null);
+        task.setCompletedAt(null);
+        task = taskRepository.save(task);
+
+        final Long retryTaskId = task.getId();
+        imageGenExecutor.execute(() -> process(retryTaskId, userId, req));
+
+        return ImageTaskView.from(task);
+    }
+
+    public void delete(Long userId, Long taskId) {
+        ImageGenerationTask task = taskRepository.findByIdAndUserId(taskId, userId)
+                .orElseThrow(() -> new BusinessException(404, "Task not found"));
+        taskRepository.delete(task);
+    }
+
     private void process(Long taskId, Long userId, ImageGenerateRequest req) {
         ImageGenerationTask task = taskRepository.findById(taskId).orElse(null);
         if (task == null) return;

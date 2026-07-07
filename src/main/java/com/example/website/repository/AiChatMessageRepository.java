@@ -18,6 +18,8 @@ public interface AiChatMessageRepository extends JpaRepository<AiChatMessage, Lo
 
     long countByConversationId(Long conversationId);
 
+    void deleteByConversationId(Long conversationId);
+
     @Query("select m from AiChatMessage m where m.conversationId = :conversationId " +
             "order by m.id desc")
     List<AiChatMessage> findRecentByConversationId(@Param("conversationId") Long conversationId,

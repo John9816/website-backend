@@ -78,9 +78,20 @@ public class AdminImageController {
         return ApiResponse.ok(historyService.toggleShare(userId, id, shared));
     }
 
+    @PostMapping("/history/{id}/retry")
+    public ApiResponse<ImageTaskView> retry(HttpServletRequest request, @PathVariable Long id) {
+        Long userId = currentUserId(request);
+        return ApiResponse.ok(imageTaskService.retry(userId, Math.abs(id)));
+    }
+
     @DeleteMapping("/history/{id}")
     public ApiResponse<Void> deleteHistory(HttpServletRequest request, @PathVariable Long id) {
-        historyService.delete(currentUserId(request), id);
+        Long userId = currentUserId(request);
+        if (id < 0) {
+            imageTaskService.delete(userId, Math.abs(id));
+        } else {
+            historyService.delete(userId, id);
+        }
         return ApiResponse.ok();
     }
 

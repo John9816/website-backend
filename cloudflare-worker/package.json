@@ -6,16 +6,22 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "node:build": "esbuild src/node-server.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/node-server.mjs --external:better-sqlite3",
+    "node:start": "node dist/node-server.mjs",
     "typecheck": "tsc --noEmit",
     "db:migrate:local": "wrangler d1 migrations apply website_db --local",
     "db:migrate:remote": "wrangler d1 migrations apply website_db --remote"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260531.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.6.0",
+    "esbuild": "^0.25.12",
     "typescript": "^5.9.0",
     "wrangler": "^4.18.0"
   },
   "dependencies": {
-    "bcryptjs": "^3.0.3"
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.5.0"
   }
 }

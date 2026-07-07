@@ -99,6 +99,15 @@ public class AiConversationService {
         return AiConversationView.from(requireConversation(userId, conversationId));
     }
 
+    public void deleteConversation(Long userId, Long conversationId) {
+        transactionTemplate.execute(status -> {
+            AiConversation conversation = requireConversation(userId, conversationId);
+            messageRepository.deleteByConversationId(conversationId);
+            conversationRepository.delete(conversation);
+            return null;
+        });
+    }
+
     public PageView<AiChatMessageView> listMessages(Long userId, Long conversationId, int page, int size) {
         requireConversation(userId, conversationId);
         Pageable pageable = PageRequest.of(safePage(page), safeSize(size));

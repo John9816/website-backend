@@ -71,6 +71,7 @@ app:
       - http://localhost:5173
       - https://*.vercel.app
       - https://api.751152.xyz
+      - https://hi.751152.xyz
       - https://mt.751152.xyz
   admin:
     default-username: admin

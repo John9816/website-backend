@@ -51,6 +51,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Service
@@ -61,11 +65,8 @@ public class ContentArticleService {
     private static final String DEFAULT_CATEGORY = "科技 / 互联网";
     private static final String DEFAULT_LAYOUT = "clean";
     private static final String DEFAULT_IMAGE_MODE = "generate";
+    private static final String NOWHOTS_API_BASE = "https://api.nowhots.com/";
     private static final Path CONTENT_ASSET_DIR = Paths.get("uploads", "content-assets");
-    private static final List<HotSource> DEFAULT_HOT_SOURCES = Arrays.asList(
-            new HotSource("baidu", "百度热榜", "https://top.baidu.com/api/board?platform=wise&tab=realtime"),
-            new HotSource("toutiao", "头条热榜", "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc")
-    );
 
     private final ContentArticleRepository articleRepository;
     private final SysConfigService configService;
@@ -108,13 +109,24 @@ public class ContentArticleService {
         int perSourceLimit = Math.min(Math.max(limit, 1), 30);
         String normalizedCategory = normalizeCategory(category);
         List<HotSource> hotSources = hotSources(normalizedCategory);
-        List<Map<String, Object>> items = new ArrayList<>();
-        for (HotSource hotSource : hotSources) {
-            try {
-                items.addAll(fetchHotSource(hotSource, perSourceLimit));
-            } catch (Exception ignored) {
-                // Keep the page usable when a public hot-list source is temporarily unavailable.
-            }
+        ExecutorService executor = Executors.newFixedThreadPool(Math.min(Math.max(hotSources.size(), 1), 8));
+        List<Map<String, Object>> items;
+        try {
+            List<CompletableFuture<List<Map<String, Object>>>> tasks = hotSources.stream()
+                    .map(hotSource -> CompletableFuture.supplyAsync(() -> {
+                        try {
+                            return fetchHotSource(hotSource, perSourceLimit);
+                        } catch (Exception ignored) {
+                            // Keep the page usable when a public hot-list source is temporarily unavailable.
+                            return Collections.<Map<String, Object>>emptyList();
+                        }
+                    }, executor))
+                    .collect(Collectors.toList());
+            items = tasks.stream()
+                    .flatMap(task -> task.join().stream())
+                    .collect(Collectors.toList());
+        } finally {
+            executor.shutdownNow();
         }
         items = rankHotTopics(items, normalizedCategory, perSourceLimit);
         if (items.isEmpty()) {
@@ -1121,14 +1133,37 @@ public class ContentArticleService {
     private List<HotSource> hotSources(String category) {
         String configured = defaultText(config("content.hot.sources." + category), config("content.hot.sources"));
         if (!hasText(configured)) {
-            return DEFAULT_HOT_SOURCES;
+            return defaultHotSources(category);
         }
         List<HotSource> parsed = parseHotSourcesJson(configured);
         if (!parsed.isEmpty()) {
             return parsed;
         }
         parsed = parseHotSourcesLines(configured);
-        return parsed.isEmpty() ? DEFAULT_HOT_SOURCES : parsed;
+        return parsed.isEmpty() ? defaultHotSources(category) : parsed;
+    }
+
+    private List<HotSource> defaultHotSources(String category) {
+        String normalized = defaultText(category, "");
+        List<HotSource> sources = new ArrayList<>();
+        if (normalized.contains("教育") || normalized.contains("职场")) {
+            sources.add(nowhotsSource("nowhots-zhihu", "即时热点 · 知乎", "zhihu"));
+            sources.add(nowhotsSource("nowhots-weibo", "即时热点 · 微博", "weibo"));
+        } else if (normalized.contains("财政") || normalized.contains("金融") || normalized.contains("财经")) {
+            sources.add(nowhotsSource("nowhots-36kr", "即时热点 · 36氪", "36kr"));
+            sources.add(nowhotsSource("nowhots-zhihu", "即时热点 · 知乎", "zhihu"));
+        } else {
+            sources.add(nowhotsSource("nowhots-ithome", "即时热点 · IT之家", "ithome"));
+            sources.add(nowhotsSource("nowhots-36kr", "即时热点 · 36氪", "36kr"));
+            sources.add(nowhotsSource("nowhots-zhihu", "即时热点 · 知乎", "zhihu"));
+        }
+        sources.add(new HotSource("baidu", "百度热榜", "https://top.baidu.com/api/board?platform=wise&tab=realtime"));
+        sources.add(new HotSource("toutiao", "头条热榜", "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"));
+        return sources;
+    }
+
+    private HotSource nowhotsSource(String id, String name, String code) {
+        return new HotSource(id, name, NOWHOTS_API_BASE + code);
     }
 
     private List<HotSource> parseHotSourcesJson(String configured) {
@@ -1180,7 +1215,13 @@ public class ContentArticleService {
                 .header("User-Agent", "website-content-factory/1.0")
                 .get()
                 .build();
-        try (Response response = okHttpClient.newCall(request).execute()) {
+        OkHttpClient client = okHttpClient.newBuilder()
+                .connectTimeout(2, TimeUnit.SECONDS)
+                .readTimeout(4, TimeUnit.SECONDS)
+                .writeTimeout(4, TimeUnit.SECONDS)
+                .callTimeout(5, TimeUnit.SECONDS)
+                .build();
+        try (Response response = client.newCall(request).execute()) {
             if (!response.isSuccessful() || response.body() == null) {
                 return Collections.emptyList();
             }

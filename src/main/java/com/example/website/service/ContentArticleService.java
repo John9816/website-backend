@@ -804,7 +804,10 @@ public class ContentArticleService {
         prompt.append("目标读者：").append(defaultText(payload.getAudience(), "想快速看懂热点、不想被标题带节奏的读者")).append("\n");
         prompt.append("语气：").append(defaultText(payload.getTone(), "像朋友聊天，口语化，有判断但不端着，拒绝正式和学术腔")).append("\n");
         prompt.append("篇幅：").append(lengthSpec.getLabel()).append("，正文不少于 ").append(lengthSpec.getMinChars()).append(" 个中文字符，目标 ").append(lengthSpec.getTargetChars()).append(" 字左右。\n");
-        prompt.append("风格参考：学习半佛仙人、差评、粥左罗等爆款号的拆解意识、故事感和标题敏感度，但不要模仿口头禅，不要洗稿。\n");
+        prompt.append("风格参考：学习半佛仙人、差评、粥左罗等爆款号的拆解意识、故事感和标题敏感度；只学习方法论，不复制原文、金句、段落结构和口头禅。\n");
+        prompt.append("原创底线：可以吸收公开资料里的事实和观点线索，但必须重新组织论证、重新表达，不得连续复用来源文章的句子；不要写成洗稿、搬运或近义词替换。\n");
+        prompt.append("爆款方法论：开头要有强场景或反常识判断；中段要有冲突、利益关系、普通人处境和具体例子；每一节都要回答“这和读者有什么关系”；结尾要留下可讨论的问题。\n");
+        prompt.append("表达要求：像一个有判断的朋友在讲，不要像 AI 总结；少用“首先/其次/最后”“值得注意的是”“综上所述”；多用短句、转折、具体场景和大白话解释。\n");
         prompt.append("交付标准：contentMarkdown 必须就是读者打开公众号后看到的最终正文，从文章标题开始，随后是完整导语、正文小标题、段落、金句或引用、结尾互动和参考资料。\n");
         prompt.append("严禁输出：选题方案、写作提纲、素材清单、资料整理、运营建议、创作说明、文章结构说明、提示词说明、可选标题列表。\n");
         prompt.append("不要写“下面是一篇文章”“本文将”“可以这样写”“建议从以下角度”等幕后话术。\n");
@@ -1062,7 +1065,13 @@ public class ContentArticleService {
                 "下面这篇",
                 "可以这样写",
                 "建议从以下角度",
-                "本文将从"
+                "本文将从",
+                "原文如下",
+                "改写如下",
+                "仿写",
+                "洗稿",
+                "伪原创",
+                "规避检测"
         );
         for (String pattern : forbidden) {
             if (normalized.contains(pattern)) {

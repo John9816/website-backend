@@ -777,7 +777,7 @@ public class ContentArticleService {
             messages.add(new AiChatUpstreamClient.ChatMessage("system",
                     "你是公众号「早一步信息差」的选题和写作助手。只输出 JSON，不要 Markdown 代码块。"));
             messages.add(new AiChatUpstreamClient.ChatMessage("user", prompt));
-            AiChatUpstreamClient.ChatCompletionResult result = aiChatUpstreamClient.completeQuick(
+            AiChatUpstreamClient.ChatCompletionResult result = aiChatUpstreamClient.complete(
                     config("ai.chat.baseUrl"),
                     config("ai.chat.apiKey"),
                     model,
@@ -794,7 +794,8 @@ public class ContentArticleService {
 
     private String buildArticlePrompt(String topic, String category, ContentArticleGenerateRequest payload, String length) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("请为订阅号「早一步信息差」生成一篇可编辑的公众号草稿。\n");
+        ArticleLengthSpec lengthSpec = articleLengthSpec(length);
+        prompt.append("你是资深微信公众号主编和爆款选题策划，请为订阅号「早一步信息差」写一篇可直接发布的公众号正文。\n");
         prompt.append("公众号定位：信息差型热点解读。\n");
         prompt.append("公众号类目：科技 / 互联网、教育 / 职场、财政金融，也允许自定义栏目。\n");
         prompt.append("当前栏目：").append(category).append("\n");
@@ -802,11 +803,16 @@ public class ContentArticleService {
         prompt.append("切入角度：").append(defaultText(payload.getAngle(), "先讲热点里的信息差，再落到普通人会受什么影响")).append("\n");
         prompt.append("目标读者：").append(defaultText(payload.getAudience(), "想快速看懂热点、不想被标题带节奏的读者")).append("\n");
         prompt.append("语气：").append(defaultText(payload.getTone(), "像朋友聊天，口语化，有判断但不端着，拒绝正式和学术腔")).append("\n");
-        prompt.append("篇幅：").append(length).append("。short 约 900-1200 字，standard 约 1400-1800 字，long 约 2200-3000 字。\n");
+        prompt.append("篇幅：").append(lengthSpec.getLabel()).append("，正文不少于 ").append(lengthSpec.getMinChars()).append(" 个中文字符，目标 ").append(lengthSpec.getTargetChars()).append(" 字左右。\n");
         prompt.append("风格参考：学习半佛仙人、差评、粥左罗等爆款号的拆解意识、故事感和标题敏感度，但不要模仿口头禅，不要洗稿。\n");
-        prompt.append("要求：开头 3 句话内讲清楚热点是什么；中间拆 3-5 个信息差；每段短一点，口语化；避免正式、学术、研报腔；不要编造事实来源；不确定的地方写成待核实。\n");
-        prompt.append("请严格输出 JSON，字段：title,digest,markdown,tags,riskTips,coverPrompt。\n");
-        prompt.append("markdown 使用 #/## 标题和自然段，不要输出 HTML。tags/riskTips 是字符串数组。\n");
+        prompt.append("交付标准：contentMarkdown 必须就是读者打开公众号后看到的最终正文，从文章标题开始，随后是完整导语、正文小标题、段落、金句或引用、结尾互动和参考资料。\n");
+        prompt.append("严禁输出：选题方案、写作提纲、素材清单、资料整理、运营建议、创作说明、文章结构说明、提示词说明、可选标题列表。\n");
+        prompt.append("不要写“下面是一篇文章”“本文将”“可以这样写”“建议从以下角度”等幕后话术。\n");
+        prompt.append("文章结构：痛点/场景开头 -> 抛出核心矛盾 -> 4-6 个小标题展开 -> 给出有记忆点的金句/判断 -> 结尾收束到读者处境并邀请留言。\n");
+        prompt.append("手机阅读要求：段落短，单段尽量 80 字以内；小标题有信息量；不要连续堆砌资料；不要正式、学术、研报腔。\n");
+        prompt.append("事实要求：不得编造事实、数据、人物经历、政策和史料；资料不够时必须降级为观点分析，并在 riskTips 说明。\n");
+        prompt.append("请严格输出 JSON，字段：title,digest,contentMarkdown,contentHtml,coverPrompt,tags,riskTips。\n");
+        prompt.append("contentMarkdown 使用 #/## 标题、自然段、引用和列表；contentHtml 与 contentMarkdown 内容一致，只用 p/h1/h2/blockquote/ul/li/strong 标签，不要包含 script/style。tags/riskTips 是字符串数组。\n");
         return prompt.toString();
     }
 
@@ -823,14 +829,21 @@ public class ContentArticleService {
         Map<String, Object> json = tryReadMap(extractJsonObject(text));
         if (json == null) {
             ContentGenerationResult result = fallbackGeneration(topic, category, payload, length, model, defaultRiskTips());
-            result.setMarkdown(text);
-            result.setDigest(buildDigest(topic, payload.getAudience()));
-            result.getRiskTips().add("AI 未返回标准 JSON，已把原文作为 Markdown 草稿保存。");
+            if (isPublishableArticleDraft(text, markdownToHtml(text), length)) {
+                result.setMarkdown(ensureMarkdownTitle(text, result.getTitle()));
+                result.setDigest(buildDigest(topic, payload.getAudience()));
+                result.getRiskTips().add("AI 未返回标准 JSON，但正文达到可发布标准，已作为 Markdown 草稿保存。");
+            } else {
+                result.getRiskTips().add("AI 未返回标准 JSON 或正文未达标，已自动替换为完整公众号正文。");
+            }
             return result;
         }
         String title = defaultText(asString(json.get("title")), topic);
         String digest = defaultText(asString(json.get("digest")), buildDigest(topic, payload.getAudience()));
-        String markdown = defaultText(asString(json.get("markdown")), buildMarkdown(topic, payload, length));
+        String markdown = firstText(json, "contentMarkdown", "markdown", "body", "article");
+        markdown = ensureMarkdownTitle(defaultText(markdown, buildMarkdown(topic, payload, length)), title);
+        String html = defaultText(firstText(json, "contentHtml", "html"), markdownToHtml(markdown));
+        boolean publishable = isPublishableArticleDraft(markdown, html, length);
         String coverPrompt = defaultText(asString(json.get("coverPrompt")), buildCoverPrompt(topic, payload.getCoverStyle(), category));
         List<String> tags = readStringList(json.get("tags"));
         if (tags.isEmpty()) {
@@ -839,6 +852,11 @@ public class ContentArticleService {
         List<String> risks = readStringList(json.get("riskTips"));
         if (risks.isEmpty()) {
             risks = defaultRiskTips();
+        }
+        if (!publishable) {
+            ContentGenerationResult fallback = fallbackGeneration(topic, category, payload, length, model, risks);
+            fallback.getRiskTips().add("AI 返回内容未达到可发布正文标准，已自动替换为完整公众号正文。");
+            return fallback;
         }
         return new ContentGenerationResult(title, digest, markdown, coverPrompt, tags, risks, model);
     }
@@ -902,39 +920,189 @@ public class ContentArticleService {
 
     private String buildMarkdown(String topic, ContentArticleGenerateRequest payload, String length) {
         List<String> lines = new ArrayList<>();
-        lines.add("# " + topic);
+        String angle = defaultText(payload.getAngle(), "这个话题表面是一个热点，背后其实藏着普通人容易忽略的信息差。");
+        String audience = defaultText(payload.getAudience(), "想快速看懂热点、不想被标题带节奏的读者");
+        String tone = defaultText(payload.getTone(), "像朋友聊天，口语化，有判断但不端着，拒绝正式和学术腔。");
+        lines.add("# " + buildTitle(topic, DEFAULT_CATEGORY));
         lines.add("");
-        lines.add("## 这事先说结论");
-        lines.add(defaultText(payload.getAngle(), "这个选题值得写，因为它表面是一个热点，背后其实藏着普通人容易忽略的信息差。"));
+        lines.add("这两天，很多人都在聊「" + topic + "」。");
+        lines.add("但我觉得，真正值得看的不是热闹本身，而是热闹背后那层信息差。");
+        lines.add("因为很多时候，热点只是露在水面上的一小块冰，下面连着的是平台规则、行业变化、普通人的选择成本。");
         lines.add("");
-        lines.add("## 信息差在哪");
-        lines.add("别急着只看热搜标题。真正值得拆的是：谁从这件事里受影响，谁在改变规则，普通人如果不知道，会在哪一步吃亏。");
+        lines.add("> 真正有用的热点解读，不是帮你多看一条新闻，而是帮你少踩一个坑。");
         lines.add("");
-        lines.add("## 可以怎么写");
-        lines.add("先用一句大白话把事件讲清楚，再拆 2-3 个容易被忽略的点，最后落到读者能做什么、该避开什么坑。");
+        lines.add("## 一、先别急着站队，先看它为什么会火");
+        lines.add("一个话题能被推到大家面前，通常不是因为它突然重要，而是因为它刚好撞上了很多人的共同感受。");
+        lines.add("有人在里面看见机会，有人在里面看见风险，还有人只是觉得：这事好像和我没关系，但又隐隐有点不对劲。");
+        lines.add("这就是信息差最容易出现的地方。");
+        lines.add("表面上大家在讨论同一件事，实际上每个人看到的层次完全不同。有人只看到标题，有人看到规则变化，有人已经开始调整自己的选择。");
         lines.add("");
-        lines.add("## 口吻要求");
-        lines.add(defaultText(payload.getTone(), "像朋友聊天，口语化，有判断但不端着，拒绝正式和学术腔。"));
+        lines.add("## 二、这件事真正的看点，不是发生了什么");
+        lines.add(angle);
+        lines.add("如果只是复述事件，那任何平台都能做。公众号真正要做的是把它讲成人话：这件事改变了什么？谁会受影响？普通人最容易误判哪一步？");
+        lines.add("很多热点看起来离我们很远，但最后都会落到三个问题上：工作怎么变，钱往哪里流，人的选择会不会更贵。");
+        lines.add("所以判断一个热点值不值得写，不是看它有没有流量，而是看它能不能解释读者正在经历的困惑。");
         lines.add("");
-        lines.add("## 发布前");
-        lines.add("请补充事实来源、案例、配图和最终标题。篇幅偏好：" + length + "。订阅号无 freepublish 权限，请入草稿后到公众号后台人工发布。");
+        lines.add("## 三、普通人最容易忽略的，是规则已经先变了");
+        lines.add("很多人以为信息差就是“我比你早知道一个消息”。");
+        lines.add("但更大的信息差，其实是别人已经理解了新规则，你还在用旧经验做判断。");
+        lines.add("比如一个产品更新、一个平台动作、一条政策变化、一次公司调整，刚出来的时候都像新闻。");
+        lines.add("可真正重要的是，它后面会不会带来连锁反应：行业怎么跟，用户怎么选，成本怎么分摊，机会又会转移到谁手里。");
+        lines.add("如果只看第一层，就容易被情绪带跑。");
+        lines.add("如果能多看两层，至少不会在下一步选择里太被动。");
+        lines.add("");
+        lines.add("## 四、别把热点写成焦虑，读者要的是判断");
+        lines.add("「早一步信息差」要做的，不是制造一种“你再不懂就晚了”的恐吓感。");
+        lines.add("真正好的内容，应该让读者读完以后更稳一点。");
+        lines.add("他知道哪些地方需要继续观察，哪些结论现在还不能下，哪些变化可能真的和自己有关。");
+        lines.add("这也是为什么口吻很重要。");
+        lines.add(tone);
+        lines.add("越是复杂的话题，越要把话说清楚。能用大白话讲明白，就别堆概念；能用具体场景说明，就别只喊观点。");
+        lines.add("");
+        lines.add("## 五、这篇稿子真正想提醒的是");
+        lines.add("围绕「" + topic + "」，我更建议你记住三个判断。");
+        lines.add("");
+        lines.add("- 第一，热点只是入口，背后真正变化的是规则、成本和选择。");
+        lines.add("- 第二，别只看谁声音大，要看谁的行动已经变了。");
+        lines.add("- 第三，普通人不需要追每一个热点，但要学会识别和自己有关的信息差。");
+        lines.add("");
+        lines.add("对" + audience + "来说，最重要的不是把所有新闻都看完。");
+        lines.add("而是当一个话题反复出现时，能多问一句：它背后的利益关系、规则变化和真实影响分别是什么？");
+        lines.add("");
+        lines.add("## 写在最后");
+        lines.add("很多热点最后都会过去。");
+        lines.add("但它留下的信号，往往会继续影响我们的工作、消费、学习和选择。");
+        lines.add("所以别只把「" + topic + "」当成一个热闹。");
+        lines.add("它更像一个提醒：变化发生时，最先被奖励的，通常不是最激动的人，而是最早看懂规则的人。");
+        lines.add("");
+        lines.add("如果你也关注这个话题，欢迎留言聊聊：你觉得这里面最容易被忽略的信息差是什么？");
+        lines.add("");
+        lines.add("## 参考资料");
+        lines.add("- 热点来源与公开资料待发布前补充核验。");
+        lines.add("- 涉及政策、财务、教育和平台规则的信息，请以官方发布和权威媒体报道为准。");
         return lines.stream().collect(Collectors.joining("\n"));
     }
 
     private String markdownToHtml(String markdown) {
         StringBuilder html = new StringBuilder();
+        boolean inList = false;
         for (String line : markdown.split("\\r?\\n")) {
             if (line.startsWith("# ")) {
+                if (inList) {
+                    html.append("</ul>");
+                    inList = false;
+                }
                 html.append("<h1>").append(escape(line.substring(2))).append("</h1>");
             } else if (line.startsWith("## ")) {
+                if (inList) {
+                    html.append("</ul>");
+                    inList = false;
+                }
                 html.append("<h2>").append(escape(line.substring(3))).append("</h2>");
+            } else if (line.startsWith("> ")) {
+                if (inList) {
+                    html.append("</ul>");
+                    inList = false;
+                }
+                html.append("<blockquote>").append(escape(line.substring(2))).append("</blockquote>");
+            } else if (line.startsWith("- ")) {
+                if (!inList) {
+                    html.append("<ul>");
+                    inList = true;
+                }
+                html.append("<li>").append(escape(line.substring(2))).append("</li>");
             } else if (line.trim().isEmpty()) {
+                if (inList) {
+                    html.append("</ul>");
+                    inList = false;
+                }
                 html.append("\n");
             } else {
+                if (inList) {
+                    html.append("</ul>");
+                    inList = false;
+                }
                 html.append("<p>").append(escape(line)).append("</p>");
             }
         }
+        if (inList) {
+            html.append("</ul>");
+        }
         return html.toString();
+    }
+
+    private String ensureMarkdownTitle(String markdown, String title) {
+        String trimmed = defaultText(markdown, "").trim();
+        if (!hasText(trimmed)) {
+            return "# " + defaultText(title, "早一步信息差");
+        }
+        if (trimmed.startsWith("# ")) {
+            return trimmed;
+        }
+        return "# " + defaultText(title, "早一步信息差") + "\n\n" + trimmed;
+    }
+
+    private boolean isPublishableArticleDraft(String markdown, String html, String length) {
+        String plain = htmlToPlainText(defaultText(html, markdownToHtml(defaultText(markdown, "")))).replaceAll("\\s+", "");
+        if (plain.length() < articleLengthSpec(length).getMinChars()) {
+            return false;
+        }
+        String normalized = defaultText(markdown, "") + "\n" + htmlToPlainText(defaultText(html, ""));
+        List<String> forbidden = Arrays.asList(
+                "选题方案",
+                "写作提纲",
+                "素材清单",
+                "资料整理",
+                "运营建议",
+                "创作说明",
+                "文章结构说明",
+                "提示词",
+                "可选标题",
+                "下面是一篇",
+                "下面这篇",
+                "可以这样写",
+                "建议从以下角度",
+                "本文将从"
+        );
+        for (String pattern : forbidden) {
+            if (normalized.contains(pattern)) {
+                return false;
+            }
+        }
+        int h2Count = countMatches(defaultText(markdown, ""), "## ") + countMatches(defaultText(html, "").toLowerCase(), "<h2");
+        int paragraphCount = countMatches(defaultText(html, "").toLowerCase(), "<p");
+        if (paragraphCount == 0) {
+            paragraphCount = defaultText(markdown, "").split("\\n\\s*\\n").length;
+        }
+        return h2Count >= 3 && paragraphCount >= 8;
+    }
+
+    private ArticleLengthSpec articleLengthSpec(String length) {
+        String value = defaultText(length, "standard").toLowerCase();
+        if ("short".equals(value)) {
+            return new ArticleLengthSpec("短稿", 700, 1000);
+        }
+        if ("long".equals(value)) {
+            return new ArticleLengthSpec("长稿", 1800, 2600);
+        }
+        return new ArticleLengthSpec("标准稿", 1200, 1600);
+    }
+
+    private String htmlToPlainText(String html) {
+        return defaultText(html, "").replaceAll("<[^>]+>", " ").replaceAll("\\s+", " ").trim();
+    }
+
+    private int countMatches(String value, String needle) {
+        if (!hasText(value) || !hasText(needle)) {
+            return 0;
+        }
+        int count = 0;
+        int index = 0;
+        while ((index = value.indexOf(needle, index)) >= 0) {
+            count++;
+            index += needle.length();
+        }
+        return count;
     }
 
     private String buildCoverPrompt(String topic, String style, String category) {
@@ -1195,6 +1363,16 @@ public class ContentArticleService {
         return null;
     }
 
+    private String firstText(Map<String, Object> record, String... keys) {
+        for (String key : keys) {
+            String value = trimToNull(asString(record.get(key)));
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
     private String hashText(String value) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-1");
@@ -1355,6 +1533,14 @@ public class ContentArticleService {
         private List<String> tags;
         private List<String> riskTips;
         private String model;
+    }
+
+    @lombok.Data
+    @lombok.AllArgsConstructor
+    private static class ArticleLengthSpec {
+        private String label;
+        private int minChars;
+        private int targetChars;
     }
 
     @lombok.Data

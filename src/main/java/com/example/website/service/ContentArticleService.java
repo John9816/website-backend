@@ -177,11 +177,11 @@ public class ContentArticleService {
     }
 
     public PageView<ContentArticleView> list(Long userId, int page, int size) {
-        Page<ContentArticle> result = articleRepository.findByUserIdOrderByUpdatedAtDescIdDesc(
+        Page<ContentArticleRepository.ContentArticleSummary> result = articleRepository.findSummariesByUserId(
                 userId,
                 PageRequest.of(Math.max(0, page), Math.min(Math.max(1, size), MAX_PAGE_SIZE))
         );
-        return PageView.from(result, this::view);
+        return PageView.from(result, this::summaryView);
     }
 
     public ContentArticleView get(Long userId, Long id) {
@@ -732,6 +732,33 @@ public class ContentArticleService {
                 readListOfStrings(article.getRiskTipsJson()),
                 readObject(article.getAutomationJson())
         );
+    }
+
+    private ContentArticleView summaryView(ContentArticleRepository.ContentArticleSummary article) {
+        ContentArticleView view = new ContentArticleView();
+        view.setId(article.getId());
+        view.setTitle(article.getTitle());
+        view.setDigest(article.getDigest());
+        view.setContentMarkdown("");
+        view.setContentHtml("");
+        view.setCoverPrompt(article.getCoverPrompt());
+        view.setCoverImageUrl(article.getCoverImageUrl());
+        view.setTopics(Collections.emptyList());
+        view.setTags(Collections.emptyList());
+        view.setRiskTips(Collections.emptyList());
+        view.setModel(article.getModel());
+        view.setCategory(article.getCategory());
+        view.setLayoutTheme(article.getLayoutTheme());
+        view.setImageMode(article.getImageMode());
+        view.setAutomation(null);
+        view.setStatus(article.getStatus());
+        view.setWechatMediaId(article.getWechatMediaId());
+        view.setWechatPublishId(article.getWechatPublishId());
+        view.setWechatUrl(article.getWechatUrl());
+        view.setErrorMessage(article.getErrorMessage());
+        view.setCreatedAt(article.getCreatedAt());
+        view.setUpdatedAt(article.getUpdatedAt());
+        return view;
     }
 
     private String firstTopicTitle(ContentArticleGenerateRequest payload) {

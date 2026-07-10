@@ -860,7 +860,7 @@ function toSong(row: any, source: Source): SongItem {
     name: first(str(item.name), str(item.songname), str(item.NAME), str(item.SONGNAME)),
     artist: first(str(item.artist), str(item.ARTIST), str(item.FARTIST)),
     album: first(str(item.album), str(item.ALBUM), str(item.FALBUM)),
-    coverUrl: first(str(item.albumpic), str(item.pic)),
+    coverUrl: kuwoCoverUrl(item),
     durationSec,
     durationMs: durationSec == null ? undefined : durationSec * 1000,
     availableQualities: kuwoQualities(first(str(item.N_MINFO), str(item.MINFO)))
@@ -1013,6 +1013,24 @@ function absoluteKuwoImage(path?: string): string {
   if (!path) return "";
   if (/^https?:\/\//i.test(path)) return path;
   return `https://img1.kuwo.cn/star/starheads/${path.replace(/^\/+/, "")}`;
+}
+
+function absoluteKuwoImageWithBase(path: string | undefined, basePath: string): string {
+  if (!path) return "";
+  if (/^https?:\/\//i.test(path)) return path;
+  return `https://img1.kuwo.cn/${basePath}/${path.replace(/^\/+/, "")}`;
+}
+
+function kuwoCoverUrl(item: Record<string, any>): string {
+  return first(
+    str(item.albumpic),
+    str(item.pic),
+    str(item.hts_MVPIC),
+    absoluteKuwoImageWithBase(str(item.MVPIC), "wmvpic"),
+    absoluteKuwoImageWithBase(str(item.web_albumpic_short), "star/albumcover"),
+    absoluteKuwoImageWithBase(str(item.web_artistpic_short), "star/starheads"),
+    absoluteKuwoImage(str(item.PICPATH))
+  );
 }
 
 function neteaseImageUrl(picId: any): string {

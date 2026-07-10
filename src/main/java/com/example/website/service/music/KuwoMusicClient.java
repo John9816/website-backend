@@ -66,7 +66,8 @@ public class KuwoMusicClient {
                 .addQueryParameter("ft", "music")
                 .addQueryParameter("encoding", "utf8")
                 .addQueryParameter("rformat", "json")
-                .addQueryParameter("mobi", "1")
+                .addQueryParameter("vipver", "MUSIC_9.0.5.0_W1")
+                .addQueryParameter("newver", "1")
                 .build();
 
         Request req = new Request.Builder()
@@ -451,7 +452,7 @@ public class KuwoMusicClient {
             v.setName(firstNonEmpty(asString(s.get("NAME")), asString(s.get("SONGNAME"))));
             v.setArtist(asString(s.get("ARTIST")));
             v.setAlbum(asString(s.get("ALBUM")));
-            // coverUrl — not provided reliably; leave null, let /play fill it in.
+            v.setCoverUrl(kuwoCoverUrl(s));
             Integer durSec = asInt(s.get("DURATION"));
             if (durSec != null) {
                 v.setDurationSec(durSec);
@@ -475,7 +476,7 @@ public class KuwoMusicClient {
         si.setName(firstNonEmpty(asString(s.get("name")), asString(s.get("songname"))));
         si.setArtist(firstNonEmpty(asString(s.get("artist")), asString(s.get("ARTIST")), asString(s.get("FARTIST"))));
         si.setAlbum(firstNonEmpty(asString(s.get("album")), asString(s.get("ALBUM")), asString(s.get("FALBUM"))));
-        si.setCoverUrl(firstNonEmpty(asString(s.get("albumpic")), asString(s.get("pic"))));
+        si.setCoverUrl(kuwoCoverUrl(s));
         Integer dur = asInt(s.get("duration"));
         if (dur == null) dur = asInt(s.get("DURATION"));
         if (dur != null) {
@@ -525,6 +526,24 @@ public class KuwoMusicClient {
     private static String firstNonEmpty(String... vs) {
         for (String v : vs) if (v != null && !v.isEmpty()) return v;
         return null;
+    }
+
+    private static String kuwoCoverUrl(Map<String, Object> s) {
+        return firstNonEmpty(
+                asString(s.get("albumpic")),
+                asString(s.get("pic")),
+                asString(s.get("hts_MVPIC")),
+                absoluteKuwoImage(asString(s.get("MVPIC")), "wmvpic"),
+                absoluteKuwoImage(asString(s.get("web_albumpic_short")), "star/albumcover"),
+                absoluteKuwoImage(asString(s.get("web_artistpic_short")), "star/starheads"),
+                absoluteKuwoImage(asString(s.get("PICPATH")), "star/starheads"));
+    }
+
+    private static String absoluteKuwoImage(String path, String basePath) {
+        if (path == null || path.isEmpty()) return null;
+        if (path.startsWith("http://") || path.startsWith("https://")) return path;
+        String normalizedPath = path.replaceAll("^/+", "");
+        return "https://img1.kuwo.cn/" + basePath + "/" + normalizedPath;
     }
 
     private static boolean isEmpty(String v) {

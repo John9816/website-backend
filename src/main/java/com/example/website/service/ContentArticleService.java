@@ -14,6 +14,8 @@ import com.example.website.dto.content.ContentFactoryStatusView;
 import com.example.website.dto.content.ContentHotTopicsView;
 import com.example.website.dto.content.ContentStatusConfigView;
 import com.example.website.entity.ContentArticle;
+import com.example.website.service.content.ContentAutomationBuilder;
+import com.example.website.service.content.HotTopicService;
 import com.example.website.repository.ContentArticleRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -36,26 +38,34 @@ import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.MessageDigest;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+
+import static com.example.website.service.content.ContentTextUtils.asList;
+import static com.example.website.service.content.ContentTextUtils.asString;
+import static com.example.website.service.content.ContentTextUtils.countMatches;
+import static com.example.website.service.content.ContentTextUtils.defaultText;
+import static com.example.website.service.content.ContentTextUtils.escape;
+import static com.example.website.service.content.ContentTextUtils.extractJsonObject;
+import static com.example.website.service.content.ContentTextUtils.firstString;
+import static com.example.website.service.content.ContentTextUtils.firstText;
+import static com.example.website.service.content.ContentTextUtils.hasText;
+import static com.example.website.service.content.ContentTextUtils.hashText;
+import static com.example.website.service.content.ContentTextUtils.htmlToPlainText;
+import static com.example.website.service.content.ContentTextUtils.readStringList;
+import static com.example.website.service.content.ContentTextUtils.trimToNull;
+import static com.example.website.service.content.MarkdownHtmlConverter.markdownToHtml;
 
 @Service
 @RequiredArgsConstructor
@@ -65,7 +75,6 @@ public class ContentArticleService {
     private static final String DEFAULT_CATEGORY = "科技 / 互联网";
     private static final String DEFAULT_LAYOUT = "clean";
     private static final String DEFAULT_IMAGE_MODE = "generate";
-    private static final String NOWHOTS_API_BASE = "https://api.nowhots.com/";
     private static final Path CONTENT_ASSET_DIR = Paths.get("uploads", "content-assets");
 
     private final ContentArticleRepository articleRepository;
@@ -74,6 +83,8 @@ public class ContentArticleService {
     private final WechatOfficialAccountClient wechatClient;
     private final AiChatUpstreamClient aiChatUpstreamClient;
     private final ImageService imageService;
+    private final ContentAutomationBuilder automationBuilder;
+    private final HotTopicService hotTopicService;
     @Qualifier(com.example.website.config.OkHttpConfig.CLIENT_QUICK)
     private final OkHttpClient okHttpClient;
 
@@ -97,6 +108,12 @@ public class ContentArticleService {
         configs.add(new ContentStatusConfigView("wechat.coverMediaId", "默认微信封面素材", hasText(coverMediaId)));
         configs.add(new ContentStatusConfigView("wechat.freePublishEnabled", "微信一键发布权限", "true".equalsIgnoreCase(freePublishEnabled)));
 
+        boolean autopilotOn = "true".equalsIgnoreCase(config("content.autopilot.enabled"))
+                && hasText(config("content.autopilot.userId"));
+        configs.add(new ContentStatusConfigView("content.autopilot.enabled", "自动流水线运行中", autopilotOn));
+        configs.add(new ContentStatusConfigView("content.autopilot.autoPublish", "自动群发（需服务号）",
+                "true".equalsIgnoreCase(config("content.autopilot.autoPublish"))));
+
         return new ContentFactoryStatusView(
                 hasText(aiBase) && hasText(aiKey),
                 hasText(imageBase) && hasText(imageKey),
@@ -106,43 +123,14 @@ public class ContentArticleService {
     }
 
     public ContentHotTopicsView hotTopics(int limit, String category) {
-        int perSourceLimit = Math.min(Math.max(limit, 1), 30);
-        String normalizedCategory = normalizeCategory(category);
-        List<HotSource> hotSources = hotSources(normalizedCategory);
-        ExecutorService executor = Executors.newFixedThreadPool(Math.min(Math.max(hotSources.size(), 1), 8));
-        List<Map<String, Object>> items;
-        try {
-            List<CompletableFuture<List<Map<String, Object>>>> tasks = hotSources.stream()
-                    .map(hotSource -> CompletableFuture.supplyAsync(() -> {
-                        try {
-                            return fetchHotSource(hotSource, perSourceLimit);
-                        } catch (Exception ignored) {
-                            // Keep the page usable when a public hot-list source is temporarily unavailable.
-                            return Collections.<Map<String, Object>>emptyList();
-                        }
-                    }, executor))
-                    .collect(Collectors.toList());
-            items = tasks.stream()
-                    .flatMap(task -> task.join().stream())
-                    .collect(Collectors.toList());
-        } finally {
-            executor.shutdownNow();
-        }
-        items = rankHotTopics(items, normalizedCategory, perSourceLimit);
-        if (items.isEmpty()) {
-            items = fallbackHotTopics(normalizedCategory);
-        }
-        List<Map<String, Object>> sources = hotSources.stream()
-                .map(item -> source(item.getId(), item.getName()))
-                .collect(Collectors.toList());
-        return new ContentHotTopicsView(LocalDateTime.now(), sources, items);
+        return hotTopicService.hotTopics(limit, normalizeCategory(category));
     }
 
     @Transactional
     public ContentAgentRunResult runAgent(Long userId, ContentAgentRunRequest req) {
         ContentAgentRunRequest payload = req == null ? new ContentAgentRunRequest() : req;
         String category = normalizeCategory(payload.getCategory());
-        Map<String, Object> selectedTopic = selectAgentTopic(payload, category);
+        Map<String, Object> selectedTopic = selectAgentTopic(userId, payload, category);
 
         ContentArticleGenerateRequest generateRequest = new ContentArticleGenerateRequest();
         generateRequest.setTopic(asString(selectedTopic.get("title")));
@@ -165,7 +153,17 @@ public class ContentArticleService {
         if (!Boolean.FALSE.equals(payload.getAutoWechatDraft())) {
             article = createWechatDraftArticle(article);
         }
-        ContentAutomationView automation = buildAgentAutomation(article, selectedTopic);
+        // Auto group-send is only attempted when explicitly requested and the account holds the
+        // freepublish permission; otherwise the article stays a draft for manual sending. A publish
+        // failure is swallowed so the (already created) draft is still returned to the caller.
+        if (Boolean.TRUE.equals(payload.getAutoPublish()) && freePublishEnabled()) {
+            try {
+                article = publishWechatArticle(article);
+            } catch (BusinessException ignored) {
+                article = articleRepository.findById(article.getId()).orElse(article);
+            }
+        }
+        ContentAutomationView automation = automationBuilder.buildAgentAutomation(article, selectedTopic);
         article.setAutomationJson(writeJson(automation));
         article = articleRepository.save(article);
 
@@ -305,7 +303,7 @@ public class ContentArticleService {
                     asList(map.get("publishRecords"))
             );
         }
-        return buildAutomation(article, article.getErrorMessage() == null ? null : article.getErrorMessage());
+        return automationBuilder.buildAutomation(article, article.getErrorMessage() == null ? null : article.getErrorMessage());
     }
 
     public ContentAutomationView retryAutomationJob(Long userId, String jobId) {
@@ -334,7 +332,7 @@ public class ContentArticleService {
             article.setWechatMediaId(draft.getMediaId());
             article.setWechatUrl(null);
             article.setErrorMessage(null);
-            article.setAutomationJson(writeJson(buildAutomation(article, null)));
+            article.setAutomationJson(writeJson(automationBuilder.buildAutomation(article, null)));
             return articleRepository.save(article);
         } catch (BusinessException e) {
             markWechatFailure(article, e.getMessage(), "wechat_draft");
@@ -357,7 +355,7 @@ public class ContentArticleService {
             article.setWechatPublishId(publish.getPublishId());
             article.setWechatUrl(null);
             article.setErrorMessage(null);
-            article.setAutomationJson(writeJson(buildAutomation(article, null)));
+            article.setAutomationJson(writeJson(automationBuilder.buildAutomation(article, null)));
             return articleRepository.save(article);
         } catch (BusinessException e) {
             markWechatFailure(article, e.getMessage(), "publish");
@@ -374,13 +372,13 @@ public class ContentArticleService {
             article.setWechatUrl("/admin/content?articleId=" + article.getId());
         }
         article.setErrorMessage(message);
-        article.setAutomationJson(writeJson(buildAutomation(article, message)));
+        article.setAutomationJson(writeJson(automationBuilder.buildAutomation(article, message)));
         return articleRepository.save(article);
     }
 
     private void markWechatFailure(ContentArticle article, String message, String stage) {
         article.setErrorMessage(message);
-        article.setAutomationJson(writeJson(buildAutomation(article, message, stage)));
+        article.setAutomationJson(writeJson(automationBuilder.buildAutomation(article, message, stage)));
         articleRepository.save(article);
     }
 
@@ -511,76 +509,7 @@ public class ContentArticleService {
         }
     }
 
-    private ContentAutomationView buildAutomation(ContentArticle article, String errorMessage) {
-        return buildAutomation(article, errorMessage, article.getStatus().equals(ContentArticle.STATUS_PUBLISHED) ? "publish" : "wechat_draft");
-    }
-
-    private ContentAutomationView buildAutomation(ContentArticle article, String errorMessage, String currentStage) {
-        String now = LocalDateTime.now().toString();
-        List<Object> logs = new ArrayList<>();
-        logs.add(logItem(article.getId() + "-generate", "generate", "SUCCESS", "文章内容已生成", null, valueOrNow(article.getCreatedAt(), now)));
-        if (ContentArticle.STATUS_WECHAT_DRAFT.equals(article.getStatus()) || ContentArticle.STATUS_PUBLISHED.equals(article.getStatus()) || "wechat_draft".equals(currentStage)) {
-            logs.add(logItem(article.getId() + "-wechat-draft", "wechat_draft", errorMessage == null ? "SUCCESS" : "FAILED",
-                    errorMessage == null ? "微信草稿已创建" : "微信草稿创建失败", errorMessage, now));
-        }
-        if (ContentArticle.STATUS_PUBLISHED.equals(article.getStatus()) || "publish".equals(currentStage)) {
-            logs.add(logItem(article.getId() + "-publish", "publish", errorMessage == null ? "SUCCESS" : "FAILED",
-                    errorMessage == null ? "微信发布已提交" : "微信发布提交失败", errorMessage, now));
-        }
-
-        List<Object> jobs = new ArrayList<>();
-        jobs.add(jobItem(article.getId() + "-wechat-draft-job", "wechat_draft",
-                errorMessage != null && "wechat_draft".equals(currentStage) ? "FAILED" : "SUCCESS", errorMessage, now));
-        if (ContentArticle.STATUS_PUBLISHED.equals(article.getStatus()) || "publish".equals(currentStage)) {
-            jobs.add(jobItem(article.getId() + "-publish-job", "publish",
-                    errorMessage != null && "publish".equals(currentStage) ? "FAILED" : "SUCCESS", errorMessage, now));
-        }
-
-        List<Object> records = new ArrayList<>();
-        if (hasText(article.getWechatMediaId()) || hasText(article.getWechatPublishId())) {
-            Map<String, Object> record = new LinkedHashMap<>();
-            record.put("id", article.getId() + "-wechat");
-            record.put("action", ContentArticle.STATUS_PUBLISHED.equals(article.getStatus()) ? "publish" : "draft");
-            record.put("status", errorMessage == null ? "SUCCESS" : "FAILED");
-            record.put("mediaId", article.getWechatMediaId());
-            record.put("publishId", article.getWechatPublishId());
-            record.put("url", article.getWechatUrl());
-            record.put("errorMessage", errorMessage);
-            record.put("createdAt", now);
-            records.add(record);
-        }
-        return new ContentAutomationView(currentStage, logs, jobs, records);
-    }
-
-    private Map<String, Object> logItem(String id, String stage, String status, String message, String detail, String createdAt) {
-        Map<String, Object> item = new LinkedHashMap<>();
-        item.put("id", id);
-        item.put("stage", stage);
-        item.put("status", status);
-        item.put("message", message);
-        item.put("detail", detail);
-        item.put("createdAt", createdAt);
-        return item;
-    }
-
-    private Map<String, Object> jobItem(String id, String stage, String status, String errorMessage, String now) {
-        Map<String, Object> item = new LinkedHashMap<>();
-        item.put("id", id);
-        item.put("stage", stage);
-        item.put("status", status);
-        item.put("attempts", 1);
-        item.put("maxAttempts", 1);
-        item.put("errorMessage", errorMessage);
-        item.put("createdAt", now);
-        item.put("updatedAt", now);
-        return item;
-    }
-
-    private String valueOrNow(LocalDateTime value, String now) {
-        return value == null ? now : value.toString();
-    }
-
-    private Map<String, Object> selectAgentTopic(ContentAgentRunRequest req, String category) {
+    private Map<String, Object> selectAgentTopic(Long userId, ContentAgentRunRequest req, String category) {
         String manualTopic = trimToNull(req.getTopic());
         if (manualTopic != null) {
             Map<String, Object> topic = fallbackAgentTopic(category, req.getInstruction());
@@ -594,7 +523,8 @@ public class ContentArticleService {
                 List<AiChatUpstreamClient.ChatMessage> messages = new ArrayList<>();
                 messages.add(new AiChatUpstreamClient.ChatMessage("system",
                         "你是公众号「早一步信息差」的自动选题 Agent。只输出 JSON，不要 Markdown 代码块。"));
-                messages.add(new AiChatUpstreamClient.ChatMessage("user", buildTopicPrompt(category, req.getInstruction())));
+                messages.add(new AiChatUpstreamClient.ChatMessage("user",
+                        buildTopicPrompt(category, req.getInstruction(), recentTitles(userId))));
                 AiChatUpstreamClient.ChatCompletionResult result = aiChatUpstreamClient.completeQuick(
                         config("ai.chat.baseUrl"),
                         config("ai.chat.apiKey"),
@@ -612,7 +542,7 @@ public class ContentArticleService {
         return fallbackAgentTopic(category, req.getInstruction());
     }
 
-    private String buildTopicPrompt(String category, String instruction) {
+    private String buildTopicPrompt(String category, String instruction, List<String> recentTitles) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("请为订阅号「早一步信息差」自动选择 1 个今天值得写的公众号选题。\n");
         prompt.append("账号定位：信息差型热点解读。栏目：").append(category).append("。\n");
@@ -621,9 +551,50 @@ public class ContentArticleService {
         if (hasText(instruction)) {
             prompt.append("额外要求：").append(instruction.trim()).append("\n");
         }
+        if (recentTitles != null && !recentTitles.isEmpty()) {
+            prompt.append("以下是最近已经写过的标题，请避免重复选题、也不要换个说法写同一件事：\n");
+            for (String title : recentTitles) {
+                prompt.append("- ").append(title).append("\n");
+            }
+        }
         prompt.append("请输出 JSON：title,summary,angle,audience,tags,reason。tags 是字符串数组。\n");
         prompt.append("选题要具体，不要写成泛泛的行业观察。");
         return prompt.toString();
+    }
+
+    /**
+     * Recent article titles for the given user, used to steer the topic Agent away from
+     * repeating stories. Window size ({@code content.autopilot.dedupDays}) and cap are
+     * config-driven; failures degrade to an empty list so selection still proceeds.
+     */
+    private List<String> recentTitles(Long userId) {
+        if (userId == null) {
+            return Collections.emptyList();
+        }
+        int dedupDays = parseIntConfig(config("content.autopilot.dedupDays"), 3);
+        if (dedupDays <= 0) {
+            return Collections.emptyList();
+        }
+        try {
+            return articleRepository.findRecentTitles(
+                    userId,
+                    LocalDateTime.now().minusDays(dedupDays),
+                    PageRequest.of(0, 30));
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
+    }
+
+    private int parseIntConfig(String value, int fallback) {
+        String text = trimToNull(value);
+        if (text == null) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(text);
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     private Map<String, Object> normalizeAgentTopic(Map<String, Object> parsed, String category) {
@@ -679,45 +650,6 @@ public class ContentArticleService {
         return "先讲热点和普通人有什么关系，再拆平台、产品、公司和行业里的信息差";
     }
 
-    private ContentAutomationView buildAgentAutomation(ContentArticle article, Map<String, Object> topic) {
-        String now = LocalDateTime.now().toString();
-        String error = article.getErrorMessage();
-        boolean localDraft = article.getWechatMediaId() != null && article.getWechatMediaId().startsWith("local-");
-        boolean draftOk = hasText(article.getWechatMediaId()) && !localDraft && !hasText(error);
-
-        List<Object> logs = new ArrayList<>();
-        logs.add(logItem(article.getId() + "-agent-topic", "topic", "SUCCESS",
-                "已自动选题：" + defaultText(asString(topic.get("title")), article.getTitle()),
-                asString(topic.get("reason")), now));
-        logs.add(logItem(article.getId() + "-agent-research", "research", "SUCCESS",
-                "已生成选题角度、读者画像和写作方向", asString(topic.get("summary")), now));
-        logs.add(logItem(article.getId() + "-agent-generate", "generate", "SUCCESS",
-                "已自动编写正文并转换为公众号 HTML", null, valueOrNow(article.getCreatedAt(), now)));
-        logs.add(logItem(article.getId() + "-agent-review", "review", article.getRiskTipsJson() == null ? "SKIPPED" : "SUCCESS",
-                "已生成发布前复核提示", null, now));
-        logs.add(logItem(article.getId() + "-agent-wechat-draft", "wechat_draft", draftOk ? "SUCCESS" : (localDraft ? "FAILED" : "PENDING"),
-                draftOk ? "已创建微信草稿" : (localDraft ? "微信草稿失败，已保留本地草稿" : "等待创建微信草稿"),
-                error, now));
-
-        List<Object> jobs = new ArrayList<>();
-        jobs.add(jobItem(article.getId() + "-agent-run", "generate", "SUCCESS", null, now));
-        jobs.add(jobItem(article.getId() + "-agent-wechat-draft-job", "wechat_draft", draftOk ? "SUCCESS" : (localDraft ? "FAILED" : "PENDING"), error, now));
-
-        List<Object> records = new ArrayList<>();
-        if (hasText(article.getWechatMediaId())) {
-            Map<String, Object> record = new LinkedHashMap<>();
-            record.put("id", article.getId() + "-agent-wechat");
-            record.put("action", "draft");
-            record.put("status", draftOk ? "SUCCESS" : "FAILED");
-            record.put("mediaId", article.getWechatMediaId());
-            record.put("publishId", article.getWechatPublishId());
-            record.put("url", article.getWechatUrl());
-            record.put("errorMessage", error);
-            record.put("createdAt", now);
-            records.add(record);
-        }
-        return new ContentAutomationView("wechat_draft", logs, jobs, records);
-    }
 
     private ContentArticle requireArticle(Long userId, Long id) {
         return articleRepository.findByIdAndUserId(id, userId)
@@ -1025,54 +957,6 @@ public class ContentArticleService {
         return lines.stream().collect(Collectors.joining("\n"));
     }
 
-    private String markdownToHtml(String markdown) {
-        StringBuilder html = new StringBuilder();
-        boolean inList = false;
-        for (String line : markdown.split("\\r?\\n")) {
-            if (line.startsWith("# ")) {
-                if (inList) {
-                    html.append("</ul>");
-                    inList = false;
-                }
-                html.append("<h1>").append(escape(line.substring(2))).append("</h1>");
-            } else if (line.startsWith("## ")) {
-                if (inList) {
-                    html.append("</ul>");
-                    inList = false;
-                }
-                html.append("<h2>").append(escape(line.substring(3))).append("</h2>");
-            } else if (line.startsWith("> ")) {
-                if (inList) {
-                    html.append("</ul>");
-                    inList = false;
-                }
-                html.append("<blockquote>").append(escape(line.substring(2))).append("</blockquote>");
-            } else if (line.startsWith("- ")) {
-                if (!inList) {
-                    html.append("<ul>");
-                    inList = true;
-                }
-                html.append("<li>").append(escape(line.substring(2))).append("</li>");
-            } else if (line.trim().isEmpty()) {
-                if (inList) {
-                    html.append("</ul>");
-                    inList = false;
-                }
-                html.append("\n");
-            } else {
-                if (inList) {
-                    html.append("</ul>");
-                    inList = false;
-                }
-                html.append("<p>").append(escape(line)).append("</p>");
-            }
-        }
-        if (inList) {
-            html.append("</ul>");
-        }
-        return html.toString();
-    }
-
     private String ensureMarkdownTitle(String markdown, String title) {
         String trimmed = defaultText(markdown, "").trim();
         if (!hasText(trimmed)) {
@@ -1157,318 +1041,15 @@ public class ContentArticleService {
         return "公众号封面图，主题：" + topic + "，栏目：" + category + "，风格：" + defaultText(style, "干净、清晰、有传播感");
     }
 
-    private List<HotSource> hotSources(String category) {
-        String configured = defaultText(config("content.hot.sources." + category), config("content.hot.sources"));
-        if (!hasText(configured)) {
-            return defaultHotSources(category);
-        }
-        List<HotSource> parsed = parseHotSourcesJson(configured);
-        if (!parsed.isEmpty()) {
-            return parsed;
-        }
-        parsed = parseHotSourcesLines(configured);
-        return parsed.isEmpty() ? defaultHotSources(category) : parsed;
-    }
-
-    private List<HotSource> defaultHotSources(String category) {
-        String normalized = defaultText(category, "");
-        List<HotSource> sources = new ArrayList<>();
-        if (normalized.contains("教育") || normalized.contains("职场")) {
-            sources.add(nowhotsSource("nowhots-zhihu", "即时热点 · 知乎", "zhihu"));
-            sources.add(nowhotsSource("nowhots-weibo", "即时热点 · 微博", "weibo"));
-        } else if (normalized.contains("财政") || normalized.contains("金融") || normalized.contains("财经")) {
-            sources.add(nowhotsSource("nowhots-36kr", "即时热点 · 36氪", "36kr"));
-            sources.add(nowhotsSource("nowhots-zhihu", "即时热点 · 知乎", "zhihu"));
-        } else {
-            sources.add(nowhotsSource("nowhots-ithome", "即时热点 · IT之家", "ithome"));
-            sources.add(nowhotsSource("nowhots-36kr", "即时热点 · 36氪", "36kr"));
-            sources.add(nowhotsSource("nowhots-zhihu", "即时热点 · 知乎", "zhihu"));
-        }
-        sources.add(new HotSource("baidu", "百度热榜", "https://top.baidu.com/api/board?platform=wise&tab=realtime"));
-        sources.add(new HotSource("toutiao", "头条热榜", "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"));
-        return sources;
-    }
-
-    private HotSource nowhotsSource(String id, String name, String code) {
-        return new HotSource(id, name, NOWHOTS_API_BASE + code);
-    }
-
-    private List<HotSource> parseHotSourcesJson(String configured) {
-        Object value = readObject(configured);
-        if (!(value instanceof List)) {
+    private List<Map<String, Object>> readListOfMaps(String json) {
+        if (!hasText(json)) {
             return Collections.emptyList();
         }
-        List<?> rows = (List<?>) value;
-        List<HotSource> sources = new ArrayList<>();
-        for (int i = 0; i < rows.size(); i++) {
-            Object row = rows.get(i);
-            if (!(row instanceof Map)) {
-                continue;
-            }
-            Map<?, ?> record = (Map<?, ?>) row;
-            String url = firstString(record, "url", "href", "api");
-            if (!hasText(url)) {
-                continue;
-            }
-            String id = defaultText(firstString(record, "id", "source"), "source-" + (i + 1));
-            String name = defaultText(firstString(record, "name", "label", "title"), id);
-            sources.add(new HotSource(id, name, url));
-        }
-        return sources;
-    }
-
-    private List<HotSource> parseHotSourcesLines(String configured) {
-        List<HotSource> sources = new ArrayList<>();
-        String[] lines = configured.split("\\r?\\n");
-        for (int i = 0; i < lines.length; i++) {
-            String line = trimToNull(lines[i]);
-            if (line == null) {
-                continue;
-            }
-            String[] parts = line.split("\\|", 2);
-            if (parts.length < 2 || !hasText(parts[1])) {
-                continue;
-            }
-            String name = defaultText(parts[0], "Source " + (i + 1));
-            sources.add(new HotSource("custom-" + (i + 1), name, parts[1].trim()));
-        }
-        return sources;
-    }
-
-    private List<Map<String, Object>> fetchHotSource(HotSource source, int limit) throws IOException {
-        Request request = new Request.Builder()
-                .url(source.getUrl())
-                .header("Accept", "application/json")
-                .header("User-Agent", "website-content-factory/1.0")
-                .get()
-                .build();
-        OkHttpClient client = okHttpClient.newBuilder()
-                .connectTimeout(2, TimeUnit.SECONDS)
-                .readTimeout(4, TimeUnit.SECONDS)
-                .writeTimeout(4, TimeUnit.SECONDS)
-                .callTimeout(5, TimeUnit.SECONDS)
-                .build();
-        try (Response response = client.newCall(request).execute()) {
-            if (!response.isSuccessful() || response.body() == null) {
-                return Collections.emptyList();
-            }
-            Object payload = objectMapper.readValue(response.body().string(), Object.class);
-            List<?> rows = extractHotRows(payload);
-            List<Map<String, Object>> topics = new ArrayList<>();
-            int max = Math.min(limit, rows.size());
-            for (int i = 0; i < max; i++) {
-                Map<String, Object> topic = hotTopicView(rows.get(i), source, i + 1);
-                if (topic != null) {
-                    topics.add(topic);
-                }
-            }
-            return topics;
-        }
-    }
-
-    private List<?> extractHotRows(Object payload) {
-        return extractHotRows(payload, 0);
-    }
-
-    private List<?> extractHotRows(Object payload, int depth) {
-        if (payload == null || depth > 6) {
-            return Collections.emptyList();
-        }
-        if (payload instanceof List) {
-            List<?> list = (List<?>) payload;
-            if (looksLikeHotRows(list)) {
-                return list;
-            }
-            for (Object item : list) {
-                List<?> nested = extractHotRows(item, depth + 1);
-                if (!nested.isEmpty()) {
-                    return nested;
-                }
-            }
-            return Collections.emptyList();
-        }
-        if (!(payload instanceof Map)) {
-            return Collections.emptyList();
-        }
-        Map<?, ?> record = (Map<?, ?>) payload;
-        for (String key : Arrays.asList("data", "items", "list", "rows", "result", "hotList", "news", "cards", "content")) {
-            Object value = record.get(key);
-            List<?> nested = extractHotRows(value, depth + 1);
-            if (!nested.isEmpty()) {
-                return nested;
-            }
-        }
-        for (Object value : record.values()) {
-            List<?> nested = extractHotRows(value, depth + 1);
-            if (!nested.isEmpty()) {
-                return nested;
-            }
-        }
-        return Collections.emptyList();
-    }
-
-    private boolean looksLikeHotRows(List<?> rows) {
-        for (Object row : rows) {
-            if (row instanceof Map && hasText(firstString((Map<?, ?>) row,
-                    "title", "Title", "name", "Name", "word", "Word", "keyword", "query", "desc", "display_query"))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private Map<String, Object> hotTopicView(Object row, HotSource source, int rank) {
-        if (!(row instanceof Map)) {
-            return null;
-        }
-        Map<?, ?> record = (Map<?, ?>) row;
-        String title = firstString(record, "title", "Title", "name", "Name", "word", "Word", "keyword", "query", "desc", "display_query");
-        if (!hasText(title)) {
-            return null;
-        }
-        Map<String, Object> topic = new LinkedHashMap<>();
-        topic.put("id", source.getId() + ":" + rank + ":" + hashText(title).substring(0, 8));
-        topic.put("source", source.getId());
-        topic.put("sourceName", source.getName());
-        topic.put("rank", parseRank(record.get("rank"), record.get("index"), rank));
-        topic.put("title", title);
-        topic.put("url", trimToNull(firstString(record, "url", "Url", "link", "mobileUrl", "pcUrl", "href")));
-        topic.put("hot", trimToNull(firstString(record, "hot", "heat", "score", "hotValue", "HotValue", "views", "metrics", "Label")));
-        topic.put("summary", trimToNull(firstString(record, "summary", "excerpt", "description", "desc", "Abstract")));
-        topic.put("capturedAt", LocalDateTime.now().toString());
-        return topic;
-    }
-
-    private int parseRank(Object rank, Object index, int fallback) {
-        for (Object value : Arrays.asList(rank, index)) {
-            if (value instanceof Number) {
-                return ((Number) value).intValue();
-            }
-            if (value != null) {
-                try {
-                    return Integer.parseInt(String.valueOf(value));
-                } catch (NumberFormatException ignored) {
-                    // Try the next value.
-                }
-            }
-        }
-        return fallback;
-    }
-
-    private List<Map<String, Object>> rankHotTopics(List<Map<String, Object>> topics, String category, int limit) {
-        List<Map<String, Object>> ranked = new ArrayList<>(topics);
-        ranked.sort(Comparator
-                .comparingInt((Map<String, Object> item) -> topicCategoryScore(item, category)).reversed()
-                .thenComparingInt(item -> parseRank(item.get("rank"), null, 999)));
-        return ranked.stream().limit(limit).collect(Collectors.toList());
-    }
-
-    private int topicCategoryScore(Map<String, Object> topic, String category) {
-        String text = (defaultText(asString(topic.get("title")), "") + " "
-                + defaultText(asString(topic.get("summary")), "") + " "
-                + defaultText(asString(topic.get("hot")), "")).toLowerCase();
-        int score = 0;
-        for (String keyword : hotKeywords(category)) {
-            if (text.contains(keyword.toLowerCase())) {
-                score += 6;
-            }
-        }
-        return score;
-    }
-
-    private List<String> hotKeywords(String category) {
-        String value = category == null ? "" : category;
-        if (value.contains("教育") || value.contains("职场")) {
-            return Arrays.asList("教育", "职场", "就业", "考研", "高考", "大学", "培训", "简历", "招聘", "裁员", "转行", "职业");
-        }
-        if (value.contains("财政") || value.contains("金融") || value.contains("财经")) {
-            return Arrays.asList("财经", "金融", "股市", "基金", "银行", "楼市", "房贷", "消费", "经济", "政策", "公司", "财报");
-        }
-        return Arrays.asList("科技", "互联网", "AI", "人工智能", "大模型", "手机", "芯片", "平台", "产品", "公司", "电商", "应用");
-    }
-
-    private List<Map<String, Object>> fallbackHotTopics(String category) {
-        String normalized = category == null ? "" : category;
-        List<String> titles;
-        if (normalized.contains("教育") || normalized.contains("职场")) {
-            titles = Arrays.asList(
-                    "今天职场和教育里的新信息差，普通人该先看懂什么",
-                    "年轻人选择工作和学习路径时，最容易忽略的成本",
-                    "招聘、培训和转行热度背后，真正变化的是什么"
-            );
-        } else if (normalized.contains("财政") || normalized.contains("金融") || normalized.contains("财经")) {
-            titles = Arrays.asList(
-                    "今天财经热点背后的信息差，和普通人的钱包有什么关系",
-                    "消费、楼市和市场情绪变化里，普通人该看哪几个信号",
-                    "公司新闻和政策变化背后，哪些影响会传导到日常生活"
-            );
-        } else {
-            titles = Arrays.asList(
-                    "今天科技互联网热点背后的信息差，普通人别只看标题",
-                    "AI 产品和平台变化背后，哪些机会和坑最容易被忽略",
-                    "大厂动作、产品更新和行业变化里，真正值得写的是什么"
-            );
-        }
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (int i = 0; i < titles.size(); i++) {
-            Map<String, Object> topic = new LinkedHashMap<>();
-            topic.put("id", "fallback:" + hashText(category + ":" + titles.get(i)).substring(0, 10));
-            topic.put("source", "fallback");
-            topic.put("sourceName", "本地兜底选题");
-            topic.put("rank", i + 1);
-            topic.put("title", titles.get(i));
-            topic.put("url", null);
-            topic.put("hot", "兜底选题");
-            topic.put("summary", "公共热榜源暂时不可用时，用于保证内容工厂仍可继续选题和生成草稿。");
-            topic.put("capturedAt", LocalDateTime.now().toString());
-            result.add(topic);
-        }
-        return result;
-    }
-
-    private String firstString(Map<?, ?> record, String... keys) {
-        for (String key : keys) {
-            Object value = record.get(key);
-            if (value == null) {
-                continue;
-            }
-            String text = trimToNull(String.valueOf(value));
-            if (text != null) {
-                return text;
-            }
-        }
-        return null;
-    }
-
-    private String firstText(Map<String, Object> record, String... keys) {
-        for (String key : keys) {
-            String value = trimToNull(asString(record.get(key)));
-            if (value != null) {
-                return value;
-            }
-        }
-        return null;
-    }
-
-    private String hashText(String value) {
         try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-1");
-            byte[] bytes = digest.digest(defaultText(value, "").getBytes(StandardCharsets.UTF_8));
-            StringBuilder hex = new StringBuilder();
-            for (byte b : bytes) {
-                hex.append(String.format("%02x", b));
-            }
-            return hex.toString();
+            return objectMapper.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
         } catch (Exception e) {
-            return UUID.nameUUIDFromBytes(defaultText(value, "").getBytes(StandardCharsets.UTF_8)).toString().replace("-", "");
+            return Collections.emptyList();
         }
-    }
-
-    private Map<String, Object> source(String id, String name) {
-        Map<String, Object> source = new LinkedHashMap<>();
-        source.put("id", id);
-        source.put("name", name);
-        return source;
     }
 
     private String config(String key) {
@@ -1484,17 +1065,6 @@ public class ContentArticleService {
             return objectMapper.writeValueAsString(value);
         } catch (Exception e) {
             throw new BusinessException(500, "Failed to serialize content payload");
-        }
-    }
-
-    private List<Map<String, Object>> readListOfMaps(String json) {
-        if (!hasText(json)) {
-            return Collections.emptyList();
-        }
-        try {
-            return objectMapper.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
-        } catch (Exception e) {
-            return Collections.emptyList();
         }
     }
 
@@ -1531,73 +1101,9 @@ public class ContentArticleService {
         }
     }
 
-    private String extractJsonObject(String value) {
-        String text = value.trim();
-        if (text.startsWith("```")) {
-            text = text.replaceFirst("^```[a-zA-Z]*\\s*", "").replaceFirst("\\s*```$", "").trim();
-        }
-        int start = text.indexOf('{');
-        int end = text.lastIndexOf('}');
-        if (start >= 0 && end > start) {
-            return text.substring(start, end + 1);
-        }
-        return text;
-    }
-
-    @SuppressWarnings("unchecked")
-    private List<Object> asList(Object value) {
-        if (value instanceof List) {
-            return (List<Object>) value;
-        }
-        return Collections.emptyList();
-    }
-
-    private String asString(Object value) {
-        return value == null ? null : String.valueOf(value);
-    }
-
-    private List<String> readStringList(Object value) {
-        if (!(value instanceof List)) {
-            return Collections.emptyList();
-        }
-        List<?> raw = (List<?>) value;
-        List<String> result = new ArrayList<>();
-        for (Object item : raw) {
-            String text = trimToNull(item == null ? null : String.valueOf(item));
-            if (text != null) {
-                result.add(text);
-            }
-        }
-        return result;
-    }
-
-    private String defaultText(String value, String fallback) {
-        return hasText(value) ? value.trim() : fallback;
-    }
-
     private String normalizeCategory(String value) {
         String category = defaultText(value, DEFAULT_CATEGORY);
         return category.length() > 80 ? category.substring(0, 80) : category;
-    }
-
-    private String trimToNull(String value) {
-        if (value == null) {
-            return null;
-        }
-        String trimmed = value.trim();
-        return trimmed.isEmpty() ? null : trimmed;
-    }
-
-    private boolean hasText(String value) {
-        return trimToNull(value) != null;
-    }
-
-    private String escape(String value) {
-        return value
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;");
     }
 
     @lombok.Data
@@ -1618,13 +1124,5 @@ public class ContentArticleService {
         private String label;
         private int minChars;
         private int targetChars;
-    }
-
-    @lombok.Data
-    @lombok.AllArgsConstructor
-    private static class HotSource {
-        private String id;
-        private String name;
-        private String url;
     }
 }

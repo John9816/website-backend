@@ -8,11 +8,23 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 
 public interface ContentArticleRepository extends JpaRepository<ContentArticle, Long> {
 
     Page<ContentArticle> findByUserIdOrderByUpdatedAtDescIdDesc(Long userId, Pageable pageable);
+
+    /** Autopilot slot guard: how many articles this user already produced at/after a given instant. */
+    long countByUserIdAndCreatedAtAfter(Long userId, LocalDateTime createdAt);
+
+    /** Topic dedup: recent titles by this user since the given instant, newest first. */
+    @Query("select a.title from ContentArticle a " +
+            "where a.userId = :userId and a.createdAt >= :since " +
+            "order by a.createdAt desc")
+    List<String> findRecentTitles(@Param("userId") Long userId,
+                                  @Param("since") LocalDateTime since,
+                                  Pageable pageable);
 
     @Query(value = "select a.id as id, " +
             "a.title as title, " +

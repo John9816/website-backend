@@ -144,6 +144,22 @@ public class DataInitializer implements CommandLineRunner {
         all.add(new SeedEntry(MusicService.CFG_CROSS_SOURCE_ORDER,
                 MusicService.DEFAULT_CROSS_SOURCE_ORDER,
                 "Comma-separated cross-source fallback order: qq, netease, kuwo."));
+
+        // Content factory autopilot: unattended topic -> write -> WeChat draft pipeline.
+        all.add(new SeedEntry("content.autopilot.enabled", "false",
+                "Master switch for the unattended content pipeline. Set true to start auto-producing drafts."));
+        all.add(new SeedEntry("content.autopilot.userId", "",
+                "User id the autopilot produces articles for. Blank disables the pilot even when enabled."));
+        all.add(new SeedEntry("content.autopilot.times", "08:00,12:30,20:00",
+                "Comma-separated HH:mm daily slots at which the autopilot produces one article each."));
+        all.add(new SeedEntry("content.autopilot.categories", "科技 / 互联网,教育 / 职场,财政金融",
+                "Comma-separated columns rotated across the daily slots by slot index."));
+        all.add(new SeedEntry("content.autopilot.autoPublish", "false",
+                "Attempt WeChat API group-send after drafting. Requires a verified service account with freepublish."));
+        all.add(new SeedEntry("content.autopilot.generateCover", "true",
+                "Whether the autopilot generates a cover image for each article."));
+        all.add(new SeedEntry("content.autopilot.dedupDays", "3",
+                "Look-back window (days) of recent titles fed to the topic agent to avoid repeats. 0 disables."));
         return all;
     }
 

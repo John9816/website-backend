@@ -10,4 +10,5 @@ public class ContentAgentRunRequest {
     private String length;
     private Boolean generateCover;
     private Boolean autoWechatDraft;
+    private Boolean autoPublish;
 }

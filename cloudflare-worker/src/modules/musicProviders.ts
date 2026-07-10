@@ -847,7 +847,7 @@ function toSong(row: any, source: Source): SongItem {
       artist: joinNamed(item.ar || item.artists),
       album: str(album?.name),
       albumId: str(album?.id),
-      coverUrl: str(album?.picUrl),
+      coverUrl: first(str(album?.picUrl), neteaseImageUrl(album?.picId)),
       durationMs,
       durationSec: durationMs == null ? undefined : Math.floor(durationMs / 1000),
       availableQualities: neteaseQualities(item)
@@ -1015,6 +1015,12 @@ function absoluteKuwoImage(path?: string): string {
   return `https://img1.kuwo.cn/star/starheads/${path.replace(/^\/+/, "")}`;
 }
 
+function neteaseImageUrl(picId: any): string {
+  const id = str(picId);
+  if (!id || id === "0") return "";
+  return `https://music.163.com/api/img/blur/${id}?param=130y130`;
+}
+
 async function fetchJson(url: string, init: RequestInit, errorCode: number, jsonp = false, relaxed = false): Promise<any> {
   let response: Response;
   try {
@@ -1025,10 +1031,15 @@ async function fetchJson(url: string, init: RequestInit, errorCode: number, json
   const raw = await response.text();
   if (!response.ok) throw new HttpError(502, `music upstream returned ${response.status}`, errorCode);
   try {
-    return JSON.parse(jsonp ? stripJsonp(raw) : relaxed ? relaxJsonLike(raw) : raw);
+    const jsonText = jsonp ? stripJsonp(raw) : relaxed ? relaxJsonLike(raw) : raw;
+    return JSON.parse(preserveNeteaseLargePicIds(jsonText));
   } catch {
     throw new HttpError(502, "music upstream returned invalid json", errorCode);
   }
+}
+
+function preserveNeteaseLargePicIds(raw: string): string {
+  return raw.replace(/"picId":(\d{16,})/g, "\"picId\":\"$1\"");
 }
 
 async function recordProviderPlay(ctx: RequestContext, userId: number, playInfo: any): Promise<void> {

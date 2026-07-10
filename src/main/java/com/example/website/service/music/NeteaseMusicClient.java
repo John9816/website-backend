@@ -35,6 +35,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class NeteaseMusicClient {
 
+    private static final String CLOUD_SEARCH_URL = "https://music.163.com/api/cloudsearch/pc";
     private static final String SEARCH_URL = "https://music.163.com/api/search/get/web";
     private static final String LYRIC_URL  = "https://music.163.com/api/song/lyric/v1";
     private static final String TOPLIST_URL = "https://music.163.com/api/toplist";
@@ -64,21 +65,32 @@ public class NeteaseMusicClient {
 
     private Map<String, Object> searchJson(String keyword, MusicSearchType type, int page, int pageSize) {
         int offset = Math.max(0, (page - 1) * pageSize);
-        HttpUrl url = HttpUrl.parse(SEARCH_URL).newBuilder()
+        String searchType = neteaseSearchType(type);
+
+        try {
+            return callJson(searchRequest(CLOUD_SEARCH_URL, keyword, searchType, offset, pageSize),
+                    MusicErrorCode.UPSTREAM_SEARCH_FAILED);
+        } catch (MusicBusinessException e) {
+            log.warn("Netease cloudsearch failed, falling back to legacy search: {}", e.getMessage());
+            return callJson(searchRequest(SEARCH_URL, keyword, searchType, offset, pageSize),
+                    MusicErrorCode.UPSTREAM_SEARCH_FAILED);
+        }
+    }
+
+    private Request searchRequest(String baseUrl, String keyword, String type, int offset, int pageSize) {
+        HttpUrl url = HttpUrl.parse(baseUrl).newBuilder()
                 .addQueryParameter("s", keyword)
-                .addQueryParameter("type", neteaseSearchType(type))
+                .addQueryParameter("type", type)
                 .addQueryParameter("offset", String.valueOf(offset))
                 .addQueryParameter("limit", String.valueOf(pageSize))
                 .build();
-        Request req = new Request.Builder()
+        return new Request.Builder()
                 .url(url)
                 .header("Referer", REFERER + "/")
                 .header("Cookie", COOKIE)
                 .header("User-Agent", USER_AGENT)
                 .get()
                 .build();
-
-        return callJson(req, MusicErrorCode.UPSTREAM_SEARCH_FAILED);
     }
 
     /**
@@ -519,7 +531,7 @@ public class NeteaseMusicClient {
         if (al != null) {
             v.setAlbum(asString(al.get("name")));
             v.setAlbumId(asString(al.get("id")));
-            v.setCoverUrl(asString(al.get("picUrl")));
+            v.setCoverUrl(firstNonEmpty(asString(al.get("picUrl")), neteaseImageUrl(al.get("picId"))));
         }
         Long dt = asLongObj(s.get("dt"));
         if (dt != null) {
@@ -619,6 +631,12 @@ public class NeteaseMusicClient {
     private static String firstNonEmpty(String... vs) {
         for (String v : vs) if (v != null && !v.isEmpty()) return v;
         return null;
+    }
+
+    static String neteaseImageUrl(Object picId) {
+        String id = asString(picId);
+        if (id == null || id.isEmpty() || "0".equals(id)) return null;
+        return "https://music.163.com/api/img/blur/" + id + "?param=130y130";
     }
 
     public static class CollectionSearchResult {

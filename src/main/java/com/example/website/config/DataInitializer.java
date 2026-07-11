@@ -54,6 +54,7 @@ public class DataInitializer implements CommandLineRunner {
         }
         User admin = new User();
         admin.setUsername(username);
+        admin.setEmail("10000@qq.com");
         admin.setPassword(passwordEncoder.encode(props.getAdmin().getDefaultPassword()));
         admin.setRole(User.ROLE_ADMIN);
         User saved = userRepository.save(admin);

@@ -40,6 +40,12 @@ public class User {
     @Column(nullable = false, length = 20)
     private String role = ROLE_USER;
 
+    @Column(nullable = false)
+    private boolean enabled = true;
+
+    @Column(name = "auth_version", nullable = false)
+    private int authVersion = 0;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

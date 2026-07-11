@@ -27,6 +27,9 @@ public class AuthService {
         String username = normalizeUsername(req.getUsername());
         User user = userRepository.findByUsername(username)
                 .orElseThrow(() -> new BadCredentialsException("Invalid username or password"));
+        if (!user.isEnabled()) {
+            throw new BadCredentialsException("Invalid username or password");
+        }
         if (!passwordEncoder.matches(req.getPassword(), user.getPassword())) {
             throw new BadCredentialsException("Invalid username or password");
         }
@@ -65,12 +68,18 @@ public class AuthService {
             throw new BusinessException(400, "Old password is incorrect");
         }
         user.setPassword(passwordEncoder.encode(newPassword));
+        user.setAuthVersion(user.getAuthVersion() + 1);
         userRepository.save(user);
         authUserCacheService.evict(user.getId());
     }
 
     private LoginResponse buildLoginResponse(User user) {
-        String token = jwtUtil.generateToken(user.getId(), user.getUsername(), user.getRole());
+        String token = jwtUtil.generateToken(
+                user.getId(),
+                user.getUsername(),
+                user.getRole(),
+                user.getAuthVersion()
+        );
         return new LoginResponse(
                 token,
                 props.getJwt().getPrefix().trim(),

@@ -3,6 +3,7 @@ package com.example.website.config;
 import com.example.website.dto.CachedAuthUser;
 import com.example.website.service.AuthUserCacheService;
 import com.example.website.util.JwtUtil;
+import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -40,9 +41,10 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         if (StringUtils.hasText(header) && header.startsWith(prefix)) {
             String token = header.substring(prefix.length());
             try {
-                Long userId = jwtUtil.getUserId(token);
+                Claims claims = jwtUtil.parse(token);
+                Long userId = Long.valueOf(claims.getSubject());
                 CachedAuthUser user = authUserCacheService.load(userId);
-                if (user == null) {
+                if (user == null || !user.isEnabled() || user.getAuthVersion() != jwtUtil.getAuthVersion(claims)) {
                     SecurityContextHolder.clearContext();
                     chain.doFilter(request, response);
                     return;

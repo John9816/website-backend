@@ -28,11 +28,16 @@ public class JwtUtil {
     }
 
     public String generateToken(Long userId, String username, String role) {
+        return generateToken(userId, username, role, 0);
+    }
+
+    public String generateToken(Long userId, String username, String role, int authVersion) {
         long now = System.currentTimeMillis();
         long exp = now + props.getJwt().getExpireMinutes() * 60_000L;
         io.jsonwebtoken.JwtBuilder builder = Jwts.builder()
                 .setSubject(String.valueOf(userId))
                 .claim("username", username)
+                .claim("authVersion", authVersion)
                 .setIssuedAt(new Date(now))
                 .setExpiration(new Date(exp))
                 .signWith(signingKey, SignatureAlgorithm.HS256);
@@ -62,5 +67,10 @@ public class JwtUtil {
     public String getRole(String token) {
         Object v = parse(token).get("role");
         return v == null ? null : v.toString();
+    }
+
+    public int getAuthVersion(Claims claims) {
+        Object value = claims.get("authVersion");
+        return value instanceof Number ? ((Number) value).intValue() : 0;
     }
 }

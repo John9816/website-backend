@@ -30,7 +30,13 @@ public class AuthUserCacheService {
     @Cacheable(value = CacheConfig.CACHE_AUTH_USER, key = "#userId", unless = "#result == null")
     public CachedAuthUser load(Long userId) {
         return userRepository.findById(userId)
-                .map(u -> new CachedAuthUser(u.getId(), u.getUsername(), normalizeRole(u.getRole())))
+                .map(u -> new CachedAuthUser(
+                        u.getId(),
+                        u.getUsername(),
+                        normalizeRole(u.getRole()),
+                        u.isEnabled(),
+                        u.getAuthVersion()
+                ))
                 .orElse(null);
     }
 

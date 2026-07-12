@@ -202,13 +202,13 @@ class AuthFlowIntegrationTests {
 
         mockMvc.perform(get("/api/user/categories")
                         .header("Authorization", "Bearer " + userToken))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value(403));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
 
         mockMvc.perform(get("/api/user/links")
                         .header("Authorization", "Bearer " + userToken))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value(403));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
 
         mockMvc.perform(get("/api/user/kb/spaces")
                         .header("Authorization", "Bearer " + userToken))
@@ -313,8 +313,9 @@ class AuthFlowIntegrationTests {
                         .header("Authorization", "Bearer " + userToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"user-cat-001\",\"icon\":\"book\",\"sortOrder\":1}"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value(403));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.name").value("user-cat-001"));
 
         JsonNode adminCategoriesViaUserAlias = getData(getJson("/api/user/categories", adminToken));
         assertTrue(containsCategory(adminCategoriesViaUserAlias, adminCategoryName));

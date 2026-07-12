@@ -6,6 +6,7 @@ import com.example.website.dto.CurrentUserView;
 import com.example.website.dto.LoginRequest;
 import com.example.website.dto.LoginResponse;
 import com.example.website.dto.RegisterRequest;
+import com.example.website.dto.UserProfileUpdateRequest;
 import com.example.website.service.AuthService;
 import com.example.website.service.UserProfileService;
 import lombok.RequiredArgsConstructor;
@@ -38,6 +39,16 @@ public class AuthController {
             return ApiResponse.error(401, "Unauthorized");
         }
         return ApiResponse.ok(userProfileService.getCurrentUser(userId));
+    }
+
+    @PutMapping("/api/user/profile")
+    public ApiResponse<CurrentUserView> updateProfile(HttpServletRequest request,
+                                                      @Valid @RequestBody UserProfileUpdateRequest req) {
+        Long userId = (Long) request.getAttribute("userId");
+        if (userId == null) {
+            return ApiResponse.error(401, "Unauthorized");
+        }
+        return ApiResponse.ok(userProfileService.updateProfile(userId, req));
     }
 
     @PostMapping({"/api/admin/change-password", "/api/user/change-password"})

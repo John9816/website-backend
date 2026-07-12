@@ -17,6 +17,10 @@ public interface UserRepository extends JpaRepository<User, Long>, JpaSpecificat
 
     boolean existsByEmail(String email);
 
+    boolean existsByUsernameAndIdNot(String username, Long id);
+
+    boolean existsByEmailAndIdNot(String email, Long id);
+
     Optional<User> findFirstByRoleOrderByIdAsc(String role);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)

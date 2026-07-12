@@ -8,6 +8,7 @@ public class CurrentUserView {
 
     private Long id;
     private String username;
+    private String email;
     private String role;
     private boolean enabled;
     private boolean canManageSystemConfig;
@@ -16,6 +17,7 @@ public class CurrentUserView {
         CurrentUserView view = new CurrentUserView();
         view.id = user.getId();
         view.username = user.getUsername();
+        view.email = user.getEmail();
         view.role = normalizeRole(user.getRole());
         view.enabled = user.isEnabled();
         view.canManageSystemConfig = User.ROLE_ADMIN.equals(view.role);

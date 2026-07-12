@@ -1,0 +1,21 @@
+package com.example.website.dto;
+
+import lombok.Data;
+
+import javax.validation.constraints.NotBlank;
+import javax.validation.constraints.Pattern;
+import javax.validation.constraints.Size;
+
+@Data
+public class UserProfileUpdateRequest {
+
+    @NotBlank(message = "username is required")
+    @Size(min = 3, max = 50, message = "username length must be 3-50")
+    private String username;
+
+    @NotBlank(message = "QQ email is required")
+    @Size(max = 100, message = "email length must be at most 100")
+    @Pattern(regexp = "^[1-9]\\d{4,10}@qq\\.com$", flags = Pattern.Flag.CASE_INSENSITIVE,
+            message = "email must be a valid QQ email")
+    private String email;
+}

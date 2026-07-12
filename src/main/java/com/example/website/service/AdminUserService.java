@@ -64,7 +64,7 @@ public class AdminUserService {
             throw new BusinessException(409, "Username already exists");
         }
         if (userRepository.existsByEmail(email)) {
-            throw new BusinessException(409, "QQ email already exists");
+            throw new BusinessException(409, "Email already exists");
         }
 
         User user = new User();

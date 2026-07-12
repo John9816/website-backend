@@ -13,10 +13,11 @@ public class AdminUserCreateRequest {
     @Size(min = 3, max = 50, message = "username length must be 3-50")
     private String username;
 
-    @NotBlank(message = "QQ email is required")
+    @NotBlank(message = "email is required")
     @Size(max = 100, message = "email length must be at most 100")
-    @Pattern(regexp = "^[1-9]\\d{4,10}@qq\\.com$", flags = Pattern.Flag.CASE_INSENSITIVE,
-            message = "email must be a valid QQ email")
+    @Pattern(regexp = "^(?:[1-9]\\d{4,10}@qq\\.com|[a-z0-9][a-z0-9._-]{0,63}@751152\\.xyz)$",
+            flags = Pattern.Flag.CASE_INSENSITIVE,
+            message = "email must be a valid QQ or 751152.xyz email")
     private String email;
 
     @NotBlank(message = "password is required")

@@ -49,7 +49,7 @@ public class AuthService {
             throw new BusinessException(409, "Username already exists");
         }
         if (userRepository.existsByEmail(email)) {
-            throw new BusinessException(409, "QQ email already exists");
+            throw new BusinessException(409, "Email already exists");
         }
 
         User user = new User();
@@ -96,7 +96,7 @@ public class AuthService {
 
     private String normalizeEmail(String email) {
         if (!StringUtils.hasText(email)) {
-            throw new BusinessException(400, "QQ email is required");
+            throw new BusinessException(400, "Email is required");
         }
         return email.trim().toLowerCase();
     }

@@ -79,6 +79,22 @@ class AuthFlowIntegrationTests {
     }
 
     @Test
+    void registerAcceptsSiteEmailDomain() throws Exception {
+        String username = "site_email_user";
+        String email = username + "@751152.xyz";
+
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(registerBody(username, "secret123", email)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.username").value(username));
+
+        User saved = userRepository.findByUsername(username).orElseThrow(AssertionError::new);
+        assertEquals(email, saved.getEmail());
+    }
+
+    @Test
     void registerRequiresUniqueQqEmail() throws Exception {
         String email = qqEmail("duplicate_email");
         mockMvc.perform(post("/api/auth/register")

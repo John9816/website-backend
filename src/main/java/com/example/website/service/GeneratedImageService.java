@@ -144,10 +144,7 @@ public class GeneratedImageService {
     }
 
     private boolean useDirectRemoteUrlMode() {
-        return sysConfigService.getValue(ImageService.CFG_REMOTE_URL_MODE)
-                .map(String::trim)
-                .map("direct"::equalsIgnoreCase)
-                .orElse(true);
+        return true;
     }
 
     private boolean isRemoteHttpUrl(String rawUrl) {
@@ -181,10 +178,7 @@ public class GeneratedImageService {
     }
 
     private String saveToFile(byte[] data, String ext) {
-        String uploadDir = sysConfigService.getValue(ImageService.CFG_UPLOAD_DIR).orElse(null);
-        if (uploadDir == null || uploadDir.trim().isEmpty()) {
-            uploadDir = "uploads/images";
-        }
+        String uploadDir = imageUploadDir();
         try {
             Path dir = Paths.get(uploadDir.trim());
             Files.createDirectories(dir);
@@ -201,10 +195,7 @@ public class GeneratedImageService {
     }
 
     public byte[] readFile(String filename) {
-        String uploadDir = sysConfigService.getValue(ImageService.CFG_UPLOAD_DIR).orElse(null);
-        if (uploadDir == null || uploadDir.trim().isEmpty()) {
-            uploadDir = "uploads/images";
-        }
+        String uploadDir = imageUploadDir();
         Path file = Paths.get(uploadDir.trim()).resolve(filename).normalize();
         if (!file.startsWith(Paths.get(uploadDir.trim()).normalize())) {
             throw new BusinessException(400, "Invalid filename");
@@ -223,6 +214,10 @@ public class GeneratedImageService {
         Page<GeneratedImageRepository.GeneratedImageSummary> result =
                 repository.findSummariesByUserId(userId, pageable);
         return PageView.from(result, GeneratedImageView::from);
+    }
+
+    private String imageUploadDir() {
+        return System.getProperty("website.image.upload-dir", "uploads/images");
     }
 
     @Transactional

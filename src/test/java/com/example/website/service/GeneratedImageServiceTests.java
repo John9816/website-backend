@@ -57,8 +57,6 @@ class GeneratedImageServiceTests {
 
     @Test
     void saveBatchStoresRemoteUrlDirectlyByDefault() {
-        when(sysConfigService.getValue(ImageService.CFG_REMOTE_URL_MODE)).thenReturn(Optional.empty());
-
         ImageGenerationsResponse.ImageDataItem item = new ImageGenerationsResponse.ImageDataItem();
         item.setUrl("https://upstream.example.com/img.png");
 
@@ -77,36 +75,9 @@ class GeneratedImageServiceTests {
     }
 
     @Test
-    void saveBatchUploadsRemoteUrlToGoFileWhenProxyModeEnabled() {
-        when(sysConfigService.getValue(ImageService.CFG_REMOTE_URL_MODE)).thenReturn(Optional.of("proxy"));
-        when(sysConfigService.getValue(ImageService.CFG_GOFILE_URL)).thenReturn(Optional.of("https://file.example.com"));
-        when(sysConfigService.getValue(ImageService.CFG_GOFILE_TOKEN)).thenReturn(Optional.of("token123"));
-        byte[] imgBytes = new byte[]{1, 2, 3};
-        when(goFileClient.downloadBytes("https://upstream.example.com/img.png")).thenReturn(imgBytes);
-        when(goFileClient.upload(eq("https://file.example.com"), eq("token123"), eq(imgBytes), anyString()))
-                .thenReturn(Optional.of("https://file.example.com/image/abc123.png"));
-
-        ImageGenerationsResponse.ImageDataItem item = new ImageGenerationsResponse.ImageDataItem();
-        item.setUrl("https://upstream.example.com/img.png");
-
-        ImageGenerationsResponse resp = new ImageGenerationsResponse(1234567890L, "dall-e-3", Arrays.asList(item), null);
-        generatedImageService.saveBatch(1L, "prompt", "1024x1024", resp);
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<GeneratedImage>> captor = ArgumentCaptor.forClass(List.class);
-        verify(repository).saveAll(captor.capture());
-        List<GeneratedImage> savedAll = captor.getValue();
-        assertEquals(1, savedAll.size());
-        GeneratedImage saved = savedAll.get(0);
-        assertEquals("https://file.example.com/image/abc123.png", saved.getImageUrl());
-        assertEquals("prompt", saved.getPrompt());
-        assertEquals("1024x1024", saved.getSize());
-    }
-
-    @Test
     void saveBatchStoresBase64ViaLocalDiskWhenGoFileNotConfigured() {
         when(sysConfigService.getValue(ImageService.CFG_GOFILE_URL)).thenReturn(Optional.empty());
-        when(sysConfigService.getValue(ImageService.CFG_UPLOAD_DIR)).thenReturn(Optional.of("target/test-uploads"));
+        System.setProperty("website.image.upload-dir", "target/test-uploads");
 
         ImageGenerationsResponse.ImageDataItem item = new ImageGenerationsResponse.ImageDataItem();
         item.setUrl("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
@@ -122,21 +93,7 @@ class GeneratedImageServiceTests {
         GeneratedImage saved = savedAll.get(0);
         assertEquals(true, saved.getImageUrl().startsWith("/api/v1/image/file/") && saved.getImageUrl().endsWith(".png"),
                 "Expected local file URL, got: " + saved.getImageUrl());
-    }
-
-    @Test
-    void saveBatchSkipsItemWhenDownloadFails() {
-        when(sysConfigService.getValue(ImageService.CFG_REMOTE_URL_MODE)).thenReturn(Optional.of("proxy"));
-        when(goFileClient.downloadBytes("https://broken.example.com/img.png")).thenReturn(null);
-
-        ImageGenerationsResponse.ImageDataItem item = new ImageGenerationsResponse.ImageDataItem();
-        item.setUrl("https://broken.example.com/img.png");
-
-        ImageGenerationsResponse resp = new ImageGenerationsResponse(1234567890L, "dall-e-3", Arrays.asList(item), null);
-        generatedImageService.saveBatch(1L, "prompt", null, resp);
-
-        verify(repository, never()).saveAll(any());
-        verify(repository, never()).save(any());
+        System.clearProperty("website.image.upload-dir");
     }
 
     @Test

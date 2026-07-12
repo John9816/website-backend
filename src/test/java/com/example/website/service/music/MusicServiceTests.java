@@ -179,29 +179,6 @@ class MusicServiceTests {
         assertFalse(Boolean.TRUE.equals(play.getFromCache()));
     }
 
-    @Test
-    void playResolverOrderCanPreferQqTextFallbackBeforePrimary() {
-        SongSearchItem meta = song("song-mid", "track-four", "artist-four");
-        PlayInfo fallback = new PlayInfo();
-        fallback.setId("song-mid");
-        fallback.setSource(MusicSource.QQ);
-        fallback.setActualSource(MusicSource.QQ);
-        fallback.setName("track-four");
-        fallback.setArtist("artist-four");
-        fallback.setPlayUrl("https://cdn.cyapi.top/text-first.m4a");
-        fallback.setActualQuality("320k");
-
-        when(configService.getValue(MusicService.CFG_PLAY_RESOLVER_ORDER))
-                .thenReturn(Optional.of("qq_text,primary,cross_source"));
-        when(qq.fetchSongInfo("song-mid")).thenReturn(meta);
-        when(qqTextFallback.fetchSongUrl("song-mid", MusicQuality.K128, meta)).thenReturn(fallback);
-
-        PlayInfo play = musicService.play("qq", "song-mid", "128k");
-
-        assertEquals("https://cdn.cyapi.top/text-first.m4a", play.getPlayUrl());
-        verify(tfPay, never()).play(MusicSource.QQ, "song-mid", MusicQuality.K128);
-    }
-
     private SongSearchItem song(String id, String name, String artist) {
         SongSearchItem item = new SongSearchItem();
         item.setId(id);

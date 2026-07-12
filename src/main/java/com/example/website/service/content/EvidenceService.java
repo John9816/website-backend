@@ -49,8 +49,8 @@ public class EvidenceService {
         if (subject == null || !enabled() || !webSearchService.configured()) {
             return EvidenceResult.empty();
         }
-        int maxQueries = clamp(parseInt(config(CFG_MAX_QUERIES), 2), 1, 4);
-        int perQuery = clamp(parseInt(config(CFG_PER_QUERY), 3), 1, 6);
+        int maxQueries = 2;
+        int perQuery = 3;
 
         List<String> queries = buildQueries(subject, angle, category, maxQueries);
         List<WebSearchService.SearchResult> hits = new ArrayList<>();

@@ -114,8 +114,7 @@ public class ArticleReviewService {
 
     /** Max directed revision passes; hard-capped at 1 per TrendPublish's design. */
     public int maxRevisions() {
-        int configured = parseInt(config(CFG_MAX_REVISIONS), 1);
-        return Math.max(0, Math.min(1, configured));
+        return 1;
     }
 
     private String buildReviewPrompt(String topic, String category, String markdown) {
@@ -171,7 +170,7 @@ public class ArticleReviewService {
     }
 
     private int minScore() {
-        return clamp(parseInt(config(CFG_MIN_SCORE), DEFAULT_MIN_SCORE), 0, 100);
+        return DEFAULT_MIN_SCORE;
     }
 
     private int clampScore(Object value) {

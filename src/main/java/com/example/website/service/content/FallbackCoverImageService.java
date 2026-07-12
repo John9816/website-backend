@@ -78,7 +78,7 @@ public class FallbackCoverImageService {
 
     /** Model label used for persisted history when this fallback produced the image. */
     public String model() {
-        return defaultText(config(CFG_MODEL), DEFAULT_MODEL);
+        return DEFAULT_MODEL;
     }
 
     /**
@@ -92,7 +92,7 @@ public class FallbackCoverImageService {
         }
         try {
             Request request = new Request.Builder()
-                    .url(defaultText(config(CFG_URL), DEFAULT_URL))
+                    .url(DEFAULT_URL)
                     .header("Accept", "*/*")
                     .header("Content-Type", "application/json")
                     .post(RequestBody.create(buildBody(text), JSON))
@@ -118,9 +118,9 @@ public class FallbackCoverImageService {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("prompt", prompt);
         payload.put("type", "image");
-        payload.put("model", defaultText(config(CFG_MODEL), DEFAULT_MODEL));
-        payload.put("ratio", defaultText(config(CFG_RATIO), DEFAULT_RATIO));
-        payload.put("resolution", defaultText(config(CFG_RESOLUTION), DEFAULT_RESOLUTION));
+        payload.put("model", DEFAULT_MODEL);
+        payload.put("ratio", DEFAULT_RATIO);
+        payload.put("resolution", DEFAULT_RESOLUTION);
         try {
             return objectMapper.writeValueAsString(payload);
         } catch (Exception e) {

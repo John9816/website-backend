@@ -73,7 +73,7 @@ public class TuneFreeAuthService {
 
         String account = configService.getValue(CFG_ACCOUNT).orElse(null);
         String password = configService.getValue(CFG_PASSWORD).orElse(null);
-        String udid = configService.getValue(CFG_UDID).filter(s -> !s.isEmpty()).orElse(DEFAULT_UDID);
+        String udid = DEFAULT_UDID;
 
         if (account == null || account.isEmpty() || password == null || password.isEmpty()) {
             markStatus("failed:missing-credentials");

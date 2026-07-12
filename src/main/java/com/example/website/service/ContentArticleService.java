@@ -437,7 +437,7 @@ public class ContentArticleService {
                 return readLocalFile(CONTENT_ASSET_DIR, url.substring("/api/v1/content/assets/".length()));
             }
             if (url.startsWith("/api/v1/image/file/")) {
-                String uploadDir = defaultText(config(ImageService.CFG_UPLOAD_DIR), "uploads/images");
+                String uploadDir = "uploads/images";
                 return readLocalFile(Paths.get(uploadDir), url.substring("/api/v1/image/file/".length()));
             }
             if (url.startsWith("http://") || url.startsWith("https://")) {
@@ -628,7 +628,7 @@ public class ContentArticleService {
         if (userId == null) {
             return Collections.emptyList();
         }
-        int dedupDays = parseIntConfig(config("content.autopilot.dedupDays"), 3);
+        int dedupDays = 3;
         if (dedupDays <= 0) {
             return Collections.emptyList();
         }

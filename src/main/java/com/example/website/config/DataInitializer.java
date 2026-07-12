@@ -11,7 +11,8 @@ import com.example.website.repository.UserRepository;
 import com.example.website.service.AiConversationService;
 import com.example.website.service.ImageService;
 import com.example.website.service.SysConfigService;
-import com.example.website.service.music.MusicService;
+import com.example.website.service.WechatOfficialAccountClient;
+import com.example.website.service.content.WebSearchService;
 import com.example.website.service.music.TuneFreeAuthService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -97,18 +98,12 @@ public class DataInitializer implements CommandLineRunner {
         all.add(new SeedEntry(ImageService.CFG_EDIT_BASE_URL,
                 "",
                 "Optional upstream image edits endpoint. Leave empty to derive /images/edits from image.api.baseUrl."));
-        all.add(new SeedEntry(ImageService.CFG_UPLOAD_DIR,
-                "uploads/images",
-                "Local directory to store generated image files."));
         all.add(new SeedEntry(ImageService.CFG_GOFILE_URL,
                 "",
                 "go-file server base URL. Leave empty to use local disk."));
         all.add(new SeedEntry(ImageService.CFG_GOFILE_TOKEN,
                 "",
                 "go-file API token. Leave empty if upload permission is open."));
-        all.add(new SeedEntry(ImageService.CFG_REMOTE_URL_MODE,
-                "direct",
-                "How to persist upstream HTTP image URLs: direct or proxy."));
 
         all.add(new SeedEntry(AiConversationService.CFG_BASE_URL,
                 "https://fufu.iqach.top/v1",
@@ -127,24 +122,30 @@ public class DataInitializer implements CommandLineRunner {
                         + "mimo-v2.5-tts-voiceclone,mimo-v2-pro,mimo-v2-flash,mimo-v2-omni,mimo-v2-tts",
                 "Comma-separated list of supported upstream AI models."));
 
+        all.add(new SeedEntry(WechatOfficialAccountClient.CFG_APP_ID, "",
+                "WeChat Official Account AppID."));
+        all.add(new SeedEntry(WechatOfficialAccountClient.CFG_APP_SECRET, "",
+                "WeChat Official Account AppSecret."));
+        all.add(new SeedEntry(WechatOfficialAccountClient.CFG_AUTHOR, "",
+                "Default author used for WeChat drafts."));
+        all.add(new SeedEntry(WechatOfficialAccountClient.CFG_SOURCE_URL, "",
+                "Default original-content URL used for WeChat drafts."));
+        all.add(new SeedEntry("wechat.coverMediaId", "",
+                "Default WeChat cover material media_id."));
+        all.add(new SeedEntry("wechat.freePublishEnabled", "false",
+                "Whether the account supports one-click free publishing."));
+
+        all.add(new SeedEntry(WebSearchService.CFG_PROVIDER, "tavily",
+                "Evidence search provider: tavily or serper."));
+        all.add(new SeedEntry(WebSearchService.CFG_BASE_URL, "",
+                "Optional evidence search API endpoint override."));
+        all.add(new SeedEntry(WebSearchService.CFG_API_KEY, "",
+                "API key for evidence-backed web search."));
+
         all.add(new SeedEntry(TuneFreeAuthService.CFG_ACCOUNT, "",
                 "TuneFreeNext account."));
         all.add(new SeedEntry(TuneFreeAuthService.CFG_PASSWORD, "",
                 "TuneFreeNext password."));
-        all.add(new SeedEntry(TuneFreeAuthService.CFG_UDID, "TUNEFREENEXT_BFF_001",
-                "Stable device id sent to TuneFree logon."));
-        all.add(new SeedEntry(TuneFreeAuthService.CFG_TOKEN, "",
-                "Cached TuneFree token, written back after refresh."));
-        all.add(new SeedEntry(TuneFreeAuthService.CFG_TOKEN_UPDATED_AT, "",
-                "ISO-8601 timestamp of the last successful token refresh."));
-        all.add(new SeedEntry(TuneFreeAuthService.CFG_TOKEN_STATUS, "",
-                "Status of the last token refresh."));
-        all.add(new SeedEntry(MusicService.CFG_PLAY_RESOLVER_ORDER,
-                MusicService.DEFAULT_PLAY_RESOLVER_ORDER,
-                "Comma-separated music play resolver order: primary, qq_text, cross_source."));
-        all.add(new SeedEntry(MusicService.CFG_CROSS_SOURCE_ORDER,
-                MusicService.DEFAULT_CROSS_SOURCE_ORDER,
-                "Comma-separated cross-source fallback order: qq, netease, kuwo."));
 
         // Content factory autopilot: unattended topic -> write -> WeChat draft pipeline.
         all.add(new SeedEntry("content.autopilot.enabled", "false",
@@ -159,8 +160,6 @@ public class DataInitializer implements CommandLineRunner {
                 "Attempt WeChat API group-send after drafting. Requires a verified service account with freepublish."));
         all.add(new SeedEntry("content.autopilot.generateCover", "true",
                 "Whether the autopilot generates a cover image for each article."));
-        all.add(new SeedEntry("content.autopilot.dedupDays", "3",
-                "Look-back window (days) of recent titles fed to the topic agent to avoid repeats. 0 disables."));
 
         // Content factory quality pipeline (TrendPublish core): editorial decision -> evidence
         // completion -> article plan -> write -> quality review + at-most-one directed revision.
@@ -171,32 +170,15 @@ public class DataInitializer implements CommandLineRunner {
         // No seed row: add these keys manually via the admin config API to enable evidence-backed writing.
         all.add(new SeedEntry(com.example.website.service.content.EvidenceService.CFG_ENABLED, "true",
                 "Evidence completion master switch. Effective only when a search API key is set."));
-        all.add(new SeedEntry(com.example.website.service.content.EvidenceService.CFG_MAX_QUERIES, "2",
-                "Max search queries derived per topic for evidence completion (1-4)."));
-        all.add(new SeedEntry(com.example.website.service.content.EvidenceService.CFG_PER_QUERY, "3",
-                "Max search results kept per query for evidence completion (1-6)."));
         all.add(new SeedEntry(com.example.website.service.content.ArticlePlanService.CFG_ENABLED, "true",
                 "Article plan: draft a structured outline before writing. Set false to let the writer self-structure."));
         all.add(new SeedEntry(com.example.website.service.content.ArticleReviewService.CFG_ENABLED, "true",
                 "Quality review: score the draft and gate revision. Set false to skip review entirely."));
-        all.add(new SeedEntry(com.example.website.service.content.ArticleReviewService.CFG_MIN_SCORE, "75",
-                "Review score (0-100) below which one directed revision is triggered."));
-        all.add(new SeedEntry(com.example.website.service.content.ArticleReviewService.CFG_MAX_REVISIONS, "1",
-                "Max directed revision passes. Hard-capped at 1 per TrendPublish design; 0 disables revision."));
 
         // Keyless cover-image fallback: used when the primary image API (image.api.*) is unset,
         // errors, or returns no URL, so a draft still gets a cover. Best-effort, streams SSE.
         all.add(new SeedEntry(com.example.website.service.content.FallbackCoverImageService.CFG_ENABLED, "true",
                 "Keyless cover-image fallback master switch. Set false to skip cover when the primary image API is unavailable."));
-        all.add(new SeedEntry(com.example.website.service.content.FallbackCoverImageService.CFG_URL,
-                "https://img.regenin.online/api/chat",
-                "SSE endpoint for the keyless cover-image fallback."));
-        all.add(new SeedEntry(com.example.website.service.content.FallbackCoverImageService.CFG_MODEL, "GPT Image 2.0",
-                "Model name sent to the cover-image fallback service."));
-        all.add(new SeedEntry(com.example.website.service.content.FallbackCoverImageService.CFG_RATIO, "16:9",
-                "Aspect ratio requested from the cover-image fallback service."));
-        all.add(new SeedEntry(com.example.website.service.content.FallbackCoverImageService.CFG_RESOLUTION, "2K",
-                "Resolution requested from the cover-image fallback service."));
         return all;
     }
 

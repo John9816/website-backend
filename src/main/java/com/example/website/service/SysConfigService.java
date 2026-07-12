@@ -14,16 +14,29 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
 public class SysConfigService {
 
+    private static final Set<String> INTERNAL_CONFIG_KEYS = new java.util.HashSet<>(java.util.Arrays.asList(
+            "image.upload.dir", "image.persist.remote-url-mode",
+            "music.tunefree.udid", "music.tunefree.token", "music.tunefree.token_updated_at",
+            "music.tunefree.token_status", "music.play.resolverOrder", "music.play.crossSourceOrder",
+            "migration.legacyNav.done", "content.autopilot.dedupDays",
+            "content.evidence.maxQueries", "content.evidence.perQuery",
+            "content.review.minScore", "content.review.maxRevisions",
+            "content.cover.fallback.url", "content.cover.fallback.model",
+            "content.cover.fallback.ratio", "content.cover.fallback.resolution"
+    ));
+
     private final SysConfigRepository configRepository;
 
     public List<SysConfigView> listAll() {
         return configRepository.findAllByOrderByConfigKeyAsc().stream()
+                .filter(config -> !INTERNAL_CONFIG_KEYS.contains(config.getConfigKey()))
                 .map(SysConfigView::from)
                 .collect(Collectors.toList());
     }

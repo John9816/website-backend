@@ -658,9 +658,7 @@ public class MusicService {
     }
 
     private List<PlayResolver> resolvePlayResolverOrder() {
-        String configured = configService == null
-                ? DEFAULT_PLAY_RESOLVER_ORDER
-                : configService.getValue(CFG_PLAY_RESOLVER_ORDER).orElse(DEFAULT_PLAY_RESOLVER_ORDER);
+        String configured = DEFAULT_PLAY_RESOLVER_ORDER;
         List<PlayResolver> parsed = new ArrayList<>();
         for (String token : configured.split("[,\\r\\n]+")) {
             PlayResolver resolver = PlayResolver.of(token);
@@ -676,9 +674,7 @@ public class MusicService {
     }
 
     private List<MusicSource> resolveCrossSourceOrder() {
-        String configured = configService == null
-                ? DEFAULT_CROSS_SOURCE_ORDER
-                : configService.getValue(CFG_CROSS_SOURCE_ORDER).orElse(DEFAULT_CROSS_SOURCE_ORDER);
+        String configured = DEFAULT_CROSS_SOURCE_ORDER;
         List<MusicSource> parsed = new ArrayList<>();
         for (String token : configured.split("[,\\r\\n]+")) {
             try {

@@ -46,6 +46,9 @@ public class User {
     @Column(name = "auth_version", nullable = false)
     private int authVersion = 0;
 
+    @Column(name = "avatar_url", length = 255)
+    private String avatarUrl;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

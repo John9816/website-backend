@@ -12,6 +12,7 @@ public class CurrentUserView {
     private String role;
     private boolean enabled;
     private boolean canManageSystemConfig;
+    private String avatarUrl;
 
     public static CurrentUserView from(User user) {
         CurrentUserView view = new CurrentUserView();
@@ -21,6 +22,7 @@ public class CurrentUserView {
         view.role = normalizeRole(user.getRole());
         view.enabled = user.isEnabled();
         view.canManageSystemConfig = User.ROLE_ADMIN.equals(view.role);
+        view.avatarUrl = user.getAvatarUrl();
         return view;
     }
 

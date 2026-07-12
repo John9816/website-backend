@@ -13,6 +13,7 @@ public class AdminUserView {
     private String email;
     private String role;
     private boolean enabled;
+    private String avatarUrl;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
@@ -23,6 +24,7 @@ public class AdminUserView {
         view.email = user.getEmail();
         view.role = User.ROLE_ADMIN.equalsIgnoreCase(user.getRole()) ? User.ROLE_ADMIN : User.ROLE_USER;
         view.enabled = user.isEnabled();
+        view.avatarUrl = user.getAvatarUrl();
         view.createdAt = user.getCreatedAt();
         view.updatedAt = user.getUpdatedAt();
         return view;

@@ -10,10 +10,14 @@ import com.example.website.dto.UserProfileUpdateRequest;
 import com.example.website.service.AuthService;
 import com.example.website.service.UserProfileService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.CacheControl;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.validation.Valid;
+import java.util.concurrent.TimeUnit;
 
 @RestController
 @RequiredArgsConstructor
@@ -49,6 +53,25 @@ public class AuthController {
             return ApiResponse.error(401, "Unauthorized");
         }
         return ApiResponse.ok(userProfileService.updateProfile(userId, req));
+    }
+
+    @PostMapping("/api/user/avatar")
+    public ApiResponse<CurrentUserView> updateAvatar(HttpServletRequest request,
+                                                     @RequestParam("file") MultipartFile file) {
+        Long userId = (Long) request.getAttribute("userId");
+        if (userId == null) {
+            return ApiResponse.error(401, "Unauthorized");
+        }
+        return ApiResponse.ok(userProfileService.updateAvatar(userId, file));
+    }
+
+    @GetMapping("/api/v1/user/avatar/{filename}")
+    public ResponseEntity<?> avatar(@PathVariable String filename) {
+        UserProfileService.AvatarFile avatar = userProfileService.readAvatar(filename);
+        return ResponseEntity.ok()
+                .contentType(avatar.mediaType())
+                .cacheControl(CacheControl.maxAge(30, TimeUnit.DAYS).cachePublic())
+                .body(avatar.resource());
     }
 
     @PostMapping({"/api/admin/change-password", "/api/user/change-password"})

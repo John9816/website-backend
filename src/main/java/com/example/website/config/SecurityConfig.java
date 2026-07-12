@@ -65,6 +65,7 @@ public class SecurityConfig {
                 .antMatchers(HttpMethod.GET, "/health").permitAll()
                 .antMatchers("/api/auth/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/v1/image/file/**").permitAll()
+                .antMatchers(HttpMethod.GET, "/api/v1/user/avatar/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/v1/kb/assets/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/v1/content/assets/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/public/**").permitAll()

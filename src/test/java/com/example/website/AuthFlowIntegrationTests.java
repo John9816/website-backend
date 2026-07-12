@@ -12,6 +12,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import java.nio.charset.StandardCharsets;
@@ -24,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -252,6 +254,42 @@ class AuthFlowIntegrationTests {
                 .andExpect(jsonPath("$.data.username").value("admin"))
                 .andExpect(jsonPath("$.data.role").value(User.ROLE_ADMIN))
                 .andExpect(jsonPath("$.data.canManageSystemConfig").value(true));
+    }
+
+    @Test
+    void userCanUploadAndReadAvatar() throws Exception {
+        String userToken = registerAndExtractToken("avatar_user", "secret123");
+        MockMultipartFile avatar = new MockMultipartFile(
+                "file",
+                "avatar.png",
+                MediaType.IMAGE_PNG_VALUE,
+                new byte[]{(byte) 0x89, 'P', 'N', 'G', 13, 10, 26, 10}
+        );
+
+        MvcResult result = mockMvc.perform(multipart("/api/user/avatar")
+                        .file(avatar)
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.avatarUrl").isNotEmpty())
+                .andReturn();
+
+        String avatarUrl = readJson(result).path("data").path("avatarUrl").asText();
+        mockMvc.perform(get(avatarUrl))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "max-age=2592000, public"));
+
+        MockMultipartFile text = new MockMultipartFile(
+                "file",
+                "avatar.txt",
+                MediaType.TEXT_PLAIN_VALUE,
+                "hello".getBytes(StandardCharsets.UTF_8)
+        );
+        mockMvc.perform(multipart("/api/user/avatar")
+                        .file(text)
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
     }
 
     @Test

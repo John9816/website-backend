@@ -9,12 +9,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
+import java.util.Arrays;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.eq;
 
 class ImageTaskServiceTests {
 
@@ -60,9 +64,38 @@ class ImageTaskServiceTests {
         assertEquals(502, error.getCode());
     }
 
+    @Test
+    void recoverableTasksIncludeActiveAndFailedWork() {
+        ImageGenerationTaskRepository repository = mock(ImageGenerationTaskRepository.class);
+        com.example.website.entity.ImageGenerationTask task = new com.example.website.entity.ImageGenerationTask();
+        task.setId(7L);
+        task.setUserId(3L);
+        task.setPrompt("persistent task");
+        task.setModel("configured-model");
+        task.setN(1);
+        task.setStatus(com.example.website.entity.ImageGenerationTask.STATUS_PROCESSING);
+        PageRequest pageable = PageRequest.of(0, 20);
+        when(repository.findByUserIdAndStatusInOrderByCreatedAtDesc(
+                eq(3L),
+                eq(Arrays.asList("PENDING", "PROCESSING", "FAILED")),
+                eq(pageable)))
+                .thenReturn(new PageImpl<>(Collections.singletonList(task), pageable, 1));
+
+        ImageTaskService service = service(repository, mock(ImageService.class), mock(FallbackCoverImageService.class));
+
+        assertEquals(1, service.listRecoverable(3L, 0, 20).getTotal());
+        assertEquals("persistent task", service.listRecoverable(3L, 0, 20).getItems().get(0).getPrompt());
+    }
+
     private ImageTaskService service(ImageService primary, FallbackCoverImageService fallback) {
+        return service(mock(ImageGenerationTaskRepository.class), primary, fallback);
+    }
+
+    private ImageTaskService service(ImageGenerationTaskRepository repository,
+                                     ImageService primary,
+                                     FallbackCoverImageService fallback) {
         return new ImageTaskService(
-                mock(ImageGenerationTaskRepository.class),
+                repository,
                 mock(GeneratedImageService.class),
                 primary,
                 fallback,

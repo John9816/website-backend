@@ -15,7 +15,12 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.time.Instant;
 import java.util.Collections;
+import java.util.Arrays;
 import java.util.concurrent.Executor;
+import java.util.stream.Collectors;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import com.example.website.dto.PageView;
 
 @Slf4j
 @Service
@@ -91,6 +96,23 @@ public class ImageTaskService {
         ImageGenerationTask task = taskRepository.findByIdAndUserId(taskId, userId)
                 .orElseThrow(() -> new BusinessException(404, "Task not found"));
         return ImageTaskView.from(task);
+    }
+
+    public PageView<ImageTaskView> listRecoverable(Long userId, int page, int size) {
+        int safePage = Math.max(0, page);
+        int safeSize = Math.min(Math.max(1, size), 100);
+        Page<ImageGenerationTask> result = taskRepository.findByUserIdAndStatusInOrderByCreatedAtDesc(
+                userId,
+                Arrays.asList(
+                        ImageGenerationTask.STATUS_PENDING,
+                        ImageGenerationTask.STATUS_PROCESSING,
+                        ImageGenerationTask.STATUS_FAILED),
+                PageRequest.of(safePage, safeSize));
+        return new PageView<>(
+                result.getContent().stream().map(ImageTaskView::from).collect(Collectors.toList()),
+                result.getTotalElements(),
+                result.getNumber(),
+                result.getSize());
     }
 
     public ImageTaskView retry(Long userId, Long taskId) {

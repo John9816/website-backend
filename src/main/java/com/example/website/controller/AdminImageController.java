@@ -63,6 +63,13 @@ public class AdminImageController {
         return ApiResponse.ok(imageTaskService.status(userId, taskId));
     }
 
+    @GetMapping("/tasks")
+    public ApiResponse<PageView<ImageTaskView>> tasks(HttpServletRequest request,
+                                                       @RequestParam(defaultValue = "0") int page,
+                                                       @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.ok(imageTaskService.listRecoverable(currentUserId(request), page, size));
+    }
+
     @GetMapping("/history")
     public ApiResponse<PageView<GeneratedImageView>> history(HttpServletRequest request,
                                                              @RequestParam(defaultValue = "0") int page,

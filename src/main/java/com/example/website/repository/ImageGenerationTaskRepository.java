@@ -14,5 +14,8 @@ public interface ImageGenerationTaskRepository extends JpaRepository<ImageGenera
 
     Page<ImageGenerationTask> findByUserIdOrderByCreatedAtDesc(Long userId, Pageable pageable);
 
+    Page<ImageGenerationTask> findByUserIdAndStatusInOrderByCreatedAtDesc(
+            Long userId, Collection<String> statuses, Pageable pageable);
+
     long countByUserIdAndStatusIn(Long userId, Collection<String> statuses);
 }

@@ -19,6 +19,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 
 class ImageTaskServiceTests {
 
@@ -85,6 +86,23 @@ class ImageTaskServiceTests {
 
         assertEquals(1, service.listRecoverable(3L, 0, 20).getTotal());
         assertEquals("persistent task", service.listRecoverable(3L, 0, 20).getItems().get(0).getPrompt());
+    }
+
+    @Test
+    void deletingActiveTaskCancelsItInsteadOfAllowingWorkerToRecreateIt() {
+        ImageGenerationTaskRepository repository = mock(ImageGenerationTaskRepository.class);
+        com.example.website.entity.ImageGenerationTask task = new com.example.website.entity.ImageGenerationTask();
+        task.setId(9L);
+        task.setUserId(3L);
+        task.setPrompt("cancel me");
+        task.setModel("configured-model");
+        task.setStatus(com.example.website.entity.ImageGenerationTask.STATUS_PROCESSING);
+        when(repository.findByIdAndUserId(9L, 3L)).thenReturn(java.util.Optional.of(task));
+
+        service(repository, mock(ImageService.class), mock(FallbackCoverImageService.class)).delete(3L, 9L);
+
+        assertEquals(com.example.website.entity.ImageGenerationTask.STATUS_CANCELLED, task.getStatus());
+        verify(repository).save(task);
     }
 
     private ImageTaskService service(ImageService primary, FallbackCoverImageService fallback) {

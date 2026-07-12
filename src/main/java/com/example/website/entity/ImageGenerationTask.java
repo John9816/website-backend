@@ -32,6 +32,7 @@ public class ImageGenerationTask {
     public static final String STATUS_PROCESSING = "PROCESSING";
     public static final String STATUS_COMPLETED  = "COMPLETED";
     public static final String STATUS_FAILED     = "FAILED";
+    public static final String STATUS_CANCELLED  = "CANCELLED";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

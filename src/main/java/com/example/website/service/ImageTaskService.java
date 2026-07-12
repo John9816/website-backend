@@ -142,6 +142,14 @@ public class ImageTaskService {
     public void delete(Long userId, Long taskId) {
         ImageGenerationTask task = taskRepository.findByIdAndUserId(taskId, userId)
                 .orElseThrow(() -> new BusinessException(404, "Task not found"));
+        if (ImageGenerationTask.STATUS_PENDING.equals(task.getStatus())
+                || ImageGenerationTask.STATUS_PROCESSING.equals(task.getStatus())) {
+            task.setStatus(ImageGenerationTask.STATUS_CANCELLED);
+            task.setCompletedAt(LocalDateTime.now());
+            task.setErrorMessage(null);
+            taskRepository.save(task);
+            return;
+        }
         taskRepository.delete(task);
     }
 
@@ -154,6 +162,7 @@ public class ImageTaskService {
 
         try {
             ImageGenerationsResponse resp = generateWithFallback(req);
+            if (cancelledOrDeleted(taskId)) return;
             String resultJson = objectMapper.writeValueAsString(resp);
             task.setResultJson(resultJson);
             task.setStatus(ImageGenerationTask.STATUS_COMPLETED);
@@ -166,6 +175,7 @@ public class ImageTaskService {
                 log.warn("Image generated but failed to persist history for task {}: {}", taskId, e.getMessage());
             }
         } catch (Exception e) {
+            if (cancelledOrDeleted(taskId)) return;
             log.error("Image generation task {} failed: {}", taskId, e.getMessage());
             task.setStatus(ImageGenerationTask.STATUS_FAILED);
             task.setErrorMessage(e.getMessage() != null ? e.getMessage().substring(0, Math.min(e.getMessage().length(), 1000)) : "Unknown error");
@@ -219,6 +229,7 @@ public class ImageTaskService {
 
         try {
             ImageGenerationsResponse resp = imageService.edit(req);
+            if (cancelledOrDeleted(taskId)) return;
             String resultJson = objectMapper.writeValueAsString(resp);
             task.setResultJson(resultJson);
             task.setStatus(ImageGenerationTask.STATUS_COMPLETED);
@@ -231,11 +242,18 @@ public class ImageTaskService {
                 log.warn("Image edited but failed to persist history for task {}: {}", taskId, e.getMessage());
             }
         } catch (Exception e) {
+            if (cancelledOrDeleted(taskId)) return;
             log.error("Image edit task {} failed: {}", taskId, e.getMessage());
             task.setStatus(ImageGenerationTask.STATUS_FAILED);
             task.setErrorMessage(e.getMessage() != null ? e.getMessage().substring(0, Math.min(e.getMessage().length(), 1000)) : "Unknown error");
             task.setCompletedAt(LocalDateTime.now());
             taskRepository.save(task);
         }
+    }
+
+    private boolean cancelledOrDeleted(Long taskId) {
+        return taskRepository.findById(taskId)
+                .map(task -> ImageGenerationTask.STATUS_CANCELLED.equals(task.getStatus()))
+                .orElse(true);
     }
 }

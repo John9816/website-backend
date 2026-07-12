@@ -7,11 +7,14 @@ import com.example.website.dto.ImageGenerationsResponse;
 import com.example.website.dto.ImageTaskView;
 import com.example.website.entity.ImageGenerationTask;
 import com.example.website.repository.ImageGenerationTaskRepository;
+import com.example.website.service.content.FallbackCoverImageService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.time.Instant;
+import java.util.Collections;
 import java.util.concurrent.Executor;
 
 @Slf4j
@@ -21,6 +24,7 @@ public class ImageTaskService {
     private final ImageGenerationTaskRepository taskRepository;
     private final GeneratedImageService historyService;
     private final ImageService imageService;
+    private final FallbackCoverImageService fallbackImageService;
     private final SysConfigService sysConfigService;
     private final Executor imageGenExecutor;
     private final ObjectMapper objectMapper;
@@ -28,12 +32,14 @@ public class ImageTaskService {
     public ImageTaskService(ImageGenerationTaskRepository taskRepository,
                             GeneratedImageService historyService,
                             ImageService imageService,
+                            FallbackCoverImageService fallbackImageService,
                             SysConfigService sysConfigService,
                             Executor imageGenExecutor,
                             ObjectMapper objectMapper) {
         this.taskRepository = taskRepository;
         this.historyService = historyService;
         this.imageService = imageService;
+        this.fallbackImageService = fallbackImageService;
         this.sysConfigService = sysConfigService;
         this.imageGenExecutor = imageGenExecutor;
         this.objectMapper = objectMapper;
@@ -125,7 +131,7 @@ public class ImageTaskService {
         taskRepository.save(task);
 
         try {
-            ImageGenerationsResponse resp = imageService.generate(req);
+            ImageGenerationsResponse resp = generateWithFallback(req);
             String resultJson = objectMapper.writeValueAsString(resp);
             task.setResultJson(resultJson);
             task.setStatus(ImageGenerationTask.STATUS_COMPLETED);
@@ -144,6 +150,42 @@ public class ImageTaskService {
             task.setCompletedAt(LocalDateTime.now());
             taskRepository.save(task);
         }
+    }
+
+    ImageGenerationsResponse generateWithFallback(ImageGenerateRequest req) {
+        Exception primaryError;
+        try {
+            ImageGenerationsResponse response = imageService.generate(req);
+            if (response != null && response.getData() != null && !response.getData().isEmpty()) {
+                return response;
+            }
+            primaryError = new BusinessException(502, "Primary image API returned no image");
+        } catch (Exception e) {
+            primaryError = e;
+            log.warn("Primary image generation failed, trying fallback: {}", e.getMessage());
+        }
+
+        String fallbackUrl = fallbackImageService.generate(req.getPrompt());
+        if (fallbackUrl != null && !fallbackUrl.trim().isEmpty()) {
+            ImageGenerationsResponse.ImageDataItem item =
+                    new ImageGenerationsResponse.ImageDataItem(fallbackUrl, null, req.getPrompt());
+            return new ImageGenerationsResponse(
+                    Instant.now().getEpochSecond(),
+                    fallbackImageService.model(),
+                    Collections.singletonList(item),
+                    null
+            );
+        }
+        throw new BusinessException(502,
+                "Primary image API failed and fallback image generation also failed: "
+                        + safeErrorMessage(primaryError));
+    }
+
+    private String safeErrorMessage(Exception error) {
+        if (error == null || error.getMessage() == null || error.getMessage().trim().isEmpty()) {
+            return "unknown upstream error";
+        }
+        return error.getMessage();
     }
 
     private void processEdit(Long taskId, Long userId, ImageEditRequest req) {

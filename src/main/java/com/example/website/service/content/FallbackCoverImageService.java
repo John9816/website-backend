@@ -76,6 +76,11 @@ public class FallbackCoverImageService {
         return !"false".equalsIgnoreCase(config(CFG_ENABLED));
     }
 
+    /** Model label used for persisted history when this fallback produced the image. */
+    public String model() {
+        return defaultText(config(CFG_MODEL), DEFAULT_MODEL);
+    }
+
     /**
      * Generate a cover image for {@code prompt} via the free service. Returns the image URL, or
      * {@code null} when disabled, on any error, or when no image URL is found in the stream.

@@ -176,20 +176,42 @@ class AuthFlowIntegrationTests {
 
         mockMvc.perform(get("/api/admin/categories")
                         .header("Authorization", "Bearer " + userToken))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(0));
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
 
         mockMvc.perform(get("/api/admin/links")
                         .header("Authorization", "Bearer " + userToken))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(0));
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
 
         mockMvc.perform(get("/api/admin/image/history")
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+
+        mockMvc.perform(post("/api/admin/change-password")
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"oldPassword\":\"" + oldPassword + "\",\"newPassword\":\"" + newPassword + "\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+
+        mockMvc.perform(get("/api/user/categories")
                         .header("Authorization", "Bearer " + userToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0));
 
-        mockMvc.perform(post("/api/admin/change-password")
+        mockMvc.perform(get("/api/user/links")
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
+
+        mockMvc.perform(get("/api/user/image/history")
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
+
+        mockMvc.perform(post("/api/user/change-password")
                         .header("Authorization", "Bearer " + userToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"oldPassword\":\"" + oldPassword + "\",\"newPassword\":\"" + newPassword + "\"}"))
@@ -240,14 +262,14 @@ class AuthFlowIntegrationTests {
         Long adminCategoryId = createCategory(adminToken, "/api/admin/categories", adminCategoryName);
         createLink(adminToken, "/api/admin/links", adminCategoryId, adminLinkName);
 
-        Long userCategoryId = createCategory(userToken, "/api/admin/categories", userCategoryName);
-        createLink(userToken, "/api/admin/links", userCategoryId, userLinkName);
+        Long userCategoryId = createCategory(userToken, "/api/user/categories", userCategoryName);
+        createLink(userToken, "/api/user/links", userCategoryId, userLinkName);
 
-        JsonNode userCategories = getData(getJson("/api/admin/categories", userToken));
+        JsonNode userCategories = getData(getJson("/api/user/categories", userToken));
         assertTrue(containsCategory(userCategories, userCategoryName));
         assertFalse(containsCategory(userCategories, adminCategoryName));
 
-        JsonNode userLinks = getData(getJson("/api/admin/links?categoryId=" + userCategoryId, userToken));
+        JsonNode userLinks = getData(getJson("/api/user/links?categoryId=" + userCategoryId, userToken));
         assertTrue(containsLink(userLinks, userLinkName));
         assertFalse(containsLink(userLinks, adminLinkName));
 

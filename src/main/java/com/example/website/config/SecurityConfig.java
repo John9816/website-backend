@@ -29,6 +29,8 @@ import java.util.Collections;
 @RequiredArgsConstructor
 public class SecurityConfig {
 
+    private static final String ROLE_ADMIN = "ADMIN";
+
     private final JwtAuthFilter jwtAuthFilter;
     private final AppProperties props;
 
@@ -62,17 +64,12 @@ public class SecurityConfig {
                 .antMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/health").permitAll()
                 .antMatchers("/api/auth/**").permitAll()
-                .antMatchers("/api/user/**").authenticated()
-                .antMatchers("/api/admin/change-password").authenticated()
-                .antMatchers("/api/admin/image/**").authenticated()
-                .antMatchers("/api/admin/categories/**", "/api/admin/links/**").authenticated()
-                .antMatchers("/api/admin/content/**").hasRole("ADMIN")
-                .antMatchers("/api/user/kb/**").authenticated()
                 .antMatchers(HttpMethod.GET, "/api/v1/image/file/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/v1/kb/assets/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/v1/content/assets/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/public/**").permitAll()
-                .antMatchers("/api/admin/**").hasRole("ADMIN")
+                .antMatchers("/api/admin/**").hasRole(ROLE_ADMIN)
+                .antMatchers("/api/user/**").authenticated()
                 .anyRequest().permitAll()
                 .and()
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);

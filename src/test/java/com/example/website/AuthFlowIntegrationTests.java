@@ -198,10 +198,15 @@ class AuthFlowIntegrationTests {
 
         mockMvc.perform(get("/api/user/categories")
                         .header("Authorization", "Bearer " + userToken))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(0));
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
 
         mockMvc.perform(get("/api/user/links")
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+
+        mockMvc.perform(get("/api/user/kb/spaces")
                         .header("Authorization", "Bearer " + userToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0));
@@ -250,28 +255,25 @@ class AuthFlowIntegrationTests {
     }
 
     @Test
-    void categoriesAndLinksAreScopedToCurrentUserWhilePublicFallsBackToAdmin() throws Exception {
+    void navigationManagementIsAdminOnlyAndPublicNavUsesAdminData() throws Exception {
         String adminToken = loginAndExtractToken("admin", "admin123");
         String userToken = registerAndExtractToken("dave_test", "secret123");
 
         String adminCategoryName = "admin-cat-001";
         String adminLinkName = "admin-link-001";
-        String userCategoryName = "user-cat-001";
-        String userLinkName = "user-link-001";
 
         Long adminCategoryId = createCategory(adminToken, "/api/admin/categories", adminCategoryName);
         createLink(adminToken, "/api/admin/links", adminCategoryId, adminLinkName);
 
-        Long userCategoryId = createCategory(userToken, "/api/user/categories", userCategoryName);
-        createLink(userToken, "/api/user/links", userCategoryId, userLinkName);
+        mockMvc.perform(post("/api/user/categories")
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"user-cat-001\",\"icon\":\"book\",\"sortOrder\":1}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
 
-        JsonNode userCategories = getData(getJson("/api/user/categories", userToken));
-        assertTrue(containsCategory(userCategories, userCategoryName));
-        assertFalse(containsCategory(userCategories, adminCategoryName));
-
-        JsonNode userLinks = getData(getJson("/api/user/links?categoryId=" + userCategoryId, userToken));
-        assertTrue(containsLink(userLinks, userLinkName));
-        assertFalse(containsLink(userLinks, adminLinkName));
+        JsonNode adminCategoriesViaUserAlias = getData(getJson("/api/user/categories", adminToken));
+        assertTrue(containsCategory(adminCategoriesViaUserAlias, adminCategoryName));
 
         MvcResult publicNavResult = mockMvc.perform(get("/api/public/nav"))
                 .andExpect(status().isOk())
@@ -280,21 +282,16 @@ class AuthFlowIntegrationTests {
                 .andReturn();
         JsonNode publicNav = getData(readJson(publicNavResult));
         assertTrue(containsCategory(publicNav, adminCategoryName));
-        assertFalse(containsCategory(publicNav, userCategoryName));
         assertTrue(containsNestedLink(publicNav, adminLinkName));
-        assertFalse(containsNestedLink(publicNav, userLinkName));
 
         MvcResult signedInNavResult = mockMvc.perform(get("/api/public/nav")
                         .header("Authorization", "Bearer " + userToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
-                .andExpect(header().doesNotExist(HttpHeaders.CACHE_CONTROL))
                 .andReturn();
         JsonNode signedInNav = getData(readJson(signedInNavResult));
-        assertTrue(containsCategory(signedInNav, userCategoryName));
-        assertFalse(containsCategory(signedInNav, adminCategoryName));
-        assertTrue(containsNestedLink(signedInNav, userLinkName));
-        assertFalse(containsNestedLink(signedInNav, adminLinkName));
+        assertTrue(containsCategory(signedInNav, adminCategoryName));
+        assertTrue(containsNestedLink(signedInNav, adminLinkName));
     }
 
     private String registerAndExtractToken(String username, String password) throws Exception {

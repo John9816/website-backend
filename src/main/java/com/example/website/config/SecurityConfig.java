@@ -69,6 +69,8 @@ public class SecurityConfig {
                 .antMatchers(HttpMethod.GET, "/api/v1/content/assets/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/public/**").permitAll()
                 .antMatchers("/api/admin/**").hasRole(ROLE_ADMIN)
+                .antMatchers("/api/user/categories/**").hasRole(ROLE_ADMIN)
+                .antMatchers("/api/user/links/**").hasRole(ROLE_ADMIN)
                 .antMatchers("/api/user/**").authenticated()
                 .anyRequest().permitAll()
                 .and()

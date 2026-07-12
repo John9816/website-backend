@@ -23,8 +23,7 @@ public class UserScopeService {
     }
 
     public Long currentUserOrAdmin(HttpServletRequest request) {
-        Long userId = currentUserId(request);
-        return userId != null ? userId : adminUserId();
+        return adminUserId();
     }
 
     public Long adminUserId() {

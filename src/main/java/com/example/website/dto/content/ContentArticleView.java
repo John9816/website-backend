@@ -24,6 +24,10 @@ public class ContentArticleView {
     private String layoutTheme;
     private String imageMode;
     private Object automation;
+    private Object plan;
+    private List<Map<String, Object>> evidenceSources;
+    private Object review;
+    private Integer qualityScore;
     private String status;
     private String wechatMediaId;
     private String wechatPublishId;
@@ -37,6 +41,17 @@ public class ContentArticleView {
                                           List<String> tags,
                                           List<String> riskTips,
                                           Object automation) {
+        return from(article, topics, tags, riskTips, automation, null, null, null);
+    }
+
+    public static ContentArticleView from(ContentArticle article,
+                                          List<Map<String, Object>> topics,
+                                          List<String> tags,
+                                          List<String> riskTips,
+                                          Object automation,
+                                          Object plan,
+                                          List<Map<String, Object>> evidenceSources,
+                                          Object review) {
         ContentArticleView view = new ContentArticleView();
         view.setId(article.getId());
         view.setTitle(article.getTitle());
@@ -53,6 +68,10 @@ public class ContentArticleView {
         view.setLayoutTheme(article.getLayoutTheme());
         view.setImageMode(article.getImageMode());
         view.setAutomation(automation);
+        view.setPlan(plan);
+        view.setEvidenceSources(evidenceSources);
+        view.setReview(review);
+        view.setQualityScore(article.getQualityScore());
         view.setStatus(article.getStatus());
         view.setWechatMediaId(article.getWechatMediaId());
         view.setWechatPublishId(article.getWechatPublishId());

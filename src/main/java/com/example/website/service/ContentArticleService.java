@@ -15,6 +15,9 @@ import com.example.website.dto.content.ContentHotTopicsView;
 import com.example.website.dto.content.ContentStatusConfigView;
 import com.example.website.entity.ContentArticle;
 import com.example.website.service.content.ContentAutomationBuilder;
+import com.example.website.service.content.ContentPipelineService;
+import com.example.website.service.content.EditorialDecisionService;
+import com.example.website.service.content.FallbackCoverImageService;
 import com.example.website.service.content.HotTopicService;
 import com.example.website.repository.ContentArticleRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -85,6 +88,9 @@ public class ContentArticleService {
     private final ImageService imageService;
     private final ContentAutomationBuilder automationBuilder;
     private final HotTopicService hotTopicService;
+    private final ContentPipelineService pipelineService;
+    private final EditorialDecisionService editorialDecisionService;
+    private final FallbackCoverImageService fallbackCoverImageService;
     @Qualifier(com.example.website.config.OkHttpConfig.CLIENT_QUICK)
     private final OkHttpClient okHttpClient;
 
@@ -194,26 +200,46 @@ public class ContentArticleService {
         String layoutTheme = defaultText(payload.getLayoutTheme(), DEFAULT_LAYOUT);
         String imageMode = defaultText(payload.getImageMode(), DEFAULT_IMAGE_MODE);
         String length = defaultText(payload.getLength(), "standard");
-        ContentGenerationResult generated = generateArticleContent(topic, category, payload, length);
+
+        // TrendPublish quality pipeline, pre-writing: 证据补全 (evidence) + 文章计划 (plan). The
+        // returned prompt blocks steer the writer; the artifacts and risk notes are persisted below.
+        ContentPipelineService.PreWriting prep = pipelineService.prepare(
+                topic, category, payload.getAngle(), payload.getAudience());
+        ContentGenerationResult generated = generateArticleContent(
+                topic, category, payload, length, prep.getEvidenceBlock(), prep.getPlanBlock());
+
+        // Post-writing: 质量审稿 (review) + at-most-one 定向修订 (revision). May replace the markdown.
+        ContentPipelineService.Reviewed reviewed = pipelineService.finalize(topic, category, generated.getMarkdown());
+        String finalMarkdown = reviewed.getMarkdown();
+
+        List<String> riskTips = new ArrayList<>(generated.getRiskTips());
+        riskTips.addAll(prep.getRiskTips());
+        riskTips.addAll(reviewed.getRiskTips());
+
         String coverPrompt = defaultText(generated.getCoverPrompt(), buildCoverPrompt(topic, payload.getCoverStyle(), category));
-        String coverImageUrl = generateCoverImageIfNeeded(coverPrompt, imageMode, payload.getGenerateCover(), generated.getRiskTips());
+        String coverImageUrl = generateCoverImageIfNeeded(coverPrompt, imageMode, payload.getGenerateCover(), riskTips);
 
         ContentArticle article = new ContentArticle();
         article.setUserId(userId);
         article.setTitle(buildTitle(generated.getTitle(), category));
         article.setDigest(generated.getDigest());
-        article.setContentMarkdown(generated.getMarkdown());
-        article.setContentHtml(markdownToHtml(generated.getMarkdown()));
+        article.setContentMarkdown(finalMarkdown);
+        article.setContentHtml(markdownToHtml(finalMarkdown));
         article.setCoverPrompt(coverPrompt);
         article.setCoverImageUrl(coverImageUrl);
         article.setTopicsJson(writeJson(defaultTopics(payload, topic)));
         article.setTagsJson(writeJson(generated.getTags().isEmpty() ? defaultTags(category) : generated.getTags()));
-        article.setRiskTipsJson(writeJson(generated.getRiskTips()));
+        article.setRiskTipsJson(writeJson(riskTips));
         article.setModel(generated.getModel());
         article.setCategory(category);
         article.setLayoutTheme(layoutTheme);
         article.setImageMode(imageMode);
         article.setAutomationJson(writeJson(ContentAutomationView.empty()));
+        article.setPlanJson(prep.planAsMap() == null ? null : writeJson(prep.planAsMap()));
+        article.setEvidenceJson(prep.getEvidenceSources() == null || prep.getEvidenceSources().isEmpty()
+                ? null : writeJson(prep.getEvidenceSources()));
+        article.setReviewJson(reviewed.reviewAsMap() == null ? null : writeJson(reviewed.reviewAsMap()));
+        article.setQualityScore(reviewed.qualityScore());
         article.setStatus(ContentArticle.STATUS_DRAFT);
 
         ContentArticle saved = articleRepository.save(article);
@@ -518,6 +544,13 @@ public class ContentArticleService {
             topic.put("sourceName", "Agent 手动主题");
             return topic;
         }
+        // Editorial decision (选题聚类 + 编辑决策): let the editor pick from live hot-topic
+        // candidates with an explicit rationale. Falls through to the single-pick agent below
+        // when the decision layer is disabled, declines the batch, or is unavailable.
+        Map<String, Object> editorPick = selectViaEditorialDecision(userId, req, category);
+        if (editorPick != null) {
+            return editorPick;
+        }
         if (hasText(config("ai.chat.baseUrl"))) {
             try {
                 List<AiChatUpstreamClient.ChatMessage> messages = new ArrayList<>();
@@ -540,6 +573,30 @@ public class ContentArticleService {
             }
         }
         return fallbackAgentTopic(category, req.getInstruction());
+    }
+
+    /**
+     * Editorial decision path: pull today's ranked hot-topic candidates for the column and let
+     * {@link EditorialDecisionService} cluster and choose one (or skip). Returns {@code null} when
+     * the decision layer is disabled, has nothing usable, or deliberately skips the batch — the
+     * caller then falls back to the standalone topic agent.
+     */
+    private Map<String, Object> selectViaEditorialDecision(Long userId, ContentAgentRunRequest req, String category) {
+        List<Map<String, Object>> candidates;
+        try {
+            candidates = hotTopicService.hotTopics(12, category).getItems();
+        } catch (Exception e) {
+            return null;
+        }
+        if (candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+        EditorialDecisionService.Decision decision =
+                editorialDecisionService.decide(candidates, category, req.getInstruction(), recentTitles(userId));
+        if (decision == null || decision.isSkip() || decision.getTopic() == null) {
+            return null;
+        }
+        return normalizeAgentTopic(decision.getTopic(), category);
     }
 
     private String buildTopicPrompt(String category, String instruction, List<String> recentTitles) {
@@ -662,7 +719,10 @@ public class ContentArticleService {
                 readListOfMaps(article.getTopicsJson()),
                 readListOfStrings(article.getTagsJson()),
                 readListOfStrings(article.getRiskTipsJson()),
-                readObject(article.getAutomationJson())
+                readObject(article.getAutomationJson()),
+                readObject(article.getPlanJson()),
+                readListOfMaps(article.getEvidenceJson()),
+                readObject(article.getReviewJson())
         );
     }
 
@@ -735,7 +795,9 @@ public class ContentArticleService {
     private ContentGenerationResult generateArticleContent(String topic,
                                                            String category,
                                                            ContentArticleGenerateRequest payload,
-                                                           String length) {
+                                                           String length,
+                                                           String evidenceBlock,
+                                                           String planBlock) {
         String model = defaultText(payload.getModel(), config("ai.chat.defaultModel"));
         List<String> riskTips = new ArrayList<>(defaultRiskTips());
         if (!hasText(config("ai.chat.baseUrl"))) {
@@ -743,7 +805,7 @@ public class ContentArticleService {
             return fallbackGeneration(topic, category, payload, length, model, riskTips);
         }
         try {
-            String prompt = buildArticlePrompt(topic, category, payload, length);
+            String prompt = buildArticlePrompt(topic, category, payload, length, evidenceBlock, planBlock);
             List<AiChatUpstreamClient.ChatMessage> messages = new ArrayList<>();
             messages.add(new AiChatUpstreamClient.ChatMessage("system",
                     "你是公众号「早一步信息差」的选题和写作助手。只输出 JSON，不要 Markdown 代码块。"));
@@ -763,7 +825,8 @@ public class ContentArticleService {
         }
     }
 
-    private String buildArticlePrompt(String topic, String category, ContentArticleGenerateRequest payload, String length) {
+    private String buildArticlePrompt(String topic, String category, ContentArticleGenerateRequest payload, String length,
+                                      String evidenceBlock, String planBlock) {
         StringBuilder prompt = new StringBuilder();
         ArticleLengthSpec lengthSpec = articleLengthSpec(length);
         prompt.append("你是资深微信公众号主编和爆款选题策划，请为订阅号「早一步信息差」写一篇可直接发布的公众号正文。\n");
@@ -772,6 +835,14 @@ public class ContentArticleService {
         prompt.append("当前栏目：").append(category).append("\n");
         prompt.append("核心话题：").append(topic).append("\n");
         prompt.append("切入角度：").append(defaultText(payload.getAngle(), "先讲热点里的信息差，再落到普通人会受什么影响")).append("\n");
+        if (hasText(evidenceBlock)) {
+            prompt.append("\n事实线索（联网检索所得，可用于支撑论证，须重新表达、不得照抄，也不得据此编造未出现的数据）：\n")
+                    .append(evidenceBlock).append("\n");
+        }
+        if (hasText(planBlock)) {
+            prompt.append("\n写作大纲（请按此结构展开，可微调，但保持核心判断和分节意图）：\n")
+                    .append(planBlock).append("\n");
+        }
         prompt.append("目标读者：").append(defaultText(payload.getAudience(), "想快速看懂热点、不想被标题带节奏的读者")).append("\n");
         prompt.append("语气：").append(defaultText(payload.getTone(), "像朋友聊天，口语化，有判断但不端着，拒绝正式和学术腔")).append("\n");
         prompt.append("篇幅：").append(lengthSpec.getLabel()).append("，正文不少于 ").append(lengthSpec.getMinChars()).append(" 个中文字符，目标 ").append(lengthSpec.getTargetChars()).append(" 字左右。\n");
@@ -859,27 +930,31 @@ public class ContentArticleService {
         if (Boolean.FALSE.equals(generateCover) || "none".equalsIgnoreCase(defaultText(imageMode, DEFAULT_IMAGE_MODE))) {
             return null;
         }
-        if (!hasText(config(ImageService.CFG_BASE_URL)) || !hasText(config(ImageService.CFG_API_KEY))) {
-            riskTips.add("封面模型未配置，已跳过封面生成。");
-            return null;
-        }
-        try {
-            ImageGenerateRequest req = new ImageGenerateRequest();
-            req.setPrompt(coverPrompt);
-            req.setN(1);
-            req.setSize("1024x1024");
-            ImageGenerationsResponse response = imageService.generate(req);
-            if (response.getData() != null) {
-                for (ImageGenerationsResponse.ImageDataItem item : response.getData()) {
-                    if (hasText(item.getUrl())) {
-                        return item.getUrl();
+        // Primary: the configured image API. Falls through to the free fallback service on any of
+        // unconfigured / exception / no-URL, so a cover is still attempted when the primary is down.
+        if (hasText(config(ImageService.CFG_BASE_URL)) && hasText(config(ImageService.CFG_API_KEY))) {
+            try {
+                ImageGenerateRequest req = new ImageGenerateRequest();
+                req.setPrompt(coverPrompt);
+                req.setN(1);
+                req.setSize("1024x1024");
+                ImageGenerationsResponse response = imageService.generate(req);
+                if (response.getData() != null) {
+                    for (ImageGenerationsResponse.ImageDataItem item : response.getData()) {
+                        if (hasText(item.getUrl())) {
+                            return item.getUrl();
+                        }
                     }
                 }
+            } catch (Exception e) {
+                // Swallow and try the fallback below rather than giving up on a cover entirely.
             }
-            riskTips.add("封面模型没有返回可用图片 URL。");
-        } catch (Exception e) {
-            riskTips.add("封面生成失败：" + e.getMessage());
         }
+        String fallbackUrl = fallbackCoverImageService.generate(coverPrompt);
+        if (hasText(fallbackUrl)) {
+            return fallbackUrl;
+        }
+        riskTips.add("封面模型未配置或未返回图片，且免费兜底生图未成功，已跳过封面生成。");
         return null;
     }
 

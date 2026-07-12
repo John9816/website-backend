@@ -70,16 +70,25 @@ public class ContentAutomationBuilder {
         boolean localDraft = article.getWechatMediaId() != null && article.getWechatMediaId().startsWith("local-");
         boolean draftOk = hasText(article.getWechatMediaId()) && !localDraft && !hasText(error);
 
+        boolean hasEvidence = hasText(article.getEvidenceJson());
+        boolean hasPlan = hasText(article.getPlanJson());
+        boolean hasReview = hasText(article.getReviewJson());
+
         List<Object> logs = new ArrayList<>();
-        logs.add(logItem(article.getId() + "-agent-topic", "topic", "SUCCESS",
+        logs.add(logItem(article.getId() + "-agent-topic", "editorial_decision", "SUCCESS",
                 "已自动选题：" + defaultText(asString(topic.get("title")), article.getTitle()),
                 asString(topic.get("reason")), now));
-        logs.add(logItem(article.getId() + "-agent-research", "research", "SUCCESS",
-                "已生成选题角度、读者画像和写作方向", asString(topic.get("summary")), now));
+        logs.add(logItem(article.getId() + "-agent-evidence", "evidence", hasEvidence ? "SUCCESS" : "SKIPPED",
+                hasEvidence ? "已完成联网证据补全" : "未启用或未取回联网证据，以观点分析为主", null, now));
+        logs.add(logItem(article.getId() + "-agent-plan", "plan", hasPlan ? "SUCCESS" : "SKIPPED",
+                hasPlan ? "已生成文章写作大纲" : "未生成结构化大纲，按默认结构写作", null, now));
         logs.add(logItem(article.getId() + "-agent-generate", "generate", "SUCCESS",
                 "已自动编写正文并转换为公众号 HTML", null, valueOrNow(article.getCreatedAt(), now)));
-        logs.add(logItem(article.getId() + "-agent-review", "review", article.getRiskTipsJson() == null ? "SKIPPED" : "SUCCESS",
-                "已生成发布前复核提示", null, now));
+        logs.add(logItem(article.getId() + "-agent-review", "review", hasReview ? "SUCCESS" : "SKIPPED",
+                hasReview
+                        ? "已完成质量审稿" + (article.getQualityScore() == null ? "" : "，评分 " + article.getQualityScore())
+                        : "未启用质量审稿",
+                null, now));
         logs.add(logItem(article.getId() + "-agent-wechat-draft", "wechat_draft", draftOk ? "SUCCESS" : (localDraft ? "FAILED" : "PENDING"),
                 draftOk ? "已创建微信草稿" : (localDraft ? "微信草稿失败，已保留本地草稿" : "等待创建微信草稿"),
                 error, now));

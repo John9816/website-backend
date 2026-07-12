@@ -86,6 +86,21 @@ public class ContentArticle {
     @Column(name = "automation_json", columnDefinition = "LONGTEXT")
     private String automationJson;
 
+    @Lob
+    @Column(name = "plan_json", columnDefinition = "LONGTEXT")
+    private String planJson;
+
+    @Lob
+    @Column(name = "evidence_json", columnDefinition = "LONGTEXT")
+    private String evidenceJson;
+
+    @Lob
+    @Column(name = "review_json", columnDefinition = "LONGTEXT")
+    private String reviewJson;
+
+    @Column(name = "quality_score")
+    private Integer qualityScore;
+
     @Column(nullable = false, length = 40)
     private String status = STATUS_DRAFT;
 

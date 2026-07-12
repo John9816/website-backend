@@ -161,6 +161,42 @@ public class DataInitializer implements CommandLineRunner {
                 "Whether the autopilot generates a cover image for each article."));
         all.add(new SeedEntry("content.autopilot.dedupDays", "3",
                 "Look-back window (days) of recent titles fed to the topic agent to avoid repeats. 0 disables."));
+
+        // Content factory quality pipeline (TrendPublish core): editorial decision -> evidence
+        // completion -> article plan -> write -> quality review + at-most-one directed revision.
+        // Every stage is best-effort and independently switchable; all keys read at runtime.
+        all.add(new SeedEntry("content.decision.enabled", "true",
+                "Editorial decision: let the editor pick one topic from live hot topics with rationale. Set false to keep blind single-pick."));
+        // Evidence completion needs a web search key (content.search.apiKey, provider content.search.provider).
+        // No seed row: add these keys manually via the admin config API to enable evidence-backed writing.
+        all.add(new SeedEntry(com.example.website.service.content.EvidenceService.CFG_ENABLED, "true",
+                "Evidence completion master switch. Effective only when a search API key is set."));
+        all.add(new SeedEntry(com.example.website.service.content.EvidenceService.CFG_MAX_QUERIES, "2",
+                "Max search queries derived per topic for evidence completion (1-4)."));
+        all.add(new SeedEntry(com.example.website.service.content.EvidenceService.CFG_PER_QUERY, "3",
+                "Max search results kept per query for evidence completion (1-6)."));
+        all.add(new SeedEntry(com.example.website.service.content.ArticlePlanService.CFG_ENABLED, "true",
+                "Article plan: draft a structured outline before writing. Set false to let the writer self-structure."));
+        all.add(new SeedEntry(com.example.website.service.content.ArticleReviewService.CFG_ENABLED, "true",
+                "Quality review: score the draft and gate revision. Set false to skip review entirely."));
+        all.add(new SeedEntry(com.example.website.service.content.ArticleReviewService.CFG_MIN_SCORE, "75",
+                "Review score (0-100) below which one directed revision is triggered."));
+        all.add(new SeedEntry(com.example.website.service.content.ArticleReviewService.CFG_MAX_REVISIONS, "1",
+                "Max directed revision passes. Hard-capped at 1 per TrendPublish design; 0 disables revision."));
+
+        // Keyless cover-image fallback: used when the primary image API (image.api.*) is unset,
+        // errors, or returns no URL, so a draft still gets a cover. Best-effort, streams SSE.
+        all.add(new SeedEntry(com.example.website.service.content.FallbackCoverImageService.CFG_ENABLED, "true",
+                "Keyless cover-image fallback master switch. Set false to skip cover when the primary image API is unavailable."));
+        all.add(new SeedEntry(com.example.website.service.content.FallbackCoverImageService.CFG_URL,
+                "https://img.regenin.online/api/chat",
+                "SSE endpoint for the keyless cover-image fallback."));
+        all.add(new SeedEntry(com.example.website.service.content.FallbackCoverImageService.CFG_MODEL, "GPT Image 2.0",
+                "Model name sent to the cover-image fallback service."));
+        all.add(new SeedEntry(com.example.website.service.content.FallbackCoverImageService.CFG_RATIO, "16:9",
+                "Aspect ratio requested from the cover-image fallback service."));
+        all.add(new SeedEntry(com.example.website.service.content.FallbackCoverImageService.CFG_RESOLUTION, "2K",
+                "Resolution requested from the cover-image fallback service."));
         return all;
     }
 

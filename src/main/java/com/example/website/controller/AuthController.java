@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
 import java.util.concurrent.TimeUnit;
 
@@ -27,22 +28,34 @@ public class AuthController {
     private final UserProfileService userProfileService;
 
     @PostMapping("/api/auth/register")
-    public ApiResponse<LoginResponse> register(@Valid @RequestBody RegisterRequest req) {
+    public ApiResponse<LoginResponse> register(@Valid @RequestBody RegisterRequest req,
+                                               HttpServletResponse response) {
+        preventAuthCaching(response);
         return ApiResponse.ok(authService.register(req));
     }
 
     @PostMapping("/api/auth/login")
-    public ApiResponse<LoginResponse> login(@Valid @RequestBody LoginRequest req) {
+    public ApiResponse<LoginResponse> login(@Valid @RequestBody LoginRequest req,
+                                            HttpServletResponse response) {
+        preventAuthCaching(response);
         return ApiResponse.ok(authService.login(req));
     }
 
     @GetMapping("/api/user/me")
-    public ApiResponse<CurrentUserView> currentUser(HttpServletRequest request) {
+    public ApiResponse<CurrentUserView> currentUser(HttpServletRequest request,
+                                                    HttpServletResponse response) {
+        preventAuthCaching(response);
         Long userId = (Long) request.getAttribute("userId");
         if (userId == null) {
             return ApiResponse.error(401, "Unauthorized");
         }
         return ApiResponse.ok(userProfileService.getCurrentUser(userId));
+    }
+
+    private void preventAuthCaching(HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store, private, max-age=0");
+        response.setHeader("Pragma", "no-cache");
+        response.setHeader("Vary", "Authorization");
     }
 
     @PutMapping("/api/user/profile")

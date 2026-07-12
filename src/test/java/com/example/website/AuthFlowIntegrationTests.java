@@ -57,6 +57,8 @@ class AuthFlowIntegrationTests {
                 .andExpect(jsonPath("$.data.username").value(username))
                 .andExpect(jsonPath("$.data.role").value(User.ROLE_USER))
                 .andExpect(jsonPath("$.data.token").isNotEmpty())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store, private, max-age=0"))
+                .andExpect(header().string(HttpHeaders.VARY, "Authorization"))
                 .andReturn();
 
         JsonNode json = readJson(result);
@@ -245,7 +247,9 @@ class AuthFlowIntegrationTests {
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.username").value(userUsername))
                 .andExpect(jsonPath("$.data.role").value(User.ROLE_USER))
-                .andExpect(jsonPath("$.data.canManageSystemConfig").value(false));
+                .andExpect(jsonPath("$.data.canManageSystemConfig").value(false))
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store, private, max-age=0"))
+                .andExpect(header().string(HttpHeaders.VARY, "Authorization"));
 
         mockMvc.perform(get("/api/user/me")
                         .header("Authorization", "Bearer " + adminToken))
@@ -253,7 +257,9 @@ class AuthFlowIntegrationTests {
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.username").value("admin"))
                 .andExpect(jsonPath("$.data.role").value(User.ROLE_ADMIN))
-                .andExpect(jsonPath("$.data.canManageSystemConfig").value(true));
+                .andExpect(jsonPath("$.data.canManageSystemConfig").value(true))
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store, private, max-age=0"))
+                .andExpect(header().string(HttpHeaders.VARY, "Authorization"));
     }
 
     @Test

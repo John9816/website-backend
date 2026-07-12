@@ -21,6 +21,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -31,6 +33,22 @@ import java.util.stream.Collectors;
 public class DataInitializer implements CommandLineRunner {
 
     private static final String LEGACY_NAV_MIGRATION_FLAG = "migration.legacyNav.done";
+    private static final Set<String> OBSOLETE_CONFIG_KEYS = new HashSet<>(Arrays.asList(
+            "image.upload.dir",
+            "image.persist.remote-url-mode",
+            "music.tunefree.udid",
+            "music.play.resolverOrder",
+            "music.play.crossSourceOrder",
+            "content.autopilot.dedupDays",
+            "content.evidence.maxQueries",
+            "content.evidence.perQuery",
+            "content.review.minScore",
+            "content.review.maxRevisions",
+            "content.cover.fallback.url",
+            "content.cover.fallback.model",
+            "content.cover.fallback.ratio",
+            "content.cover.fallback.resolution"
+    ));
 
     private final UserRepository userRepository;
     private final CategoryRepository categoryRepository;
@@ -43,8 +61,20 @@ public class DataInitializer implements CommandLineRunner {
     @Override
     public void run(String... args) {
         User admin = seedAdmin();
+        deleteObsoleteConfigs();
         seedAllConfigs();
         migrateLegacyNavigationData(admin.getId());
+    }
+
+    private void deleteObsoleteConfigs() {
+        List<SysConfig> obsolete = sysConfigRepository.findAllByOrderByConfigKeyAsc().stream()
+                .filter(config -> OBSOLETE_CONFIG_KEYS.contains(config.getConfigKey()))
+                .collect(Collectors.toList());
+        if (obsolete.isEmpty()) {
+            return;
+        }
+        sysConfigRepository.deleteAll(obsolete);
+        log.info("Deleted {} obsolete sys_config rows", obsolete.size());
     }
 
     private User seedAdmin() {

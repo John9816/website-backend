@@ -98,14 +98,23 @@ public class MusicService {
             }
             view = SearchResultView.songs(source, kw, p, s, null, list);
         } else {
-            if (source != MusicSource.NETEASE) {
-                view = SearchResultView.collections(source, type, kw, p, s, 0L, Collections.emptyList());
-            } else {
-                NeteaseMusicClient.CollectionSearchResult result = netease.searchCollections(kw, type, p, s);
-                List<SearchCollectionItem> items = result == null ? Collections.emptyList() : result.getList();
-                Long total = result == null ? 0L : result.getTotal();
-                view = SearchResultView.collections(source, type, kw, p, s, total, items);
+            NeteaseMusicClient.CollectionSearchResult result;
+            switch (source) {
+                case QQ:
+                    result = qq.searchCollections(kw, type, p, s);
+                    break;
+                case KUWO:
+                    result = kuwo.searchCollections(kw, type, p, s);
+                    break;
+                case NETEASE:
+                    result = netease.searchCollections(kw, type, p, s);
+                    break;
+                default:
+                    throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
             }
+            List<SearchCollectionItem> items = result == null ? Collections.emptyList() : result.getList();
+            Long total = result == null ? 0L : result.getTotal();
+            view = SearchResultView.collections(source, type, kw, p, s, total, items);
         }
         cache.put(key, view, SEARCH_TTL_SEC);
         return view;

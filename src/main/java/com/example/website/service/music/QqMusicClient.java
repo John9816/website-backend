@@ -4,6 +4,8 @@ import com.example.website.common.MusicBusinessException;
 import com.example.website.common.MusicErrorCode;
 import com.example.website.config.OkHttpConfig;
 import com.example.website.dto.music.MusicSource;
+import com.example.website.dto.music.MusicSearchType;
+import com.example.website.dto.music.SearchCollectionItem;
 import com.example.website.dto.music.PlaylistDetailView;
 import com.example.website.dto.music.PlaylistItem;
 import com.example.website.dto.music.PlaylistListView;
@@ -88,6 +90,71 @@ public class QqMusicClient {
         Map<String, Object> json = callJson(req, MusicErrorCode.UPSTREAM_SEARCH_FAILED);
         ensureQqJsonSuccess(json, MusicErrorCode.UPSTREAM_SEARCH_FAILED);
         return parseCpSearch(json);
+    }
+
+    /** QQ's public CP endpoint exposes artist/album search; it does not expose keyword playlist search. */
+    public NeteaseMusicClient.CollectionSearchResult searchCollections(String keyword, MusicSearchType type, int page, int pageSize) {
+        if (type == null || type == MusicSearchType.SONG || type == MusicSearchType.PLAYLIST) {
+            return new NeteaseMusicClient.CollectionSearchResult(0L, Collections.emptyList());
+        }
+        Map<String, Object> json;
+        if (type == MusicSearchType.ARTIST) {
+            HttpUrl url = HttpUrl.parse("https://c.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg").newBuilder()
+                    .addQueryParameter("format", "json").addQueryParameter("inCharset", "utf8")
+                    .addQueryParameter("outCharset", "utf-8").addQueryParameter("key", keyword).build();
+            Request req = new Request.Builder().url(url).header("Referer", REFERER).header("User-Agent", "Mozilla/5.0").get().build();
+            json = callJson(req, MusicErrorCode.UPSTREAM_SEARCH_FAILED);
+            return parseQqArtists(json, type, page, pageSize);
+        }
+        json = searchCpJson(keyword, page, pageSize, "8");
+        ensureQqJsonSuccess(json, MusicErrorCode.UPSTREAM_SEARCH_FAILED);
+        return parseQqAlbums(json, type);
+    }
+
+    private Map<String, Object> searchCpJson(String keyword, int page, int pageSize, String t) {
+        HttpUrl url = HttpUrl.parse(SEARCH_CP_URL).newBuilder()
+                .addQueryParameter("g_tk", "5381").addQueryParameter("uin", "0").addQueryParameter("format", "json")
+                .addQueryParameter("inCharset", "utf-8").addQueryParameter("outCharset", "utf-8").addQueryParameter("notice", "0")
+                .addQueryParameter("platform", "h5").addQueryParameter("needNewCode", "1").addQueryParameter("w", keyword)
+                .addQueryParameter("zhidaqu", "1").addQueryParameter("catZhida", "1").addQueryParameter("t", t)
+                .addQueryParameter("flag", "1").addQueryParameter("ie", "utf-8").addQueryParameter("sem", "1")
+                .addQueryParameter("aggr", "0").addQueryParameter("perpage", String.valueOf(pageSize)).addQueryParameter("n", String.valueOf(pageSize))
+                .addQueryParameter("p", String.valueOf(page)).addQueryParameter("remoteplace", "txt.mqq.all").build();
+        Request req = new Request.Builder().url(url).header("Referer", REFERER).header("User-Agent", "Mozilla/5.0").header("Accept", "application/json").get().build();
+        return callJson(req, MusicErrorCode.UPSTREAM_SEARCH_FAILED);
+    }
+
+    @SuppressWarnings("unchecked")
+    private NeteaseMusicClient.CollectionSearchResult parseQqArtists(Map<String, Object> json, MusicSearchType type, int page, int pageSize) {
+        Map<String, Object> data = asMap(json.get("data"));
+        Map<String, Object> singer = data == null ? null : asMap(data.get("singer"));
+        Object rows = singer == null ? null : singer.get("itemlist");
+        List<SearchCollectionItem> out = new ArrayList<>();
+        if (rows instanceof List) for (Object row : (List<?>) rows) if (row instanceof Map) {
+            Map<String, Object> s = (Map<String, Object>) row;
+            SearchCollectionItem item = new SearchCollectionItem(firstNonEmpty(asString(s.get("mid")), asString(s.get("id")), asString(s.get("docid"))), MusicSource.QQ, type, firstNonEmpty(asString(s.get("name")), asString(s.get("singer"))), null, null, asString(s.get("pic")), null, null);
+            if (item.getId() != null && item.getName() != null) out.add(item);
+        }
+        int from = Math.max(0, (page - 1) * pageSize);
+        return new NeteaseMusicClient.CollectionSearchResult((long) out.size(), out.subList(Math.min(from, out.size()), Math.min(out.size(), from + pageSize)));
+    }
+
+    @SuppressWarnings("unchecked")
+    private NeteaseMusicClient.CollectionSearchResult parseQqAlbums(Map<String, Object> json, MusicSearchType type) {
+        Map<String, Object> data = asMap(json.get("data"));
+        Map<String, Object> album = data == null ? null : asMap(data.get("album"));
+        Object rows = album == null ? null : album.get("list");
+        List<SearchCollectionItem> out = new ArrayList<>();
+        if (rows instanceof List) for (Object row : (List<?>) rows) if (row instanceof Map) {
+            Map<String, Object> s = (Map<String, Object>) row;
+            String mid = firstNonEmpty(asString(s.get("albumMID")), asString(s.get("albumMid")), asString(s.get("mid")), asString(s.get("albumID")), asString(s.get("id")));
+            String cover = asString(s.get("pic"));
+            if ((cover == null || cover.isEmpty()) && mid != null) cover = "https://y.gtimg.cn/music/photo_new/T002R500x500M000" + mid + ".jpg";
+            SearchCollectionItem item = new SearchCollectionItem(mid, MusicSource.QQ, type, firstNonEmpty(asString(s.get("albumName")), asString(s.get("name"))), firstNonEmpty(asString(s.get("singerName")), asString(s.get("singer"))), null, cover, null, null);
+            if (item.getId() != null && item.getName() != null) out.add(item);
+        }
+        Long total = album == null ? 0L : asLongObj(album.get("totalnum"));
+        return new NeteaseMusicClient.CollectionSearchResult(total == null ? (long) out.size() : total, out);
     }
 
     public String fetchLyric(String songMid) {

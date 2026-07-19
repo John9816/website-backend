@@ -4,6 +4,8 @@ import com.example.website.common.MusicBusinessException;
 import com.example.website.common.MusicErrorCode;
 import com.example.website.config.OkHttpConfig;
 import com.example.website.dto.music.MusicSource;
+import com.example.website.dto.music.MusicSearchType;
+import com.example.website.dto.music.SearchCollectionItem;
 import com.example.website.dto.music.PlaylistDetailView;
 import com.example.website.dto.music.PlaylistItem;
 import com.example.website.dto.music.PlaylistListView;
@@ -101,6 +103,62 @@ public class KuwoMusicClient {
                     "kuwo upstream parse failed: " + e.getMessage(), e);
         }
         return parseSearch(json);
+    }
+
+    public NeteaseMusicClient.CollectionSearchResult searchCollections(String keyword, MusicSearchType type, int page, int pageSize) {
+        if (type == null || type == MusicSearchType.SONG) return new NeteaseMusicClient.CollectionSearchResult(0L, Collections.emptyList());
+        int pn = Math.max(0, page - 1);
+        HttpUrl url = HttpUrl.parse(SEARCH_URL).newBuilder()
+                .addQueryParameter("client", "kt").addQueryParameter("all", keyword)
+                .addQueryParameter("pn", String.valueOf(pn)).addQueryParameter("rn", String.valueOf(pageSize))
+                .addQueryParameter("ft", type == MusicSearchType.PLAYLIST ? "playlist" : type.getValue())
+                .addQueryParameter("encoding", "utf8").addQueryParameter("rformat", "json")
+                .addQueryParameter("vipver", "MUSIC_9.0.5.0_W1").addQueryParameter("newver", "1").build();
+        Request req = new Request.Builder().url(url).header("Accept", "application/json").header("User-Agent", "Mozilla/5.0").get().build();
+        try (Response resp = okHttpClient.newCall(req).execute()) {
+            String raw = resp.body() == null ? "" : resp.body().string();
+            if (!resp.isSuccessful()) throw new MusicBusinessException(MusicErrorCode.UPSTREAM_SEARCH_FAILED, "kuwo upstream returned " + resp.code());
+            Map<String, Object> json = parseSearchPayload(raw);
+            return parseCollectionSearch(json, type);
+        } catch (IOException e) {
+            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_SEARCH_FAILED, "kuwo collection search failed: " + e.getMessage(), e);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private NeteaseMusicClient.CollectionSearchResult parseCollectionSearch(Map<String, Object> json, MusicSearchType type) {
+        Object rows = json.get("abslist");
+        if (!(rows instanceof List)) rows = json.get("albumlist");
+        List<SearchCollectionItem> out = new ArrayList<>();
+        if (rows instanceof List) for (Object row : (List<?>) rows) {
+            if (!(row instanceof Map)) continue;
+            Map<String, Object> s = (Map<String, Object>) row;
+            SearchCollectionItem item = new SearchCollectionItem();
+            item.setSource(MusicSource.KUWO); item.setType(type);
+            if (type == MusicSearchType.ARTIST) {
+                item.setId(firstNonEmpty(asString(s.get("ARTISTID")), asString(s.get("artistid")), asString(s.get("DC_TARGETID")), asString(s.get("id"))));
+                item.setName(firstNonEmpty(asString(s.get("ARTIST")), asString(s.get("name"))));
+                item.setCoverUrl(firstNonEmpty(asString(s.get("hts_PICPATH")), asString(s.get("PICPATH")), asString(s.get("artistpic"))));
+                item.setTrackCount(asInt(firstNonEmpty(asString(s.get("SONGNUM")), asString(s.get("songnum")))));
+            } else if (type == MusicSearchType.ALBUM) {
+                item.setId(firstNonEmpty(asString(s.get("albumid")), asString(s.get("id")), asString(s.get("DC_TARGETID"))));
+                item.setName(firstNonEmpty(asString(s.get("name")), asString(s.get("album")), asString(s.get("ALBUM"))));
+                item.setArtist(firstNonEmpty(asString(s.get("artist")), asString(s.get("ARTIST")), asString(s.get("fartist"))));
+                item.setCoverUrl(firstNonEmpty(asString(s.get("hts_img")), asString(s.get("img")), asString(s.get("pic"))));
+                item.setTrackCount(asInt(firstNonEmpty(asString(s.get("musiccnt")), asString(s.get("songnum")))));
+                item.setPlayCount(asLongObj(firstNonEmpty(asString(s.get("PLAYCNT")), asString(s.get("playcnt")))));
+            } else {
+                item.setId(firstNonEmpty(asString(s.get("playlistid")), asString(s.get("id")), asString(s.get("DC_TARGETID"))));
+                item.setName(firstNonEmpty(asString(s.get("name")), asString(s.get("title"))));
+                item.setCreatorName(firstNonEmpty(asString(s.get("nickname")), asString(s.get("uname"))));
+                item.setCoverUrl(firstNonEmpty(asString(s.get("hts_pic")), asString(s.get("pic")), asString(s.get("img"))));
+                item.setTrackCount(asInt(firstNonEmpty(asString(s.get("songnum")), asString(s.get("total")))));
+                item.setPlayCount(asLongObj(firstNonEmpty(asString(s.get("playcnt")), asString(s.get("listencnt")))));
+            }
+            if (item.getId() != null && !item.getId().isEmpty() && item.getName() != null && !item.getName().isEmpty()) out.add(item);
+        }
+        Long total = asLongObj(firstNonEmpty(asString(json.get("TOTAL")), asString(json.get("total")), asString(json.get("HIT"))));
+        return new NeteaseMusicClient.CollectionSearchResult(total == null ? (long) out.size() : total, out);
     }
 
     private Map<String, Object> parseSearchPayload(String raw) throws IOException {

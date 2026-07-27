@@ -13,6 +13,10 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
 
     Optional<RefreshToken> findByTokenHash(String tokenHash);
 
+    @Query("select count(t) from RefreshToken t " +
+            "where t.userId = :userId and t.revokedAt is null and t.expiresAt > :now")
+    long countActiveForUser(@Param("userId") Long userId, @Param("now") LocalDateTime now);
+
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("update RefreshToken t set t.revokedAt = :now " +
             "where t.userId = :userId and t.revokedAt is null")

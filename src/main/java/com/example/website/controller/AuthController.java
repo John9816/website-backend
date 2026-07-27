@@ -10,6 +10,7 @@ import com.example.website.dto.RegisterRequest;
 import com.example.website.dto.UserProfileUpdateRequest;
 import com.example.website.service.AuthService;
 import com.example.website.service.UserProfileService;
+import com.example.website.util.ClientIpResolver;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
@@ -30,16 +31,18 @@ public class AuthController {
 
     @PostMapping("/api/auth/register")
     public ApiResponse<LoginResponse> register(@Valid @RequestBody RegisterRequest req,
+                                               HttpServletRequest request,
                                                HttpServletResponse response) {
         preventAuthCaching(response);
-        return ApiResponse.ok(authService.register(req));
+        return ApiResponse.ok(authService.register(req, ClientIpResolver.resolve(request)));
     }
 
     @PostMapping("/api/auth/login")
     public ApiResponse<LoginResponse> login(@Valid @RequestBody LoginRequest req,
+                                            HttpServletRequest request,
                                             HttpServletResponse response) {
         preventAuthCaching(response);
-        return ApiResponse.ok(authService.login(req));
+        return ApiResponse.ok(authService.login(req, ClientIpResolver.resolve(request)));
     }
 
     /**

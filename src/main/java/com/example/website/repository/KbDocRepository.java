@@ -21,6 +21,8 @@ public interface KbDocRepository extends JpaRepository<KbDoc, Long> {
 
     long countBySpaceIdAndUserId(Long spaceId, Long userId);
 
+    long countByUserId(Long userId);
+
     @Query("select d.id as id, d.spaceId as spaceId, d.parentId as parentId, d.userId as userId, " +
             "d.title as title, d.summary as summary, d.status as status, d.sortOrder as sortOrder, " +
             "d.versionNo as versionNo, d.createdAt as createdAt, d.updatedAt as updatedAt " +

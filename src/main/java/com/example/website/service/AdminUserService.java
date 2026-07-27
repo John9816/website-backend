@@ -2,10 +2,19 @@ package com.example.website.service;
 
 import com.example.website.common.BusinessException;
 import com.example.website.dto.AdminUserCreateRequest;
+import com.example.website.dto.AdminUserDetailView;
 import com.example.website.dto.AdminUserUpdateRequest;
 import com.example.website.dto.AdminUserView;
 import com.example.website.dto.PageView;
 import com.example.website.entity.User;
+import com.example.website.repository.AiConversationRepository;
+import com.example.website.repository.ContentArticleRepository;
+import com.example.website.repository.GeneratedImageRepository;
+import com.example.website.repository.KbDocRepository;
+import com.example.website.repository.MusicFavoriteRepository;
+import com.example.website.repository.MusicPlayHistoryRepository;
+import com.example.website.repository.RefreshTokenRepository;
+import com.example.website.repository.UserPlaylistRepository;
 import com.example.website.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -28,6 +37,14 @@ public class AdminUserService {
     private final PasswordEncoder passwordEncoder;
     private final AuthUserCacheService authUserCacheService;
     private final RefreshTokenService refreshTokenService;
+    private final RefreshTokenRepository refreshTokenRepository;
+    private final GeneratedImageRepository generatedImageRepository;
+    private final ContentArticleRepository contentArticleRepository;
+    private final KbDocRepository kbDocRepository;
+    private final AiConversationRepository aiConversationRepository;
+    private final MusicFavoriteRepository musicFavoriteRepository;
+    private final UserPlaylistRepository userPlaylistRepository;
+    private final MusicPlayHistoryRepository musicPlayHistoryRepository;
 
     @Transactional(readOnly = true)
     public PageView<AdminUserView> list(String keyword, String role, Boolean enabled, int page, int size) {
@@ -120,6 +137,22 @@ public class AdminUserService {
         userRepository.save(target);
         authUserCacheService.evict(target.getId());
         refreshTokenService.revokeAllForUser(userId);
+    }
+
+    @Transactional(readOnly = true)
+    public AdminUserDetailView detail(Long userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new BusinessException(404, "User not found"));
+        AdminUserDetailView view = AdminUserDetailView.from(user);
+        view.setActiveSessions(refreshTokenRepository.countActiveForUser(userId, java.time.LocalDateTime.now()));
+        view.setImageCount(generatedImageRepository.countByUserId(userId));
+        view.setArticleCount(contentArticleRepository.countByUserId(userId));
+        view.setKbDocCount(kbDocRepository.countByUserId(userId));
+        view.setConversationCount(aiConversationRepository.countByUserId(userId));
+        view.setMusicFavoriteCount(musicFavoriteRepository.countByUserId(userId));
+        view.setPlaylistCount(userPlaylistRepository.countByUserId(userId));
+        view.setPlayHistoryCount(musicPlayHistoryRepository.countByUserId(userId));
+        return view;
     }
 
     private String normalizeRole(String role) {

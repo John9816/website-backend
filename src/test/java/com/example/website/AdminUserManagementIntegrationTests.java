@@ -100,6 +100,59 @@ class AdminUserManagementIntegrationTests {
     }
 
     @Test
+    void adminDetailReportsActivityAndAssetCounts() throws Exception {
+        String adminToken = loginAndExtractToken("admin", "admin123");
+        String suffix = uniqueSuffix();
+        String username = "detail_" + suffix;
+        String email = qqEmail(suffix);
+        String password = "secret123";
+
+        MvcResult createdResult = mockMvc.perform(post("/api/admin/users")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"email\":\"" + email
+                                + "\",\"password\":\"" + password + "\",\"role\":\"USER\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        long userId = readJson(createdResult).path("data").path("id").asLong();
+
+        // Login sets last_login_at / last_login_ip / login_count.
+        mockMvc.perform(post("/api/auth/login")
+                        .header("X-Forwarded-For", "203.0.113.7")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"password\":\"" + password + "\"}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/admin/users/" + userId)
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(userId))
+                .andExpect(jsonPath("$.data.username").value(username))
+                .andExpect(jsonPath("$.data.loginCount").value(1))
+                .andExpect(jsonPath("$.data.lastLoginIp").value("203.0.113.7"))
+                .andExpect(jsonPath("$.data.lastLoginAt").isNotEmpty())
+                .andExpect(jsonPath("$.data.activeSessions").value(1))
+                .andExpect(jsonPath("$.data.imageCount").value(0))
+                .andExpect(jsonPath("$.data.articleCount").value(0))
+                .andExpect(jsonPath("$.data.kbDocCount").value(0))
+                .andExpect(jsonPath("$.data.conversationCount").value(0))
+                .andExpect(jsonPath("$.data.musicFavoriteCount").value(0))
+                .andExpect(jsonPath("$.data.playlistCount").value(0))
+                .andExpect(jsonPath("$.data.playHistoryCount").value(0));
+    }
+
+    @Test
+    void regularUserCannotViewUserDetail() throws Exception {
+        String suffix = uniqueSuffix();
+        String token = registerAndExtractToken("viewer_" + suffix, "secret123", qqEmail(suffix));
+
+        mockMvc.perform(get("/api/admin/users/1")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+    }
+
+    @Test
     void adminCannotDisableOrDemoteOwnAccount() throws Exception {
         String adminToken = loginAndExtractToken("admin", "admin123");
         MvcResult me = mockMvc.perform(get("/api/user/me")

@@ -16,6 +16,8 @@ public interface GeneratedImageRepository extends JpaRepository<GeneratedImage, 
 
     Optional<GeneratedImage> findByIdAndUserId(Long id, Long userId);
 
+    long countByUserId(Long userId);
+
     Page<GeneratedImage> findByIsSharedTrueOrderByCreatedAtDescIdDesc(Pageable pageable);
 
     @Query("SELECT COUNT(g) FROM GeneratedImage g WHERE g.userId = :userId AND g.createdAt >= :since")

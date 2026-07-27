@@ -17,6 +17,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.time.LocalDateTime;
+
 @Service
 @RequiredArgsConstructor
 public class AuthService {
@@ -29,7 +31,7 @@ public class AuthService {
     private final RefreshTokenService refreshTokenService;
 
     @Transactional
-    public LoginResponse login(LoginRequest req) {
+    public LoginResponse login(LoginRequest req, String clientIp) {
         String username = normalizeUsername(req.getUsername());
         User user = userRepository.findByUsername(username)
                 .orElseThrow(() -> new BadCredentialsException("Invalid username or password"));
@@ -41,14 +43,17 @@ public class AuthService {
         }
         if (passwordEncoder.upgradeEncoding(user.getPassword())) {
             user.setPassword(passwordEncoder.encode(req.getPassword()));
-            userRepository.save(user);
         }
+        user.setLastLoginAt(LocalDateTime.now());
+        user.setLastLoginIp(clientIp);
+        user.setLoginCount(user.getLoginCount() + 1);
+        userRepository.save(user);
         authUserCacheService.evict(user.getId());
         return buildLoginResponse(user);
     }
 
     @Transactional
-    public LoginResponse register(RegisterRequest req) {
+    public LoginResponse register(RegisterRequest req, String clientIp) {
         String username = normalizeUsername(req.getUsername());
         String email = normalizeEmail(req.getEmail());
         if (userRepository.existsByUsername(username)) {
@@ -63,6 +68,7 @@ public class AuthService {
         user.setEmail(email);
         user.setPassword(passwordEncoder.encode(req.getPassword()));
         user.setRole(User.ROLE_USER);
+        user.setRegisterIp(clientIp);
         userRepository.save(user);
         authUserCacheService.evict(user.getId());
         return buildLoginResponse(user);

@@ -12,6 +12,8 @@ public interface MusicFavoriteRepository extends JpaRepository<MusicFavorite, Lo
 
     Page<MusicFavorite> findByUserIdOrderByCreatedAtDescIdDesc(Long userId, Pageable pageable);
 
+    long countByUserId(Long userId);
+
     Optional<MusicFavorite> findByUserIdAndSourceAndSongId(Long userId, String source, String songId);
 
     boolean existsByUserIdAndSourceAndSongId(Long userId, String source, String songId);

@@ -15,6 +15,8 @@ public interface ContentArticleRepository extends JpaRepository<ContentArticle, 
 
     Page<ContentArticle> findByUserIdOrderByUpdatedAtDescIdDesc(Long userId, Pageable pageable);
 
+    long countByUserId(Long userId);
+
     /** Autopilot slot guard: how many articles this user already produced at/after a given instant. */
     long countByUserIdAndCreatedAtAfter(Long userId, LocalDateTime createdAt);
 

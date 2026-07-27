@@ -12,4 +12,6 @@ public interface AiConversationRepository extends JpaRepository<AiConversation, 
     Page<AiConversation> findByUserIdOrderByLastMessageAtDescIdDesc(Long userId, Pageable pageable);
 
     Optional<AiConversation> findByIdAndUserId(Long id, Long userId);
+
+    long countByUserId(Long userId);
 }

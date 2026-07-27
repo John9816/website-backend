@@ -2,6 +2,7 @@ package com.example.website.controller;
 
 import com.example.website.common.ApiResponse;
 import com.example.website.dto.AdminUserCreateRequest;
+import com.example.website.dto.AdminUserDetailView;
 import com.example.website.dto.AdminUserPasswordRequest;
 import com.example.website.dto.AdminUserUpdateRequest;
 import com.example.website.dto.AdminUserView;
@@ -19,6 +20,11 @@ import javax.validation.Valid;
 public class AdminUserController {
 
     private final AdminUserService adminUserService;
+
+    @GetMapping("/{id}")
+    public ApiResponse<AdminUserDetailView> detail(@PathVariable Long id) {
+        return ApiResponse.ok(adminUserService.detail(id));
+    }
 
     @GetMapping
     public ApiResponse<PageView<AdminUserView>> list(

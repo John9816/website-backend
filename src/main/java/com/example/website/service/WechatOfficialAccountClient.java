@@ -69,6 +69,34 @@ public class WechatOfficialAccountClient {
         return new MaterialResult(mediaId, asString(json.get("url")));
     }
 
+    public ContentImageResult uploadContentImage(String appId,
+                                                 String appSecret,
+                                                 byte[] data,
+                                                 String filename,
+                                                 String mimeType) {
+        if (data == null || data.length == 0) {
+            throw new BusinessException(400, "WeChat content image is empty");
+        }
+        String token = accessToken(appId, appSecret);
+        HttpUrl url = HttpUrl.parse(API_BASE + "/cgi-bin/media/uploadimg")
+                .newBuilder()
+                .addQueryParameter("access_token", token)
+                .build();
+        MediaType mediaType = MediaType.parse(hasText(mimeType) ? mimeType : "image/png");
+        RequestBody fileBody = RequestBody.create(data, mediaType == null ? IMAGE : mediaType);
+        RequestBody body = new MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("media", defaultText(filename, "content-image.png"), fileBody)
+                .build();
+        Map<String, Object> json = post(url.toString(), body);
+        assertWechatOk(json, "Upload WeChat content image failed");
+        String imageUrl = asString(json.get("url"));
+        if (!hasText(imageUrl)) {
+            throw new BusinessException(502, "Upload WeChat content image failed: url is missing");
+        }
+        return new ContentImageResult(imageUrl);
+    }
+
     public DraftResult addDraft(String appId,
                                 String appSecret,
                                 String title,
@@ -260,6 +288,12 @@ public class WechatOfficialAccountClient {
     @AllArgsConstructor
     public static class MaterialResult {
         private String mediaId;
+        private String url;
+    }
+
+    @Data
+    @AllArgsConstructor
+    public static class ContentImageResult {
         private String url;
     }
 

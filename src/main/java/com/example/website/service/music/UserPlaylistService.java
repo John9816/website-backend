@@ -67,6 +67,85 @@ public class UserPlaylistService {
         playlistRepository.findByUserIdAndSourceAndSourceId(userId, ref.source.getValue(), ref.externalId)
                 .ifPresent(p -> { throw new BusinessException(409, "该歌单已导入"); });
 
+        FetchedRemotePlaylist remote = fetchRemoteTracks(ref);
+
+        // All upstream HTTP work above is finished; only the writes go inside the transaction
+        // so HikariCP connections are not held during multi-second upstream paging.
+        return transactionTemplate.execute(status -> {
+            UserPlaylist entity = new UserPlaylist();
+            entity.setUserId(userId);
+            entity.setSource(ref.source.getValue());
+            entity.setSourceId(ref.externalId);
+            entity.setSourceUrl(limit(url, 1000));
+            applyRemoteMetadata(entity, remote.firstPage);
+            entity.setTrackCount(remote.songs.size());
+            UserPlaylist saved = playlistRepository.save(entity);
+            int trackCount = replacePlaylistItems(saved, ref, remote.songs);
+            saved.setTrackCount(trackCount);
+            playlistRepository.save(saved);
+
+            log.info("Imported playlist {}/{} ({}) for user {}: {} tracks",
+                    ref.source.getValue(), ref.externalId, saved.getName(), userId, trackCount);
+            return UserPlaylistView.from(saved);
+        });
+    }
+
+    /**
+     * Re-fetch tracks from the remote platform and replace local items.
+     * Metadata (name/cover/description/creator) follows remote; track list is remote-wins.
+     * Local-only playlists cannot be synced.
+     */
+    public UserPlaylistView syncFromRemote(Long userId, Long playlistId) {
+        UserPlaylist existing = requireOwned(userId, playlistId);
+        if (LOCAL_PLAYLIST_SOURCE.equalsIgnoreCase(existing.getSource())) {
+            throw new BusinessException(400, "本地歌单不支持从远端同步");
+        }
+
+        PlaylistRef ref = resolvePlaylistRef(existing);
+        FetchedRemotePlaylist remote = fetchRemoteTracks(ref);
+        final String preferredSourceUrl = firstNonBlank(existing.getSourceUrl(), null);
+
+        return transactionTemplate.execute(status -> {
+            UserPlaylist playlist = requireOwned(userId, playlistId);
+            applyRemoteMetadata(playlist, remote.firstPage);
+            if (preferredSourceUrl != null) {
+                playlist.setSourceUrl(limit(preferredSourceUrl, 1000));
+            }
+            // Keep source/sourceId stable; refresh if missing.
+            if (trimmedOrNull(playlist.getSource()) == null) {
+                playlist.setSource(ref.source.getValue());
+            }
+            if (trimmedOrNull(playlist.getSourceId()) == null) {
+                playlist.setSourceId(ref.externalId);
+            }
+            int trackCount = replacePlaylistItems(playlist, ref, remote.songs);
+            playlist.setTrackCount(trackCount);
+            UserPlaylist saved = playlistRepository.save(playlist);
+
+            log.info("Synced playlist {} ({} / {}) for user {}: {} tracks",
+                    saved.getId(), ref.source.getValue(), ref.externalId, userId, trackCount);
+            return UserPlaylistView.from(saved);
+        });
+    }
+
+    private PlaylistRef resolvePlaylistRef(UserPlaylist playlist) {
+        String sourceUrl = trimmedOrNull(playlist.getSourceUrl());
+        if (sourceUrl != null) {
+            try {
+                return parseShareUrl(sourceUrl);
+            } catch (RuntimeException ignored) {
+                // Fall through to source + sourceId.
+            }
+        }
+        String source = trimmedOrNull(playlist.getSource());
+        String sourceId = trimmedOrNull(playlist.getSourceId());
+        if (source == null || sourceId == null || LOCAL_PLAYLIST_SOURCE.equalsIgnoreCase(source)) {
+            throw new BusinessException(400, "该歌单没有可同步的远端来源");
+        }
+        return new PlaylistRef(MusicSource.of(source), sourceId);
+    }
+
+    private FetchedRemotePlaylist fetchRemoteTracks(PlaylistRef ref) {
         List<SongSearchItem> allSongs = new ArrayList<>();
         PlaylistDetailView firstPage = fetchPage(ref, 1, IMPORT_PAGE_SIZE);
         if (firstPage == null || firstPage.getList() == null) {
@@ -94,54 +173,53 @@ public class UserPlaylistService {
             }
         }
         if (allSongs.size() > MAX_IMPORT_TRACKS) {
-            allSongs = allSongs.subList(0, MAX_IMPORT_TRACKS);
+            allSongs = new ArrayList<>(allSongs.subList(0, MAX_IMPORT_TRACKS));
         }
+        return new FetchedRemotePlaylist(firstPage, allSongs);
+    }
 
-        final List<SongSearchItem> songsToPersist = allSongs;
-        final PlaylistDetailView firstPageRef = firstPage;
-        final String urlRef = url;
-        final PlaylistRef refRef = ref;
+    private void applyRemoteMetadata(UserPlaylist entity, PlaylistDetailView firstPage) {
+        entity.setName(limit(firstNonBlank(firstPage.getName(), firstNonBlank(entity.getName(), "Imported Playlist")), 300));
+        entity.setCoverUrl(limit(trimmedOrNull(firstPage.getCoverUrl()), 1000));
+        entity.setDescription(limit(trimmedOrNull(firstPage.getDescription()), 2000));
+        entity.setCreatorName(limit(trimmedOrNull(firstPage.getCreatorName()), 300));
+    }
 
-        // All upstream HTTP work above is finished; only the writes go inside the transaction
-        // so HikariCP connections are not held during multi-second upstream paging.
-        return transactionTemplate.execute(status -> {
-            UserPlaylist entity = new UserPlaylist();
-            entity.setUserId(userId);
-            entity.setSource(refRef.source.getValue());
-            entity.setSourceId(refRef.externalId);
-            entity.setSourceUrl(limit(urlRef, 1000));
-            entity.setName(limit(firstNonBlank(firstPageRef.getName(), "Imported Playlist"), 300));
-            entity.setCoverUrl(limit(trimmedOrNull(firstPageRef.getCoverUrl()), 1000));
-            entity.setDescription(limit(trimmedOrNull(firstPageRef.getDescription()), 2000));
-            entity.setCreatorName(limit(trimmedOrNull(firstPageRef.getCreatorName()), 300));
-            entity.setTrackCount(songsToPersist.size());
-            UserPlaylist saved = playlistRepository.save(entity);
-
-            List<UserPlaylistItem> items = new ArrayList<>(songsToPersist.size());
-            for (int i = 0; i < songsToPersist.size(); i++) {
-                SongSearchItem song = songsToPersist.get(i);
-                String songId = trimmedOrNull(song.getId());
-                if (songId == null) continue;
-                UserPlaylistItem it = new UserPlaylistItem();
-                it.setPlaylistId(saved.getId());
-                it.setSource(song.getSource() != null ? song.getSource().getValue() : refRef.source.getValue());
-                it.setSongId(limit(songId, 100));
-                it.setName(limit(firstNonBlank(song.getName(), songId), 300));
-                it.setArtist(limit(trimmedOrNull(song.getArtist()), 300));
-                it.setAlbum(limit(trimmedOrNull(song.getAlbum()), 300));
-                it.setCoverUrl(limit(trimmedOrNull(song.getCoverUrl()), 1000));
-                it.setDurationSec(normalizeDuration(song.getDurationSec()));
-                it.setSortOrder(i);
-                items.add(it);
-            }
+    private int replacePlaylistItems(UserPlaylist playlist, PlaylistRef ref, List<SongSearchItem> songs) {
+        itemRepository.deleteByPlaylistId(playlist.getId());
+        // Ensure deletes flush before re-inserts so unique (playlist,source,song) constraints stay happy.
+        itemRepository.flush();
+        List<UserPlaylistItem> items = new ArrayList<>(songs.size());
+        for (int i = 0; i < songs.size(); i++) {
+            SongSearchItem song = songs.get(i);
+            String songId = trimmedOrNull(song.getId());
+            if (songId == null) continue;
+            UserPlaylistItem it = new UserPlaylistItem();
+            it.setPlaylistId(playlist.getId());
+            it.setSource(song.getSource() != null ? song.getSource().getValue() : ref.source.getValue());
+            it.setSongId(limit(songId, 100));
+            it.setName(limit(firstNonBlank(song.getName(), songId), 300));
+            it.setArtist(limit(trimmedOrNull(song.getArtist()), 300));
+            it.setAlbum(limit(trimmedOrNull(song.getAlbum()), 300));
+            it.setCoverUrl(limit(trimmedOrNull(song.getCoverUrl()), 1000));
+            it.setDurationSec(normalizeDuration(song.getDurationSec()));
+            it.setSortOrder(i);
+            items.add(it);
+        }
+        if (!items.isEmpty()) {
             itemRepository.saveAll(items);
-            saved.setTrackCount(items.size());
-            playlistRepository.save(saved);
+        }
+        return items.size();
+    }
 
-            log.info("Imported playlist {}/{} ({}) for user {}: {} tracks",
-                    refRef.source.getValue(), refRef.externalId, saved.getName(), userId, items.size());
-            return UserPlaylistView.from(saved);
-        });
+    private static final class FetchedRemotePlaylist {
+        final PlaylistDetailView firstPage;
+        final List<SongSearchItem> songs;
+
+        FetchedRemotePlaylist(PlaylistDetailView firstPage, List<SongSearchItem> songs) {
+            this.firstPage = firstPage;
+            this.songs = songs;
+        }
     }
 
     public PageView<UserPlaylistView> list(Long userId, int page, int size) {

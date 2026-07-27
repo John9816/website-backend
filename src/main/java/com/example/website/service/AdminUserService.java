@@ -27,6 +27,7 @@ public class AdminUserService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final AuthUserCacheService authUserCacheService;
+    private final RefreshTokenService refreshTokenService;
 
     @Transactional(readOnly = true)
     public PageView<AdminUserView> list(String keyword, String role, Boolean enabled, int page, int size) {
@@ -103,6 +104,7 @@ public class AdminUserService {
         target.setEnabled(nextEnabled);
         if (authChanged) {
             target.setAuthVersion(target.getAuthVersion() + 1);
+            refreshTokenService.revokeAllForUser(target.getId());
         }
         User saved = userRepository.save(target);
         authUserCacheService.evict(saved.getId());
@@ -117,6 +119,7 @@ public class AdminUserService {
         target.setAuthVersion(target.getAuthVersion() + 1);
         userRepository.save(target);
         authUserCacheService.evict(target.getId());
+        refreshTokenService.revokeAllForUser(userId);
     }
 
     private String normalizeRole(String role) {

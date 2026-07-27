@@ -1,0 +1,15 @@
+﻿[Unit]
+Description=Website Spring Boot API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/website/backend
+EnvironmentFile=-/opt/website/backend/.env
+ExecStart=/usr/bin/java -jar /opt/website/backend/website.jar
+Restart=always
+RestartSec=5
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target

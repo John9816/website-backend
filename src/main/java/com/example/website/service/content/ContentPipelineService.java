@@ -20,14 +20,10 @@ import static com.example.website.service.content.ContentTextUtils.hasText;
  * <ol>
  *   <li>{@link #prepare} — pre-writing: 证据补全 (evidence) then 文章计划 (plan). Produces prompt
  *       blocks the writer injects, plus persistable artifacts and risk notes.</li>
- *   <li>{@link #finalize} — post-writing: 质量审稿 (review) then at-most-one 定向修订 (revision).
+ *   <li>{@link #finalize} — post-writing: 质量审稿 (review) then directed 修订 (revision).
  *       Returns the (possibly revised) markdown, the review artifact, and risk notes.</li>
+ *   <li>{@link #refineAfterRender} — final HTML/visual pass after inline images are placed.</li>
  * </ol>
- *
- * <p>Every stage is best-effort and independently switchable via {@code sys_config}; any failure
- * degrades to passing the draft through unchanged, matching the existing fallback philosophy.
- * This service is a leaf: it depends only on the individual stage services, never back on
- * {@code ContentArticleService}.
  */
 @Service
 @RequiredArgsConstructor
@@ -37,20 +33,26 @@ public class ContentPipelineService {
     private final EvidenceService evidenceService;
     private final ArticlePlanService articlePlanService;
     private final ArticleReviewService articleReviewService;
+    private final PublishableArticleContract publishableArticleContract;
 
-    /**
-     * Pre-writing phase: collect evidence for the topic, then plan the article against it.
-     * The returned prompt blocks are injected into the writer prompt; the artifacts and risk
-     * notes are carried through to persistence.
-     */
     public PreWriting prepare(String topic, String category, String angle, String audience) {
+        return prepare(topic, category, angle, audience, true);
+    }
+
+    public PreWriting prepare(String topic, String category, String angle, String audience, boolean researchEnabled) {
         List<String> riskTips = new ArrayList<>();
 
-        EvidenceService.EvidenceResult evidence = evidenceService.collect(topic, angle, category);
-        String evidenceBlock = evidence.toPromptBlock();
-        if (evidence.isEmpty() && evidenceEnabled() && searchConfigured()) {
-            riskTips.add("联网检索未取回可用资料，本篇以观点分析为主，发布前请人工补充事实来源。");
+        EvidenceService.EvidenceResult evidence;
+        if (!researchEnabled) {
+            evidence = EvidenceService.EvidenceResult.empty();
+            riskTips.add("已关闭联网检索：本篇不抓取外部资料，事实边界需人工核验。");
+        } else {
+            evidence = evidenceService.collect(topic, angle, category);
+            if (evidence.isEmpty() && evidenceEnabled() && searchConfigured()) {
+                riskTips.add("联网检索未取回可用资料，本篇以观点分析为主，发布前请人工补充事实来源。");
+            }
         }
+        String evidenceBlock = evidence.toPromptBlock();
 
         ArticlePlanService.ArticlePlan plan = articlePlanService.plan(topic, category, angle, audience, evidenceBlock);
 
@@ -58,36 +60,141 @@ public class ContentPipelineService {
     }
 
     /**
-     * Post-writing phase: review the draft and, when it scores below the configured bar, run a
-     * single targeted revision. Returns the final markdown (revised or original), the review
-     * artifact, and any risk notes to append.
+     * Post-writing phase: review the draft and apply up to {@link ArticleReviewService#maxRevisions()}
+     * directed rewrites when below the publish bar.
      */
-    public Reviewed finalize(String topic, String category, String markdown) {
+    public Reviewed finalize(String topic,
+                             String category,
+                             String markdown,
+                             String length,
+                             boolean hasEvidence,
+                             boolean hasPlan,
+                             boolean writerFallback) {
+        return finalize(topic, category, markdown, length, hasEvidence, hasPlan, writerFallback, null, null);
+    }
+
+    public Reviewed finalize(String topic,
+                             String category,
+                             String markdown,
+                             String length,
+                             boolean hasEvidence,
+                             boolean hasPlan,
+                             boolean writerFallback,
+                             String evidenceBlock,
+                             String planBlock) {
         List<String> riskTips = new ArrayList<>();
-        ArticleReviewService.Review review = articleReviewService.review(topic, category, markdown);
-        if (review == null) {
-            return new Reviewed(markdown, null, false, riskTips);
-        }
+        ArticleReviewService.Review review = articleReviewService.review(
+                topic, category, markdown, evidenceBlock, planBlock);
 
         String finalMarkdown = markdown;
-        boolean revised = false;
-        if (review.needsRevision() && articleReviewService.maxRevisions() >= 1) {
-            String rewritten = articleReviewService.reviseOnce(topic, category, markdown, review);
-            if (hasText(rewritten)) {
-                finalMarkdown = rewritten;
-                revised = true;
-                // Re-score the revised draft so the persisted review reflects what actually ships.
-                ArticleReviewService.Review rescore = articleReviewService.review(topic, category, finalMarkdown);
-                if (rescore != null) {
-                    review = rescore;
-                }
+        int revisionCount = 0;
+        int maxRevisions = articleReviewService.maxRevisions();
+        while (review != null && review.needsRevision() && revisionCount < maxRevisions) {
+            String rewritten = articleReviewService.reviseOnce(
+                    topic, category, finalMarkdown, review, evidenceBlock, planBlock);
+            if (!hasText(rewritten) || rewritten.equals(finalMarkdown)) {
+                break;
+            }
+            finalMarkdown = rewritten;
+            revisionCount++;
+            ArticleReviewService.Review rescore = articleReviewService.review(
+                    topic, category, finalMarkdown, evidenceBlock, planBlock);
+            if (rescore != null) {
+                review = rescore;
+            } else {
+                break;
             }
         }
-        if (review.needsRevision()) {
-            riskTips.add("终审评分 " + review.getScore() + " 未达标（阈值 " + review.getMinScore()
-                    + "），已" + (revised ? "定向修订一次仍偏低" : "跳过修订") + "，建议发布前人工复核。");
+
+        // evaluateDraft's first argument is the article title, not the topic.
+        String title = extractTitle(finalMarkdown, topic);
+        PublishableArticleContract.Evaluation gate = publishableArticleContract.evaluateDraft(
+                title, finalMarkdown, null, length, hasEvidence, hasPlan, writerFallback);
+
+        if (review == null) {
+            review = new ArticleReviewService.Review(
+                    gate.getScore(),
+                    new ArrayList<>(gate.getIssues()),
+                    "Deterministic publishability contract was used because AI review did not complete.",
+                    PublishableArticleContract.MIN_PUBLISH_SCORE
+            );
+        } else if (gate.getScore() < review.getScore() || gate.blocksPublish()) {
+            List<String> merged = new ArrayList<>(review.getIssues() == null ? new ArrayList<String>() : review.getIssues());
+            for (String issue : gate.getIssues()) {
+                if (hasText(issue) && !merged.contains(issue)) {
+                    merged.add(issue);
+                }
+                if (merged.size() >= 8) {
+                    break;
+                }
+            }
+            review.setScore(Math.min(review.getScore(), gate.getScore()));
+            review.setIssues(merged);
+            review.setMinScore(PublishableArticleContract.MIN_PUBLISH_SCORE);
+            review.setComment((review.getComment() == null ? "" : review.getComment() + " ")
+                    + "Publishability contract decision=" + gate.getDecision() + ", score=" + gate.getScore() + ".");
         }
-        return new Reviewed(finalMarkdown, review, revised, riskTips);
+        if (review.needsRevision()) {
+            riskTips.add("Final review score " + review.getScore() + " is below publish threshold " + review.getMinScore()
+                    + "; " + (revisionCount > 0
+                    ? revisionCount + " directed revision(s) applied but still below bar"
+                    : "revision was skipped or unavailable")
+                    + "; continue revising before publishing.");
+        }
+        if (gate.blocksPublish()) {
+            riskTips.add("quality gate " + gate.getDecision() + ": " + String.join("; ", gate.getIssues()));
+        }
+        return new Reviewed(finalMarkdown, review, revisionCount > 0, revisionCount, riskTips, gate);
+    }
+
+    /**
+     * After cover/inline assets and HTML render, re-score the exact candidate that would sync to WeChat.
+     */
+    public Reviewed refineAfterRender(Reviewed previous,
+                                      String topic,
+                                      String html,
+                                      List<ArticleInlineImage> images) {
+        if (previous == null) {
+            return null;
+        }
+        ArticleReviewService.Review rendered = articleReviewService.reviewRenderedCandidate(
+                previous.getReview(), topic, html, images);
+        List<String> riskTips = new ArrayList<>(previous.getRiskTips() == null
+                ? new ArrayList<String>()
+                : previous.getRiskTips());
+        if (rendered != null && rendered.needsRevision()) {
+            riskTips.add("Rendered-candidate review score " + rendered.getScore()
+                    + " is below publish threshold; fix HTML/visual placement before WeChat draft.");
+        }
+        PublishableArticleContract.Evaluation gate = previous.getPublishability();
+        return new Reviewed(
+                previous.getMarkdown(),
+                rendered,
+                previous.isRevised(),
+                previous.getRevisionCount(),
+                riskTips,
+                gate
+        );
+    }
+
+    private String extractTitle(String markdown, String fallback) {
+        for (String line : defaultTextLines(markdown)) {
+            if (line.startsWith("# ")) {
+                return line.substring(2).trim();
+            }
+        }
+        return fallback;
+    }
+
+    private List<String> defaultTextLines(String markdown) {
+        List<String> lines = new ArrayList<>();
+        if (!hasText(markdown)) {
+            return lines;
+        }
+        for (String line : markdown.split("\\r?\\n")) {
+            lines.add(line);
+        }
+        return lines;
     }
 
     private boolean evidenceEnabled() {
@@ -98,7 +205,6 @@ public class ContentPipelineService {
         return hasText(configService.getValue(WebSearchService.CFG_API_KEY).orElse(""));
     }
 
-    /** Pre-writing artifacts: prompt blocks for the writer plus data to persist and surface. */
     @Data
     public static class PreWriting {
         private final String evidenceBlock;
@@ -107,7 +213,6 @@ public class ContentPipelineService {
         private final List<Map<String, Object>> evidenceSources;
         private final List<String> riskTips;
 
-        /** Plan as a JSON-friendly map for persistence; null when no plan was produced. */
         public Map<String, Object> planAsMap() {
             if (plan == null || plan.isEmpty()) {
                 return null;
@@ -121,15 +226,37 @@ public class ContentPipelineService {
         }
     }
 
-    /** Post-writing outcome: the final markdown, the review, and whether a revision was applied. */
     @Data
     public static class Reviewed {
         private final String markdown;
         private final ArticleReviewService.Review review;
         private final boolean revised;
+        private final int revisionCount;
         private final List<String> riskTips;
+        private final PublishableArticleContract.Evaluation publishability;
 
-        /** Review as a JSON-friendly map for persistence; null when review did not run. */
+        public Reviewed(String markdown,
+                        ArticleReviewService.Review review,
+                        boolean revised,
+                        List<String> riskTips,
+                        PublishableArticleContract.Evaluation publishability) {
+            this(markdown, review, revised, revised ? 1 : 0, riskTips, publishability);
+        }
+
+        public Reviewed(String markdown,
+                        ArticleReviewService.Review review,
+                        boolean revised,
+                        int revisionCount,
+                        List<String> riskTips,
+                        PublishableArticleContract.Evaluation publishability) {
+            this.markdown = markdown;
+            this.review = review;
+            this.revised = revised;
+            this.revisionCount = revisionCount;
+            this.riskTips = riskTips;
+            this.publishability = publishability;
+        }
+
         public Map<String, Object> reviewAsMap() {
             if (review == null) {
                 return null;
@@ -138,8 +265,13 @@ public class ContentPipelineService {
             map.put("score", review.getScore());
             map.put("minScore", review.getMinScore());
             map.put("issues", review.getIssues());
+            map.put("fixActions", review.getFixActions());
             map.put("comment", review.getComment());
             map.put("revised", revised);
+            map.put("revisionCount", revisionCount);
+            if (publishability != null) {
+                map.put("publishability", publishability);
+            }
             return map;
         }
 

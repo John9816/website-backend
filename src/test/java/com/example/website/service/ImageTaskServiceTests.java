@@ -4,7 +4,6 @@ import com.example.website.common.BusinessException;
 import com.example.website.dto.ImageGenerateRequest;
 import com.example.website.dto.ImageGenerationsResponse;
 import com.example.website.repository.ImageGenerationTaskRepository;
-import com.example.website.service.content.FallbackCoverImageService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -24,24 +23,8 @@ import static org.mockito.Mockito.verify;
 class ImageTaskServiceTests {
 
     @Test
-    void generationUsesFallbackWhenPrimaryThrows() {
+    void generationKeepsPrimaryResult() {
         ImageService primary = mock(ImageService.class);
-        FallbackCoverImageService fallback = mock(FallbackCoverImageService.class);
-        when(primary.generate(any())).thenThrow(new BusinessException(502, "primary unavailable"));
-        when(fallback.generate("draw a lighthouse")).thenReturn("https://cdn.example/fallback.png");
-        when(fallback.model()).thenReturn("GPT Image 2.0");
-
-        ImageGenerationsResponse response = service(primary, fallback)
-                .generateWithFallback(request("draw a lighthouse"));
-
-        assertEquals("GPT Image 2.0", response.getModel());
-        assertEquals("https://cdn.example/fallback.png", response.getData().get(0).getUrl());
-    }
-
-    @Test
-    void generationKeepsPrimaryResultWithoutCallingFallback() {
-        ImageService primary = mock(ImageService.class);
-        FallbackCoverImageService fallback = mock(FallbackCoverImageService.class);
         ImageGenerationsResponse expected = new ImageGenerationsResponse(
                 1L,
                 "primary",
@@ -50,18 +33,28 @@ class ImageTaskServiceTests {
                 null);
         when(primary.generate(any())).thenReturn(expected);
 
-        assertEquals(expected, service(primary, fallback).generateWithFallback(request("draw")));
+        assertEquals(expected, service(primary).generateWithFallback(request("draw")));
     }
 
     @Test
-    void generationFailsOnlyAfterBothProvidersFail() {
+    void generationFailsWhenPrimaryReturnsNoImage() {
         ImageService primary = mock(ImageService.class);
-        FallbackCoverImageService fallback = mock(FallbackCoverImageService.class);
-        when(primary.generate(any())).thenThrow(new BusinessException(502, "primary unavailable"));
-        when(fallback.generate("draw")).thenReturn(null);
+        ImageGenerationsResponse empty = new ImageGenerationsResponse(
+                1L, "primary", Collections.emptyList(), null);
+        when(primary.generate(any())).thenReturn(empty);
 
         BusinessException error = assertThrows(BusinessException.class,
-                () -> service(primary, fallback).generateWithFallback(request("draw")));
+                () -> service(primary).generateWithFallback(request("draw")));
+        assertEquals(502, error.getCode());
+    }
+
+    @Test
+    void generationPropagatesPrimaryError() {
+        ImageService primary = mock(ImageService.class);
+        when(primary.generate(any())).thenThrow(new BusinessException(502, "primary unavailable"));
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service(primary).generateWithFallback(request("draw")));
         assertEquals(502, error.getCode());
     }
 
@@ -82,7 +75,7 @@ class ImageTaskServiceTests {
                 eq(pageable)))
                 .thenReturn(new PageImpl<>(Collections.singletonList(task), pageable, 1));
 
-        ImageTaskService service = service(repository, mock(ImageService.class), mock(FallbackCoverImageService.class));
+        ImageTaskService service = service(repository, mock(ImageService.class));
 
         assertEquals(1, service.listRecoverable(3L, 0, 20).getTotal());
         assertEquals("persistent task", service.listRecoverable(3L, 0, 20).getItems().get(0).getPrompt());
@@ -99,24 +92,22 @@ class ImageTaskServiceTests {
         task.setStatus(com.example.website.entity.ImageGenerationTask.STATUS_PROCESSING);
         when(repository.findByIdAndUserId(9L, 3L)).thenReturn(java.util.Optional.of(task));
 
-        service(repository, mock(ImageService.class), mock(FallbackCoverImageService.class)).delete(3L, 9L);
+        service(repository, mock(ImageService.class)).delete(3L, 9L);
 
         assertEquals(com.example.website.entity.ImageGenerationTask.STATUS_CANCELLED, task.getStatus());
         verify(repository).save(task);
     }
 
-    private ImageTaskService service(ImageService primary, FallbackCoverImageService fallback) {
-        return service(mock(ImageGenerationTaskRepository.class), primary, fallback);
+    private ImageTaskService service(ImageService primary) {
+        return service(mock(ImageGenerationTaskRepository.class), primary);
     }
 
     private ImageTaskService service(ImageGenerationTaskRepository repository,
-                                     ImageService primary,
-                                     FallbackCoverImageService fallback) {
+                                     ImageService primary) {
         return new ImageTaskService(
                 repository,
                 mock(GeneratedImageService.class),
                 primary,
-                fallback,
                 mock(SysConfigService.class),
                 Runnable::run,
                 new ObjectMapper());

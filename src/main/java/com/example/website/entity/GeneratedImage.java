@@ -36,6 +36,9 @@ public class GeneratedImage {
     @Column(name = "image_data", columnDefinition = "LONGTEXT")
     private String imageData;
 
+    @Column(name = "media_type", nullable = false, length = 20, columnDefinition = "VARCHAR(20) DEFAULT 'image'")
+    private String type = "image";
+
     @Column(nullable = false, length = 100)
     private String model;
 

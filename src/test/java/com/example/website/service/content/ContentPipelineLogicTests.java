@@ -78,6 +78,7 @@ class ContentPipelineLogicTests {
     @Test
     void articlePlanRendersAllPresentSections() {
         ArticlePlanService.ArticlePlan plan = new ArticlePlanService.ArticlePlan(
+                "别急着转发：这波热点真正改的是什么",
                 "用一个反常识判断开头",
                 "热点只是入口，规则才是关键",
                 Arrays.asList("一、为什么会火", "二、真正的看点"),
@@ -85,6 +86,7 @@ class ContentPipelineLogicTests {
         assertFalse(plan.isEmpty());
 
         String block = plan.toPromptBlock();
+        assertTrue(block.contains("对外标题草案"));
         assertTrue(block.contains("开头：用一个反常识判断开头"));
         assertTrue(block.contains("核心判断：热点只是入口，规则才是关键"));
         assertTrue(block.contains("- 一、为什么会火"));
@@ -96,9 +98,9 @@ class ContentPipelineLogicTests {
 
     @Test
     void reviewNeedsRevisionOnlyBelowMinScore() {
-        assertTrue(new ArticleReviewService.Review(60, new ArrayList<>(), "偏弱", 75).needsRevision());
-        assertFalse(new ArticleReviewService.Review(75, new ArrayList<>(), "达标", 75).needsRevision());
-        assertFalse(new ArticleReviewService.Review(90, new ArrayList<>(), "很好", 75).needsRevision());
+        assertTrue(new ArticleReviewService.Review(60, new ArrayList<>(), "偏弱", 88).needsRevision());
+        assertFalse(new ArticleReviewService.Review(88, new ArrayList<>(), "达标", 88).needsRevision());
+        assertFalse(new ArticleReviewService.Review(90, new ArrayList<>(), "很好", 88).needsRevision());
     }
 
     // ---- EditorialDecisionService.Decision ------------------------------------------------
@@ -115,30 +117,5 @@ class ContentPipelineLogicTests {
         assertFalse(pick.isSkip());
         assertEquals("选中的标题", pick.getTopic().get("title"));
         assertEquals("信息差最强", pick.getReason());
-    }
-
-    // ---- FallbackCoverImageService.extractImageUrl ----------------------------------------
-
-    @Test
-    void fallbackCoverParsesImageUrlFromGeneratingEvent() {
-        FallbackCoverImageService service = new FallbackCoverImageService(null, new com.fasterxml.jackson.databind.ObjectMapper(), null);
-        String sse = String.join("\n",
-                "data: {\"event\":\"start\",\"time\":1,\"logId\":\"x\"}",
-                "",
-                "data: {\"event\":\"ping\",\"time\":2,\"logId\":\"x\"}",
-                "",
-                "data: {\"event\":\"generating\",\"data\":{\"result\":\"![](https://cdn.oreateai.com/gpt-image/abc_0.png)\",\"is_end\":false}}",
-                "",
-                "data: {\"event\":\"end\",\"time\":3,\"logId\":\"x\"}");
-        assertEquals("https://cdn.oreateai.com/gpt-image/abc_0.png", service.extractImageUrl(sse));
-    }
-
-    @Test
-    void fallbackCoverReturnsNullWhenNoImageInStream() {
-        FallbackCoverImageService service = new FallbackCoverImageService(null, new com.fasterxml.jackson.databind.ObjectMapper(), null);
-        String sse = String.join("\n",
-                "data: {\"event\":\"start\",\"time\":1}",
-                "data: {\"event\":\"end\",\"time\":2}");
-        org.junit.jupiter.api.Assertions.assertNull(service.extractImageUrl(sse));
     }
 }

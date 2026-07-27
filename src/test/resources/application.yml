@@ -14,7 +14,8 @@ spring:
 app:
   jwt:
     secret: Y2hhbmdlLXRoaXMtdG8tYS1zdHJvbmctc2VjcmV0LWtleS1hdC1sZWFzdC0zMi1ieXRlcw==
-    expire-minutes: 720
+    expire-minutes: 120
+    refresh-expire-days: 30
     header: Authorization
     prefix: "Bearer "
   admin:

@@ -131,6 +131,17 @@ public class UserMusicController {
         return ApiResponse.ok(userPlaylistService.importFromUrl(userId, req.getUrl()));
     }
 
+    /**
+     * Re-pull tracks from QQ/NetEase for an already-imported remote playlist.
+     * Track list is remote-wins; local-only playlists return 400.
+     */
+    @PostMapping("/playlists/{id}/sync")
+    public ApiResponse<UserPlaylistView> syncPlaylist(HttpServletRequest request,
+                                                      @PathVariable Long id) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(userPlaylistService.syncFromRemote(userId, id));
+    }
+
     @PostMapping("/playlists")
     public ApiResponse<UserPlaylistView> createPlaylist(HttpServletRequest request,
                                                         @Valid @RequestBody PlaylistCreateRequest req) {

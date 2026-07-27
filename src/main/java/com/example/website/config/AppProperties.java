@@ -16,12 +16,16 @@ public class AppProperties {
     private final Jwt jwt = new Jwt();
     private final Cors cors = new Cors();
     private final Admin admin = new Admin();
+    private final Update update = new Update();
 
     @Getter
     @Setter
     public static class Jwt {
         private String secret;
-        private long expireMinutes = 720;
+        /** Access JWT lifetime (minutes). Keep relatively short; clients renew via refresh. */
+        private long expireMinutes = 120;
+        /** Opaque refresh token lifetime (days). */
+        private long refreshExpireDays = 30;
         private String header = "Authorization";
         private String prefix = "Bearer ";
     }
@@ -37,5 +41,12 @@ public class AppProperties {
     public static class Admin {
         private String defaultUsername = "admin";
         private String defaultPassword = "admin123";
+    }
+
+    @Getter
+    @Setter
+    public static class Update {
+        private String storageDir = "/opt/website/updates";
+        private String baseUrl = "https://api.751152.xyz/updates";
     }
 }

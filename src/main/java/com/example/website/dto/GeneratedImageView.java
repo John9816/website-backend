@@ -12,6 +12,7 @@ import java.time.LocalDateTime;
 public class GeneratedImageView {
 
     private Long id;
+    private String type;
     private String prompt;
     private String imageUrl;
     private String model;
@@ -22,6 +23,7 @@ public class GeneratedImageView {
     public static GeneratedImageView from(GeneratedImage e) {
         return new GeneratedImageView(
                 e.getId(),
+                normalizeType(e.getType()),
                 e.getPrompt(),
                 e.getImageUrl(),
                 e.getModel(),
@@ -34,6 +36,7 @@ public class GeneratedImageView {
     public static GeneratedImageView from(GeneratedImageSummary s) {
         return new GeneratedImageView(
                 s.getId(),
+                normalizeType(s.getType()),
                 s.getPrompt(),
                 s.getImageUrl(),
                 s.getModel(),
@@ -41,5 +44,9 @@ public class GeneratedImageView {
                 s.getIsShared(),
                 s.getCreatedAt()
         );
+    }
+
+    private static String normalizeType(String type) {
+        return type == null || type.trim().isEmpty() ? "image" : type.trim();
     }
 }

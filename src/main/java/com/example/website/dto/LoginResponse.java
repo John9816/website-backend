@@ -9,6 +9,11 @@ public class LoginResponse {
     private String token;
     private String tokenType;
     private long expiresInMinutes;
+    /**
+     * Opaque refresh token for session renewal.
+     * Android AuthResponseParser accepts refreshToken / refresh_token.
+     */
+    private String refreshToken;
     private String username;
     private String role;
 }

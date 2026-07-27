@@ -44,6 +44,9 @@ public class DataInitializer implements CommandLineRunner {
             "content.evidence.perQuery",
             "content.review.minScore",
             "content.review.maxRevisions",
+            "oreate.proxy.url",
+            "oreate.proxy.apiKey",
+            "content.cover.fallback.enabled",
             "content.cover.fallback.url",
             "content.cover.fallback.model",
             "content.cover.fallback.ratio",
@@ -117,13 +120,13 @@ public class DataInitializer implements CommandLineRunner {
     private List<SeedEntry> collectSeedEntries() {
         List<SeedEntry> all = new ArrayList<>();
         all.add(new SeedEntry(ImageService.CFG_BASE_URL,
-                "https://api.67.si/v1/chat/completions",
+                "https://wisart.kuaileshifu.com/v1/images/generations",
                 "Upstream image generation API endpoint."));
         all.add(new SeedEntry(ImageService.CFG_API_KEY,
                 "sk-xxx",
                 "Bearer API key for image generation; replace via admin config API."));
         all.add(new SeedEntry(ImageService.CFG_MODEL,
-                "grok-imagine-image-lite",
+                "gpt-image-2",
                 "Model name passed to upstream image API."));
         all.add(new SeedEntry(ImageService.CFG_EDIT_BASE_URL,
                 "",
@@ -205,10 +208,6 @@ public class DataInitializer implements CommandLineRunner {
         all.add(new SeedEntry(com.example.website.service.content.ArticleReviewService.CFG_ENABLED, "true",
                 "Quality review: score the draft and gate revision. Set false to skip review entirely."));
 
-        // Keyless cover-image fallback: used when the primary image API (image.api.*) is unset,
-        // errors, or returns no URL, so a draft still gets a cover. Best-effort, streams SSE.
-        all.add(new SeedEntry(com.example.website.service.content.FallbackCoverImageService.CFG_ENABLED, "true",
-                "Keyless cover-image fallback master switch. Set false to skip cover when the primary image API is unavailable."));
         return all;
     }
 

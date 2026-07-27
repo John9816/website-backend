@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS generated_image (
     prompt      VARCHAR(2000) NOT NULL,
     image_url   VARCHAR(1000) NOT NULL,
     image_data  LONGTEXT      DEFAULT NULL,
+    media_type  VARCHAR(20)   NOT NULL DEFAULT 'image',
     model       VARCHAR(100)  NOT NULL,
     created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),

@@ -2,14 +2,15 @@ package com.example.website.controller;
 
 import com.example.website.common.ApiResponse;
 import com.example.website.dto.PageView;
+import com.example.website.dto.content.ContentAgentRunJobView;
 import com.example.website.dto.content.ContentAgentRunRequest;
-import com.example.website.dto.content.ContentAgentRunResult;
 import com.example.website.dto.content.ContentArticleGenerateRequest;
 import com.example.website.dto.content.ContentArticleUpdateRequest;
 import com.example.website.dto.content.ContentArticleView;
 import com.example.website.dto.content.ContentAutomationView;
 import com.example.website.dto.content.ContentFactoryStatusView;
 import com.example.website.dto.content.ContentHotTopicsView;
+import com.example.website.service.ContentAgentJobService;
 import com.example.website.service.ContentArticleService;
 import com.example.website.service.UserScopeService;
 import lombok.Data;
@@ -33,6 +34,7 @@ import java.util.Map;
 public class AdminContentController {
 
     private final ContentArticleService contentArticleService;
+    private final ContentAgentJobService contentAgentJobService;
     private final UserScopeService userScopeService;
 
     @GetMapping("/status")
@@ -56,7 +58,18 @@ public class AdminContentController {
     @PostMapping("/articles/generate")
     public ApiResponse<ContentArticleView> generate(HttpServletRequest request,
                                                     @RequestBody(required = false) ContentArticleGenerateRequest body) {
+        // Synchronous path kept for compatibility; UI should prefer generate-async.
         return ApiResponse.ok(contentArticleService.generate(currentUserId(request), body));
+    }
+
+    /**
+     * Async generate: returns a job immediately so long pipelines do not hit proxy/HTTP timeouts.
+     * Poll {@code GET /automation/run/{jobId}} for result.
+     */
+    @PostMapping("/articles/generate-async")
+    public ApiResponse<ContentAgentRunJobView> generateAsync(HttpServletRequest request,
+                                                             @RequestBody(required = false) ContentArticleGenerateRequest body) {
+        return ApiResponse.ok(contentAgentJobService.startGenerate(currentUserId(request), body));
     }
 
     @GetMapping("/articles/{id}")
@@ -69,6 +82,22 @@ public class AdminContentController {
                                                   @PathVariable Long id,
                                                   @RequestBody ContentArticleUpdateRequest body) {
         return ApiResponse.ok(contentArticleService.update(currentUserId(request), id, body));
+    }
+
+    /**
+     * Directed rewrite from current markdown + stored review/evidence (does not re-pick topic).
+     */
+    @PostMapping("/articles/{id}/revise")
+    public ApiResponse<ContentArticleView> revise(HttpServletRequest request, @PathVariable Long id) {
+        return ApiResponse.ok(contentArticleService.revise(currentUserId(request), id));
+    }
+
+    /**
+     * Re-generate cover + inline images only, then re-evaluate delivery gate.
+     */
+    @PostMapping("/articles/{id}/visuals")
+    public ApiResponse<ContentArticleView> refreshVisuals(HttpServletRequest request, @PathVariable Long id) {
+        return ApiResponse.ok(contentArticleService.refreshVisuals(currentUserId(request), id));
     }
 
     @DeleteMapping("/articles/{id}")
@@ -94,9 +123,15 @@ public class AdminContentController {
     }
 
     @PostMapping("/automation/run")
-    public ApiResponse<ContentAgentRunResult> runAutomationAgent(HttpServletRequest request,
-                                                                 @RequestBody(required = false) ContentAgentRunRequest body) {
-        return ApiResponse.ok(contentArticleService.runAgent(currentUserId(request), body));
+    public ApiResponse<ContentAgentRunJobView> runAutomationAgent(HttpServletRequest request,
+                                                                  @RequestBody(required = false) ContentAgentRunRequest body) {
+        return ApiResponse.ok(contentAgentJobService.start(currentUserId(request), body));
+    }
+
+    @GetMapping("/automation/run/{jobId}")
+    public ApiResponse<ContentAgentRunJobView> automationAgentJob(@PathVariable String jobId) {
+        ContentAgentRunJobView job = contentAgentJobService.get(jobId);
+        return job == null ? ApiResponse.error(404, "Content agent job not found") : ApiResponse.ok(job);
     }
 
     @PostMapping("/automation/jobs/retry")

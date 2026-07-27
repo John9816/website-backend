@@ -29,7 +29,15 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResponse<Void>> handleBusiness(BusinessException ex) {
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+        // Keep historic body code + HTTP 400 for most business errors.
+        // Only surface real HTTP 401/403 so mobile clients can clear sessions on auth death.
+        HttpStatus status = HttpStatus.BAD_REQUEST;
+        if (ex.getCode() == 401) {
+            status = HttpStatus.UNAUTHORIZED;
+        } else if (ex.getCode() == 403) {
+            status = HttpStatus.FORBIDDEN;
+        }
+        return ResponseEntity.status(status)
                 .body(ApiResponse.error(ex.getCode(), ex.getMessage()));
     }
 

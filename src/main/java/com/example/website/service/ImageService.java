@@ -111,7 +111,9 @@ public class ImageService {
             ImageGenerationsResponse parsed = parseImagesResponse(model, upstream.rawBody, upstream.status, n);
             if (parsed != null) return parsed;
         } catch (BusinessException e) {
-            if (!hasSize) {
+            // Distributor / model routing failures will not succeed by dropping size — fail fast
+            // so content-factory can fall back to open images instead of multi-minute retries.
+            if (!hasSize || isNonRetriableImageUpstream(e.getMessage())) {
                 throw e;
             }
             log.warn("Primary images request with size failed. Retrying with minimal body: {}", e.getMessage());
@@ -127,6 +129,21 @@ public class ImageService {
         if (parsed != null) return parsed;
 
         throw new BusinessException(502, "Upstream returned no image URL");
+    }
+
+    /** True when retrying a different request body cannot fix the upstream routing error. */
+    private boolean isNonRetriableImageUpstream(String message) {
+        if (message == null || message.trim().isEmpty()) {
+            return false;
+        }
+        String text = message.toLowerCase();
+        return text.contains("无可用渠道")
+                || text.contains("model_not_found")
+                || text.contains("无效的令牌")
+                || text.contains("invalid api key")
+                || text.contains("incorrect api key")
+                || text.contains("unauthorized")
+                || text.contains("authentication");
     }
 
     private ImageGenerationsResponse generateChatEndpoint(String url, String apiKey, String model,
@@ -226,6 +243,11 @@ public class ImageService {
         if (size != null && !size.isEmpty()) {
             payload.put("size", size);
         }
+        // WisArt / OpenAI Images: prefer URL to avoid huge b64 payloads; gpt-image-* defaults to b64_json.
+        payload.put("response_format", "url");
+        if (isGptImageModel(model)) {
+            payload.put("quality", "auto");
+        }
         return writeJson(payload);
     }
 
@@ -234,6 +256,7 @@ public class ImageService {
         payload.put("model", model);
         payload.put("prompt", prompt);
         payload.put("n", n);
+        payload.put("response_format", "url");
         return writeJson(payload);
     }
 

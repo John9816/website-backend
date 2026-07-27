@@ -199,12 +199,12 @@ public class WebSearchService {
             }
             if (hasText(snippet)) {
                 if (line.length() > 0) {
-                    line.append("：");
+                    line.append("\uFF1A");
                 }
                 line.append(snippet.trim());
             }
             if (hasText(url)) {
-                line.append("（来源：").append(url.trim()).append("）");
+                line.append("\uFF08\u6765\u6E90\uFF1A").append(url.trim()).append("\uFF09");
             }
             return line.toString();
         }

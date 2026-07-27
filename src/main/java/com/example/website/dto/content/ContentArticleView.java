@@ -16,6 +16,7 @@ public class ContentArticleView {
     private String contentHtml;
     private String coverPrompt;
     private String coverImageUrl;
+    private List<Map<String, Object>> inlineImages;
     private List<Map<String, Object>> topics;
     private List<String> tags;
     private List<String> riskTips;
@@ -41,7 +42,7 @@ public class ContentArticleView {
                                           List<String> tags,
                                           List<String> riskTips,
                                           Object automation) {
-        return from(article, topics, tags, riskTips, automation, null, null, null);
+        return from(article, topics, tags, riskTips, automation, null, null, null, null);
     }
 
     public static ContentArticleView from(ContentArticle article,
@@ -51,7 +52,8 @@ public class ContentArticleView {
                                           Object automation,
                                           Object plan,
                                           List<Map<String, Object>> evidenceSources,
-                                          Object review) {
+                                          Object review,
+                                          List<Map<String, Object>> inlineImages) {
         ContentArticleView view = new ContentArticleView();
         view.setId(article.getId());
         view.setTitle(article.getTitle());
@@ -60,6 +62,7 @@ public class ContentArticleView {
         view.setContentHtml(article.getContentHtml());
         view.setCoverPrompt(article.getCoverPrompt());
         view.setCoverImageUrl(article.getCoverImageUrl());
+        view.setInlineImages(inlineImages);
         view.setTopics(topics);
         view.setTags(tags);
         view.setRiskTips(riskTips);

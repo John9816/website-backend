@@ -37,6 +37,7 @@ public class GeneratedImageService {
     private static final Pattern BASE64_DATA_PATTERN =
             Pattern.compile("data:image/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)");
     private static final String SERVE_PATH_PREFIX = "/api/v1/image/file/";
+    private static final String TYPE_IMAGE = "image";
 
     private final GeneratedImageRepository repository;
     private final SysConfigService sysConfigService;
@@ -73,6 +74,7 @@ public class GeneratedImageService {
             if (resolved == null) continue;
             GeneratedImage e = new GeneratedImage();
             e.setUserId(userId);
+            e.setType(TYPE_IMAGE);
             e.setPrompt(prompt);
             e.setModel(resp.getModel());
             e.setSize(size);
@@ -90,7 +92,7 @@ public class GeneratedImageService {
     }
 
     private String resolveImageUrl(String rawUrl) {
-        if (isRemoteHttpUrl(rawUrl) && useDirectRemoteUrlMode()) {
+        if (isRemoteHttpUrl(rawUrl) && useDirectRemoteUrlMode() && rawUrl.length() <= 1000) {
             return rawUrl;
         }
 
@@ -119,6 +121,10 @@ public class GeneratedImageService {
         }
         log.warn("Failed to persist image, skipping");
         return null;
+    }
+
+    public String persistImageReference(String rawUrl) {
+        return resolveImageUrl(rawUrl);
     }
 
     private ImageBytes extractBytes(String rawUrl) {
@@ -176,6 +182,7 @@ public class GeneratedImageService {
             this.filename = filename;
         }
     }
+
 
     private String saveToFile(byte[] data, String ext) {
         String uploadDir = imageUploadDir();

@@ -577,6 +577,7 @@ curl -N -X POST "http://localhost:8080/api/user/ai/conversations/1/messages?stre
 | POST | `/api/user/music/shares` | 创建或更新单曲分享，可设置过期时间，支持轮换 token |
 | DELETE | `/api/user/music/shares?source=&songId=` | 关闭单曲分享 |
 | POST | `/api/user/music/playlists/import` | 从 QQ/网易云分享链接导入外部歌单 |
+| POST | `/api/user/music/playlists/{id}/sync` | 按远端来源重新抓取曲目并覆盖本地（仅已导入的 QQ/网易云歌单） |
 | GET | `/api/user/music/playlists?page=0&size=20` | 当前用户已导入的歌单列表 |
 | GET | `/api/user/music/playlists/{id}?page=0&size=30` | 查看某个导入歌单的歌曲列表 |
 | PATCH | `/api/user/music/playlists/{id}` | 重命名歌单 |
@@ -608,6 +609,10 @@ curl -N -X POST "http://localhost:8080/api/user/ai/conversations/1/messages?stre
   - 短链 `c.y.qq.com/...` / `163cn.tv/...`（自动跟随重定向解析）
   - 同一用户重复导入同一歌单会返回 409
   - 单次最多导入 1000 首
+- `POST /api/user/music/playlists/{id}/sync`：对已导入的 QQ/网易云歌单重新抓取曲目并覆盖本地列表
+  - 本地自建歌单返回 400
+  - 无 `sourceUrl` / `source`+`sourceId` 时返回 400
+  - 元数据（名称/封面/描述）跟随远端；曲目列表 remote-wins
 - `GET /api/public/music/share/{token}` 返回歌曲基础信息外，还会包含：
   `playable`：当前是否成功解析到播放地址
   `playError`：解析失败时的错误信息

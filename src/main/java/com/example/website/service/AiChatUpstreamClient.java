@@ -66,10 +66,37 @@ public class AiChatUpstreamClient {
                                                     String model,
                                                     List<ChatMessage> messages,
                                                     ChatAudioRequest audioRequest) {
+        // Audio needs non-stream JSON. Writers prefer SSE (readTimeout resets per chunk); if SSE
+        // fails on a flaky relay, fall back to a single JSON completion on the same long client.
+        if (audioRequest == null) {
+            try {
+                return completeViaStream(client, baseUrl, apiKey, model, messages);
+            } catch (RuntimeException streamError) {
+                try {
+                    return completeNonStream(client, baseUrl, apiKey, model, messages, null);
+                } catch (RuntimeException nonStreamError) {
+                    // Prefer the original stream error (more common for long drafts).
+                    if (streamError instanceof BusinessException) {
+                        throw streamError;
+                    }
+                    throw new BusinessException(502, "Upstream AI failed (stream+json): "
+                            + safeErrorDetail(streamError) + " | " + safeErrorDetail(nonStreamError));
+                }
+            }
+        }
+        return completeNonStream(client, baseUrl, apiKey, model, messages, audioRequest);
+    }
+
+    private ChatCompletionResult completeNonStream(OkHttpClient client,
+                                                   String baseUrl,
+                                                   String apiKey,
+                                                   String model,
+                                                   List<ChatMessage> messages,
+                                                   ChatAudioRequest audioRequest) {
         Request.Builder requestBuilder = new Request.Builder()
                 .url(resolveChatCompletionsUrl(baseUrl))
                 .header("Accept", "application/json")
-                .post(RequestBody.create(writeJson(buildPayload(model, messages, audioRequest)), JSON));
+                .post(jsonBody(buildPayload(model, messages, audioRequest)));
 
         if (hasText(apiKey)) {
             requestBuilder.header("Authorization", "Bearer " + apiKey.trim());
@@ -82,7 +109,7 @@ public class AiChatUpstreamClient {
             ResponseBody body = response.body();
             rawBody = body == null ? "" : body.string();
         } catch (IOException e) {
-            throw new BusinessException(502, "Upstream AI API I/O failed: " + e.getMessage());
+            throw new BusinessException(502, "Upstream AI API I/O failed: " + safeErrorDetail(e));
         }
 
         if (!hasText(rawBody)) {
@@ -112,6 +139,123 @@ public class AiChatUpstreamClient {
                 extractUsageValue(raw, "completion_tokens"),
                 extractUsageValue(raw, "total_tokens"),
                 audio
+        );
+    }
+
+    private RequestBody jsonBody(Map<String, Object> payload) {
+        // OkHttp 4 preferred order: (MediaType, String). Avoid ambiguous overloads.
+        return RequestBody.create(JSON, writeJson(payload));
+    }
+
+    private static String safeErrorDetail(Throwable e) {
+        if (e == null) {
+            return "unknown";
+        }
+        String msg = e.getMessage();
+        if (msg == null || msg.trim().isEmpty()) {
+            msg = e.getClass().getSimpleName();
+        }
+        if (e.getCause() != null && e.getCause().getMessage() != null
+                && !e.getCause().getMessage().trim().isEmpty()) {
+            msg = msg + " causedBy=" + e.getCause().getClass().getSimpleName()
+                    + ":" + e.getCause().getMessage();
+        }
+        return msg.length() <= 220 ? msg : msg.substring(0, 220) + "...";
+    }
+
+    private ChatCompletionResult completeViaStream(OkHttpClient client,
+                                                   String baseUrl,
+                                                   String apiKey,
+                                                   String model,
+                                                   List<ChatMessage> messages) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("model", model);
+        payload.put("messages", toWireMessages(messages));
+        payload.put("stream", true);
+        // Headroom for long WeChat JSON; avoid relying on stream_options (some relays 4xx it).
+        payload.put("max_tokens", 8192);
+
+        Request.Builder requestBuilder = new Request.Builder()
+                .url(resolveChatCompletionsUrl(baseUrl))
+                .header("Accept", "text/event-stream")
+                .post(jsonBody(payload));
+        if (hasText(apiKey)) {
+            requestBuilder.header("Authorization", "Bearer " + apiKey.trim());
+        }
+
+        final StringBuilder content = new StringBuilder();
+        final String[] resolvedModel = {model};
+        final String[] finishReason = {null};
+        final Integer[] promptTokens = {null};
+        final Integer[] completionTokens = {null};
+        final Integer[] totalTokens = {null};
+        final BusinessException[] error = {null};
+
+        try (Response response = client.newCall(requestBuilder.build()).execute()) {
+            consumeStream(response, model, new StreamHandler() {
+                @Override
+                public void onDelta(String delta) {
+                    if (delta != null) {
+                        content.append(delta);
+                    }
+                }
+
+                @Override
+                public void onUsage(Integer prompt, Integer completion, Integer total) {
+                    if (prompt != null) {
+                        promptTokens[0] = prompt;
+                    }
+                    if (completion != null) {
+                        completionTokens[0] = completion;
+                    }
+                    if (total != null) {
+                        totalTokens[0] = total;
+                    }
+                }
+
+                @Override
+                public void onFinish(String reason, String fullContent, String modelName) {
+                    if (hasText(reason)) {
+                        finishReason[0] = reason;
+                    }
+                    if (hasText(modelName)) {
+                        resolvedModel[0] = modelName.trim();
+                    }
+                    if (content.length() == 0 && hasText(fullContent)) {
+                        content.append(fullContent);
+                    }
+                }
+
+                @Override
+                public void onError(BusinessException ex) {
+                    error[0] = ex;
+                }
+            });
+        } catch (IOException e) {
+            String detail = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            throw new BusinessException(502, "Upstream AI API I/O failed: " + detail);
+        } catch (RuntimeException e) {
+            if (e instanceof BusinessException) {
+                throw e;
+            }
+            String detail = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            throw new BusinessException(502, "Upstream AI streaming failed: " + detail);
+        }
+
+        if (error[0] != null) {
+            throw error[0];
+        }
+        if (content.length() == 0) {
+            throw new BusinessException(502, "Upstream returned no assistant content");
+        }
+        return new ChatCompletionResult(
+                resolvedModel[0],
+                content.toString(),
+                finishReason[0],
+                promptTokens[0],
+                completionTokens[0],
+                totalTokens[0],
+                null
         );
     }
 
@@ -187,12 +331,32 @@ public class AiChatUpstreamClient {
                                             ChatAudioRequest audioRequest) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("model", model);
-        payload.put("messages", messages);
+        payload.put("messages", toWireMessages(messages));
         payload.put("stream", false);
+        payload.put("max_tokens", 8192);
         if (audioRequest != null) {
             payload.put("audio", audioRequest.toMap());
+            // Audio payloads may not need huge completion budgets.
+            payload.put("max_tokens", 2048);
         }
         return payload;
+    }
+
+    private List<Map<String, Object>> toWireMessages(List<ChatMessage> messages) {
+        List<Map<String, Object>> wire = new java.util.ArrayList<>();
+        if (messages == null) {
+            return wire;
+        }
+        for (ChatMessage message : messages) {
+            if (message == null) {
+                continue;
+            }
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("role", message.getRole() == null ? "user" : message.getRole());
+            item.put("content", message.getContent() == null ? "" : message.getContent());
+            wire.add(item);
+        }
+        return wire;
     }
 
     public okhttp3.Call streamComplete(String baseUrl,
@@ -202,16 +366,14 @@ public class AiChatUpstreamClient {
                                        StreamHandler handler) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("model", model);
-        payload.put("messages", messages);
+        payload.put("messages", toWireMessages(messages));
         payload.put("stream", true);
-        Map<String, Object> streamOptions = new LinkedHashMap<>();
-        streamOptions.put("include_usage", true);
-        payload.put("stream_options", streamOptions);
+        payload.put("max_tokens", 8192);
 
         Request.Builder requestBuilder = new Request.Builder()
                 .url(resolveChatCompletionsUrl(baseUrl))
                 .header("Accept", "text/event-stream")
-                .post(RequestBody.create(writeJson(payload), JSON));
+                .post(jsonBody(payload));
         if (hasText(apiKey)) {
             requestBuilder.header("Authorization", "Bearer " + apiKey.trim());
         }
@@ -260,7 +422,10 @@ public class AiChatUpstreamClient {
         }
 
         BufferedSource source = body.source();
-        StringBuilder accumulator = new StringBuilder();
+        // Keep assistant content and MiMo reasoning separate. Mixing them poisons JSON extraction
+        // (reasoning often contains braces before the real JSON object arrives).
+        StringBuilder contentAcc = new StringBuilder();
+        StringBuilder reasoningAcc = new StringBuilder();
         String resolvedModel = requestedModel;
         String finishReason = null;
         Integer promptTokens = null;
@@ -301,10 +466,15 @@ public class AiChatUpstreamClient {
             if (modelField instanceof String && hasText((String) modelField)) {
                 resolvedModel = ((String) modelField).trim();
             }
-            String delta = extractDeltaContent(chunk);
-            if (hasText(delta)) {
-                accumulator.append(delta);
-                handler.onDelta(delta);
+            DeltaParts parts = extractDeltaParts(chunk);
+            // delta 可能是纯空格 token（如代码缩进、表格对齐），hasText 会误判为空而丢弃，
+            // 因此这里只跳过 null，空白内容照常累加与转发。
+            if (parts.content != null) {
+                contentAcc.append(parts.content);
+                handler.onDelta(parts.content);
+            }
+            if (parts.reasoning != null) {
+                reasoningAcc.append(parts.reasoning);
             }
             String finish = extractDeltaFinishReason(chunk);
             if (hasText(finish)) {
@@ -321,30 +491,50 @@ public class AiChatUpstreamClient {
             }
         }
 
-        if (!sawDone && accumulator.length() == 0) {
+        String finalContent = contentAcc.length() > 0
+                ? contentAcc.toString()
+                : reasoningAcc.toString();
+        if (!sawDone && finalContent.isEmpty()) {
             handler.onError(new BusinessException(502, "Upstream returned no assistant content"));
             return;
         }
         handler.onUsage(promptTokens, completionTokens, totalTokens);
-        handler.onFinish(finishReason, accumulator.toString(), resolvedModel);
+        handler.onFinish(finishReason, finalContent, resolvedModel);
     }
 
     @SuppressWarnings("unchecked")
-    private String extractDeltaContent(Map<String, Object> chunk) {
+    private DeltaParts extractDeltaParts(Map<String, Object> chunk) {
         Object choicesObj = chunk.get("choices");
         if (!(choicesObj instanceof List)) {
-            return null;
+            return DeltaParts.empty();
         }
         List<?> choices = (List<?>) choicesObj;
         if (choices.isEmpty() || !(choices.get(0) instanceof Map)) {
-            return null;
+            return DeltaParts.empty();
         }
         Object deltaObj = ((Map<String, Object>) choices.get(0)).get("delta");
         if (!(deltaObj instanceof Map)) {
-            return null;
+            return DeltaParts.empty();
         }
-        Object content = ((Map<String, Object>) deltaObj).get("content");
-        return normalizeContent(content);
+        Map<String, Object> delta = (Map<String, Object>) deltaObj;
+        return new DeltaParts(
+                normalizeContent(delta.get("content"), true),
+                normalizeContent(delta.get("reasoning_content"), true)
+        );
+    }
+
+    private static final class DeltaParts {
+        private final String content;
+        private final String reasoning;
+
+        private DeltaParts(String content, String reasoning) {
+            this.content = content;
+            this.reasoning = reasoning;
+        }
+
+        private static DeltaParts empty() {
+            return new DeltaParts(null, null);
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -508,10 +698,15 @@ public class AiChatUpstreamClient {
         return null;
     }
 
-    @SuppressWarnings("unchecked")
     private String normalizeContent(Object contentObj) {
+        return normalizeContent(contentObj, false);
+    }
+
+    @SuppressWarnings("unchecked")
+    private String normalizeContent(Object contentObj, boolean preserveWhitespace) {
         if (contentObj instanceof String) {
-            return ((String) contentObj).trim();
+            String text = (String) contentObj;
+            return preserveWhitespace ? text : text.trim();
         }
         if (!(contentObj instanceof List)) {
             return contentObj == null ? null : contentObj.toString();
@@ -529,7 +724,7 @@ public class AiChatUpstreamClient {
                 if (builder.length() > 0) {
                     builder.append('\n');
                 }
-                builder.append(text.trim());
+                builder.append(preserveWhitespace ? text : text.trim());
             }
         }
         return builder.length() == 0 ? null : builder.toString();

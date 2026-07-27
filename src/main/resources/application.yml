@@ -62,7 +62,10 @@ spring:
 app:
   jwt:
     secret: ${JWT_SECRET:Y2hhbmdlLXRoaXMtdG8tYS1zdHJvbmctc2VjcmV0LWtleS1hdC1sZWFzdC0zMi1ieXRlcw==}
-    expire-minutes: 720
+    # Access token: short-lived; clients renew with /api/auth/refresh
+    expire-minutes: ${JWT_EXPIRE_MINUTES:120}
+    # Refresh token: long-lived opaque token stored hashed in DB
+    refresh-expire-days: ${JWT_REFRESH_EXPIRE_DAYS:30}
     header: Authorization
     prefix: "Bearer "
   cors:
@@ -76,6 +79,9 @@ app:
   admin:
     default-username: admin
     default-password: admin123
+  update:
+    storage-dir: ${APP_UPDATE_STORAGE_DIR:/opt/website/updates}
+    base-url: ${APP_UPDATE_BASE_URL:https://api.751152.xyz/updates}
 
 logging:
   level:

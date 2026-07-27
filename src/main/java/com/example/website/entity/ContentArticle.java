@@ -61,6 +61,10 @@ public class ContentArticle {
     private String coverImageUrl;
 
     @Lob
+    @Column(name = "inline_images_json", columnDefinition = "LONGTEXT")
+    private String inlineImagesJson;
+
+    @Lob
     @Column(name = "topics_json", columnDefinition = "LONGTEXT")
     private String topicsJson;
 

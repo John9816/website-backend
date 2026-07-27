@@ -47,10 +47,13 @@ public class OkHttpConfig {
 
     @Bean(name = CLIENT_AI_UPSTREAM)
     public OkHttpClient aiUpstreamHttpClient(OkHttpClient okHttpClient) {
+        // Content-factory writer prompts are large and MiMo/reasoning models can exceed 3 minutes.
+        // Keep this aligned with the local reverse-proxy timeout (600s).
         return okHttpClient.newBuilder()
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(180, TimeUnit.SECONDS)
-                .writeTimeout(30, TimeUnit.SECONDS)
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(600, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
+                .callTimeout(620, TimeUnit.SECONDS)
                 .build();
     }
 

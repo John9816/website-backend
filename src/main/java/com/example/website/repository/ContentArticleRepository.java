@@ -35,6 +35,7 @@ public interface ContentArticleRepository extends JpaRepository<ContentArticle, 
             "a.category as category, " +
             "a.layoutTheme as layoutTheme, " +
             "a.imageMode as imageMode, " +
+            "a.qualityScore as qualityScore, " +
             "a.status as status, " +
             "a.wechatMediaId as wechatMediaId, " +
             "a.wechatPublishId as wechatPublishId, " +
@@ -68,6 +69,8 @@ public interface ContentArticleRepository extends JpaRepository<ContentArticle, 
         String getLayoutTheme();
 
         String getImageMode();
+
+        Integer getQualityScore();
 
         String getStatus();
 

@@ -5,6 +5,7 @@ import com.example.website.dto.ChangePasswordRequest;
 import com.example.website.dto.CurrentUserView;
 import com.example.website.dto.LoginRequest;
 import com.example.website.dto.LoginResponse;
+import com.example.website.dto.RefreshTokenRequest;
 import com.example.website.dto.RegisterRequest;
 import com.example.website.dto.UserProfileUpdateRequest;
 import com.example.website.service.AuthService;
@@ -39,6 +40,29 @@ public class AuthController {
                                             HttpServletResponse response) {
         preventAuthCaching(response);
         return ApiResponse.ok(authService.login(req));
+    }
+
+    /**
+     * Renew access JWT using an opaque refresh token (Android: POST /api/auth/refresh).
+     */
+    @PostMapping("/api/auth/refresh")
+    public ApiResponse<LoginResponse> refresh(@Valid @RequestBody RefreshTokenRequest req,
+                                              HttpServletResponse response) {
+        preventAuthCaching(response);
+        return ApiResponse.ok(authService.refresh(req.getRefreshToken()));
+    }
+
+    /**
+     * Best-effort revoke of the presented refresh token. Always succeeds for UX.
+     */
+    @PostMapping("/api/auth/logout")
+    public ApiResponse<Void> logout(@RequestBody(required = false) RefreshTokenRequest req,
+                                    HttpServletResponse response) {
+        preventAuthCaching(response);
+        if (req != null) {
+            authService.logout(req.getRefreshToken());
+        }
+        return ApiResponse.ok();
     }
 
     @GetMapping("/api/user/me")

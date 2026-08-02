@@ -55,4 +55,11 @@ public class AdminUserController {
         adminUserService.resetPassword(id, request.getPassword());
         return ApiResponse.ok();
     }
+
+    @DeleteMapping("/{id}")
+    public ApiResponse<Void> delete(HttpServletRequest servletRequest, @PathVariable Long id) {
+        Long actorId = (Long) servletRequest.getAttribute("userId");
+        adminUserService.delete(actorId, id);
+        return ApiResponse.ok();
+    }
 }

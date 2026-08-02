@@ -26,6 +26,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import javax.persistence.EntityManager;
+import javax.persistence.PersistenceContext;
 import java.util.List;
 import java.util.Locale;
 
@@ -45,6 +47,9 @@ public class AdminUserService {
     private final MusicFavoriteRepository musicFavoriteRepository;
     private final UserPlaylistRepository userPlaylistRepository;
     private final MusicPlayHistoryRepository musicPlayHistoryRepository;
+
+    @PersistenceContext
+    private EntityManager entityManager;
 
     @Transactional(readOnly = true)
     public PageView<AdminUserView> list(String keyword, String role, Boolean enabled, int page, int size) {
@@ -153,6 +158,104 @@ public class AdminUserService {
         view.setPlaylistCount(userPlaylistRepository.countByUserId(userId));
         view.setPlayHistoryCount(musicPlayHistoryRepository.countByUserId(userId));
         return view;
+    }
+
+    /**
+     * Permanently deletes a user and their owned data.
+     * Refuses self-delete and deleting the last enabled administrator.
+     */
+    @Transactional
+    public void delete(Long actorId, Long userId) {
+        if (actorId != null && actorId.equals(userId)) {
+            throw new BusinessException(400, "You cannot delete your own administrator account");
+        }
+
+        User target = userRepository.findById(userId)
+                .orElseThrow(() -> new BusinessException(404, "User not found"));
+
+        if (User.ROLE_ADMIN.equals(target.getRole()) && target.isEnabled()) {
+            List<User> admins = userRepository.findAdminsForUpdate();
+            long activeAdmins = admins.stream().filter(User::isEnabled).count();
+            if (activeAdmins <= 1) {
+                throw new BusinessException(400, "At least one enabled administrator is required");
+            }
+        }
+
+        refreshTokenService.revokeAllForUser(userId);
+        purgeUserOwnedData(userId);
+        authUserCacheService.evict(userId);
+        userRepository.delete(target);
+    }
+
+    private void purgeUserOwnedData(Long userId) {
+        // Nested dependencies first (no DB FKs to users, but child rows reference parents).
+        entityManager.createNativeQuery(
+                        "DELETE FROM user_playlist_item WHERE playlist_id IN (SELECT id FROM user_playlist WHERE user_id = ?1)")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM user_playlist WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+
+        entityManager.createNativeQuery(
+                        "DELETE FROM ai_chat_message WHERE conversation_id IN (SELECT id FROM ai_conversation WHERE user_id = ?1)")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM ai_conversation WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+
+        entityManager.createNativeQuery(
+                        "DELETE FROM kb_doc_tag WHERE doc_id IN (SELECT id FROM kb_doc WHERE user_id = ?1)")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery(
+                        "DELETE FROM kb_doc_version WHERE doc_id IN (SELECT id FROM kb_doc WHERE user_id = ?1)")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery(
+                        "DELETE FROM kb_doc_share WHERE user_id = ?1 OR doc_id IN (SELECT id FROM kb_doc WHERE user_id = ?1)")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM kb_doc WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM kb_tag WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM kb_space WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+
+        entityManager.createNativeQuery("DELETE FROM music_favorite WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM music_play_history WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM music_share WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+
+        entityManager.createNativeQuery("DELETE FROM generated_image WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM image_generation_task WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM content_article WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+
+        entityManager.createNativeQuery("DELETE FROM nav_link WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM category WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM auth_refresh_tokens WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
     }
 
     private String normalizeRole(String role) {

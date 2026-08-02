@@ -10,6 +10,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -150,6 +151,44 @@ class AdminUserManagementIntegrationTests {
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value(403));
+    }
+
+    @Test
+    void adminCanDeleteUserAndCannotDeleteSelf() throws Exception {
+        String adminToken = loginAndExtractToken("admin", "admin123");
+        String suffix = uniqueSuffix();
+        String username = "delete_" + suffix;
+        String email = qqEmail(suffix);
+
+        MvcResult createdResult = mockMvc.perform(post("/api/admin/users")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"email\":\"" + email
+                                + "\",\"password\":\"secret123\",\"role\":\"USER\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        long userId = readJson(createdResult).path("data").path("id").asLong();
+
+        mockMvc.perform(delete("/api/admin/users/" + userId)
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
+
+        mockMvc.perform(get("/api/admin/users/" + userId)
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404));
+
+        MvcResult me = mockMvc.perform(get("/api/user/me")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andReturn();
+        long adminId = readJson(me).path("data").path("id").asLong();
+
+        mockMvc.perform(delete("/api/admin/users/" + adminId)
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
     }
 
     @Test

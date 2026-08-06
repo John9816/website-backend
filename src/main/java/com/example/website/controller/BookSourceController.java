@@ -3,15 +3,19 @@ package com.example.website.controller;
 import com.example.website.common.ApiResponse;
 import com.example.website.dto.book.BookChapterListView;
 import com.example.website.dto.book.BookContentView;
+import com.example.website.dto.book.BookDiscoverView;
 import com.example.website.dto.book.BookSearchPageView;
 import com.example.website.dto.book.BookSourceCatalogView;
 import com.example.website.dto.book.BookView;
 import com.example.website.service.BookSourceService;
+import com.example.website.service.ImportedBookSourceReader;
+import com.example.website.service.UserScopeService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import javax.servlet.http.HttpServletRequest;
 
 import java.util.List;
 
@@ -21,6 +25,8 @@ import java.util.List;
 public class BookSourceController {
 
     private final BookSourceService bookSourceService;
+    private final ImportedBookSourceReader importedReader;
+    private final UserScopeService userScopeService;
 
     @GetMapping("/sources")
     public ApiResponse<List<BookSourceCatalogView>> sources() {
@@ -32,21 +38,39 @@ public class BookSourceController {
             @RequestParam String keyword,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int pageSize,
-            @RequestParam(required = false) String sourceId) {
+            @RequestParam(required = false) String sourceId,
+            HttpServletRequest request) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        if (importedReader.supports(userId, sourceId)) return ApiResponse.ok(importedReader.search(userId, sourceId, keyword, page, pageSize));
         return ApiResponse.ok(bookSourceService.search(sourceId, keyword, page, pageSize));
+    }
+
+    @GetMapping("/discover")
+    public ApiResponse<BookDiscoverView> discover(
+            @RequestParam(required = false) String sourceId,
+            @RequestParam(defaultValue = "home") String section,
+            @RequestParam(required = false) String category,
+            @RequestParam(defaultValue = "1") int page) {
+        return ApiResponse.ok(bookSourceService.discover(sourceId, section, category, page));
     }
 
     @GetMapping("/detail")
     public ApiResponse<BookView> detail(
             @RequestParam(required = false) String sourceId,
-            @RequestParam String bookUrl) {
+            @RequestParam String bookUrl,
+            HttpServletRequest request) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        if (importedReader.supports(userId, sourceId)) return ApiResponse.ok(importedReader.detail(userId, sourceId, bookUrl));
         return ApiResponse.ok(bookSourceService.detail(sourceId, bookUrl));
     }
 
     @GetMapping("/chapters")
     public ApiResponse<BookChapterListView> chapters(
             @RequestParam(required = false) String sourceId,
-            @RequestParam String bookUrl) {
+            @RequestParam String bookUrl,
+            HttpServletRequest request) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        if (importedReader.supports(userId, sourceId)) return ApiResponse.ok(importedReader.chapters(userId, sourceId, bookUrl));
         return ApiResponse.ok(bookSourceService.chapters(sourceId, bookUrl));
     }
 
@@ -54,7 +78,10 @@ public class BookSourceController {
     public ApiResponse<BookContentView> content(
             @RequestParam(required = false) String sourceId,
             @RequestParam String bookUrl,
-            @RequestParam String chapterUrl) {
+            @RequestParam String chapterUrl,
+            HttpServletRequest request) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        if (importedReader.supports(userId, sourceId)) return ApiResponse.ok(importedReader.content(userId, sourceId, bookUrl, chapterUrl));
         return ApiResponse.ok(bookSourceService.content(sourceId, bookUrl, chapterUrl));
     }
 }

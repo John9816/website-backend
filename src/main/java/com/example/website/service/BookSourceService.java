@@ -4,6 +4,9 @@ import com.example.website.common.BusinessException;
 import com.example.website.dto.book.BookChapterListView;
 import com.example.website.dto.book.BookChapterView;
 import com.example.website.dto.book.BookContentView;
+import com.example.website.dto.book.BookCategoryView;
+import com.example.website.dto.book.BookDiscoverSectionView;
+import com.example.website.dto.book.BookDiscoverView;
 import com.example.website.dto.book.BookSearchPageView;
 import com.example.website.dto.book.BookSourceCatalogView;
 import com.example.website.dto.book.BookView;
@@ -54,6 +57,25 @@ public class BookSourceService {
     private static final Pattern COUNT_PATTERN = Pattern.compile("(\\d+)");
     private static final String USER_AGENT = "Mozilla/5.0 (Linux; Android 8.1.0) "
             + "AppleWebKit/537.36 (KHTML, like Gecko) Mobile Safari/537.36";
+    private static final List<BookCategoryView> PINSHUZHAI_CATEGORIES = Arrays.asList(
+            new BookCategoryView("shuxiangwenku", "书香文库"),
+            new BookCategoryView("zhongguowenxue", "中国文学"),
+            new BookCategoryView("shijiewenxue", "世界文学"),
+            new BookCategoryView("jingdianmingzhu", "经典名著"),
+            new BookCategoryView("xuanyituili-2", "悬疑推理"),
+            new BookCategoryView("sanwenji", "散文集"),
+            new BookCategoryView("zhuanji", "传记"),
+            new BookCategoryView("wangluoxiaoshuo", "网络小说"),
+            new BookCategoryView("xuanhuanqihuan", "玄幻奇幻"),
+            new BookCategoryView("wuxiaxianxia", "武侠仙侠"),
+            new BookCategoryView("lianaiyanqing", "恋爱言情"),
+            new BookCategoryView("dushishenghuo", "都市生活"),
+            new BookCategoryView("kongbulingyi", "恐怖灵异"),
+            new BookCategoryView("kehuan", "科学幻想"),
+            new BookCategoryView("lishijunshi", "历史军事"),
+            new BookCategoryView("chuanyuechongsheng", "穿越重生"));
+    private static final Pattern IMAGE_URL_PATTERN = Pattern.compile(
+            "url\\(\\s*['\\\"]?([^'\\\")]+)", Pattern.CASE_INSENSITIVE);
 
     private final OkHttpClient httpClient;
 
@@ -102,6 +124,47 @@ public class BookSourceService {
                         "unsupported",
                         false)
         );
+    }
+
+    public BookDiscoverView discover(String sourceId, String section, String category, int page) {
+        requireSource(sourceId);
+        String requestedSection = section == null ? "home" : section.trim().toLowerCase(Locale.ROOT);
+        int safePage = clamp(page, 1, 1000);
+        HttpUrl base = sourceBaseUrl();
+        if ("category".equals(requestedSection)) {
+            String key = category == null ? "" : category.trim();
+            if (!isCategory(key)) throw new BusinessException(400, "不支持的小说分类");
+            HttpUrl url = base.newBuilder()
+                    .addPathSegment("bookcat")
+                    .addPathSegment(key)
+                    .addPathSegment("page")
+                    .addPathSegment(String.valueOf(safePage))
+                    .build();
+            FetchedPage fetched = fetch(url);
+            BookSearchPageView result = parseSearchHtml(
+                    fetched.body, fetched.url.toString(), safePage, 50);
+            return new BookDiscoverView(PINSHUZHAI_SOURCE_ID, PINSHUZHAI_SOURCE_NAME,
+                    PINSHUZHAI_CATEGORIES,
+                    Arrays.asList(new BookDiscoverSectionView(
+                            "category:" + key, categoryName(key), result.getList())));
+        }
+        if (!"home".equals(requestedSection) && !"recommend".equals(requestedSection)
+                && !"ranking".equals(requestedSection)) {
+            throw new BusinessException(400, "不支持的发现栏目");
+        }
+        FetchedPage fetched = fetch(base);
+        Document doc = Jsoup.parse(fetched.body, fetched.url.toString());
+        List<BookDiscoverSectionView> sections = new ArrayList<>();
+        if ("home".equals(requestedSection) || "recommend".equals(requestedSection)) {
+            List<BookView> recommendations = parseRecommendationCards(doc, fetched.url.toString());
+            sections.add(new BookDiscoverSectionView("recommend", "随机推荐", recommendations));
+        }
+        if ("home".equals(requestedSection) || "ranking".equals(requestedSection)) {
+            List<BookView> ranking = parseRanking(doc, fetched.url.toString());
+            sections.add(new BookDiscoverSectionView("ranking", "排行榜", ranking));
+        }
+        return new BookDiscoverView(PINSHUZHAI_SOURCE_ID, PINSHUZHAI_SOURCE_NAME,
+                PINSHUZHAI_CATEGORIES, sections);
     }
 
     public BookSearchPageView search(String sourceId, String keyword, int page, int pageSize) {
@@ -170,6 +233,47 @@ public class BookSourceService {
             hasMore = true;
         }
         return new BookSearchPageView(books, page, pageSize, total, hasMore);
+    }
+
+    List<BookView> parseRecommendationCards(Document doc, String baseUrl) {
+        List<BookView> books = new ArrayList<>();
+        for (Element card : doc.select(".list_recommend .el-col")) {
+            Element link = card.selectFirst("h4 a[href], a.bname[href]");
+            if (link == null) continue;
+            String bookUrl = absoluteAllowedUrl(link.attr("href"), baseUrl);
+            if (bookUrl == null) continue;
+            String name = clean(link.text());
+            String author = clean(firstText(card, ".font-12.mt-5, .author a"));
+            String cover = backgroundImage(card.selectFirst(".custom-hover.image"));
+            cover = absoluteAllowedUrl(cover, baseUrl);
+            books.add(new BookView(PINSHUZHAI_SOURCE_ID, PINSHUZHAI_SOURCE_NAME,
+                    name, author, cover, bookUrl, "", "", "", ""));
+            if (books.size() >= 24) break;
+        }
+        return books;
+    }
+
+    List<BookView> parseRanking(Document doc, String baseUrl) {
+        List<BookView> books = new ArrayList<>();
+        for (Element row : doc.select(".banglist li")) {
+            Element link = row.selectFirst("a.bname[href]");
+            if (link == null) continue;
+            String bookUrl = absoluteAllowedUrl(link.attr("href"), baseUrl);
+            if (bookUrl == null) continue;
+            String category = clean(firstText(row, "a[href*=/bookcat/]"));
+            category = category.replace("「", "").replace("」", "").trim();
+            String author = clean(firstText(row, ".author a"));
+            books.add(new BookView(PINSHUZHAI_SOURCE_ID, PINSHUZHAI_SOURCE_NAME,
+                    clean(link.text()), author, "", bookUrl, "", "", "", category));
+            if (books.size() >= 30) break;
+        }
+        return books;
+    }
+
+    private String backgroundImage(Element element) {
+        if (element == null) return "";
+        Matcher matcher = IMAGE_URL_PATTERN.matcher(element.attr("style"));
+        return matcher.find() ? matcher.group(1) : "";
     }
 
     BookView parseDetailHtml(String html, String baseUrl, String bookUrl) {
@@ -280,6 +384,20 @@ public class BookSourceService {
             if (href.contains(expected)) return true;
         }
         return false;
+    }
+
+    private boolean isCategory(String key) {
+        for (BookCategoryView item : PINSHUZHAI_CATEGORIES) {
+            if (item.getKey().equals(key)) return true;
+        }
+        return false;
+    }
+
+    private String categoryName(String key) {
+        for (BookCategoryView item : PINSHUZHAI_CATEGORIES) {
+            if (item.getKey().equals(key)) return item.getName();
+        }
+        return key;
     }
 
     private int parseTotal(Document doc, int fallback) {

@@ -5,6 +5,7 @@ import com.example.website.dto.book.BookContentView;
 import com.example.website.dto.book.BookSearchPageView;
 import com.example.website.dto.book.BookView;
 import okhttp3.OkHttpClient;
+import org.jsoup.Jsoup;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -89,5 +90,21 @@ class BookSourceServiceTest {
                 () -> service.search("unknown", "活着", 1, 20));
         assertThrows(RuntimeException.class,
                 () -> service.detail("7630", "https://example.com/book/1.html"));
+    }
+
+    @Test
+    void parsesRecommendationAndRankingCards() {
+        BookSourceService service = new BookSourceService(new OkHttpClient());
+        String html = "<section class='list_recommend'><div class='el-col'>"
+                + "<a class='cat-a'><div class='custom-hover image' style=\"background-image:url('/cover/a.jpg')\"></div></a>"
+                + "<h4><a href='/book/1.html'>推荐书</a></h4><p class='font-12 mt-5'>作者甲</p></div></section>"
+                + "<div class='banglist'><ul><li><a href='/bookcat/x'>「文学」</a>"
+                + "<a class='bname' href='/book/2.html'>榜单书</a><span class='author'><a>作者乙</a></span></li></ul></div>";
+        org.jsoup.nodes.Document doc = Jsoup.parse(html, "https://www.pinshuzhai.com/");
+
+        assertEquals("推荐书", service.parseRecommendationCards(
+                doc, "https://www.pinshuzhai.com/").get(0).getName());
+        assertEquals("作者乙", service.parseRanking(
+                doc, "https://www.pinshuzhai.com/").get(0).getAuthor());
     }
 }

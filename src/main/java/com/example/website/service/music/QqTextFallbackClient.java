@@ -8,11 +8,14 @@ import com.example.website.dto.music.MusicQuality;
 import com.example.website.dto.music.MusicSource;
 import com.example.website.dto.music.PlayInfo;
 import com.example.website.dto.music.SongSearchItem;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.HttpUrl;
+import okhttp3.Call;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -24,6 +27,11 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+import static com.example.website.service.music.MusicValueUtils.asMap;
+import static com.example.website.service.music.MusicValueUtils.asString;
+import static com.example.website.service.music.MusicValueUtils.truncate;
 
 @Slf4j
 @Component
@@ -35,9 +43,15 @@ public class QqTextFallbackClient {
     private static final String REFERER = "https://cyapi.top/";
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<Map<String, Object>>() {};
 
-    @Qualifier(OkHttpConfig.CLIENT_MUSIC)
+    @Qualifier(OkHttpConfig.CLIENT_MUSIC_THIRD_PARTY)
     private final OkHttpClient okHttpClient;
     private final ObjectMapper objectMapper;
+    private final ThirdPartyCircuitBreaker circuitBreaker =
+            new ThirdPartyCircuitBreaker("cyapi");
+    private final Cache<String, Boolean> recentFailures = Caffeine.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterWrite(30, TimeUnit.SECONDS)
+            .build();
 
     public PlayInfo fetchSongUrl(String requestedId, MusicQuality requestedQuality, SongSearchItem metadata) {
         ResolvedTrack track = resolve(metadata);
@@ -74,6 +88,10 @@ public class QqTextFallbackClient {
 
     private ResolvedTrack resolve(SongSearchItem metadata) {
         String keyword = buildKeyword(metadata);
+        if (recentFailures.getIfPresent(keyword) != null) {
+            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
+                    "qq text fallback recently failed for keyword=" + keyword);
+        }
         HttpUrl url = HttpUrl.parse(API_URL).newBuilder()
                 .addQueryParameter("apikey", API_KEY)
                 .addQueryParameter("type", "json")
@@ -89,7 +107,7 @@ public class QqTextFallbackClient {
                 .get()
                 .build();
 
-        Map<String, Object> json = callJson(req);
+        Map<String, Object> json = callJson(req, keyword);
         ResolvedTrack track = new ResolvedTrack();
         Map<String, Object> data = asMap(json.get("data"));
 
@@ -137,23 +155,35 @@ public class QqTextFallbackClient {
         return track;
     }
 
-    private Map<String, Object> callJson(Request req) {
-        try (Response resp = okHttpClient.newCall(req).execute()) {
+    private Map<String, Object> callJson(Request req, String failureKey) {
+        circuitBreaker.acquire(MusicErrorCode.UPSTREAM_PLAY_FAILED);
+        Call call = okHttpClient.newCall(req);
+        MusicRequestBudget.constrain(call, 5, TimeUnit.SECONDS);
+        try (Response resp = call.execute()) {
             ResponseBody rb = resp.body();
             String raw = rb == null ? "" : rb.string();
             if (!resp.isSuccessful()) {
+                circuitBreaker.recordFailure();
+                recentFailures.put(failureKey, Boolean.TRUE);
                 log.warn("QQ text fallback non-2xx status={} body={}", resp.code(), truncate(raw));
                 throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
                         "qq text fallback returned " + resp.code());
             }
-            return objectMapper.readValue(raw, MAP_TYPE);
+            Map<String, Object> parsed = objectMapper.readValue(raw, MAP_TYPE);
+            circuitBreaker.recordSuccess();
+            recentFailures.invalidate(failureKey);
+            return parsed;
         } catch (IOException e) {
+            circuitBreaker.recordFailure();
+            recentFailures.put(failureKey, Boolean.TRUE);
             log.warn("QQ text fallback I/O failed: {}", e.getMessage());
             throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
                     "qq text fallback I/O failed: " + e.getMessage(), e);
         } catch (MusicBusinessException e) {
             throw e;
         } catch (Exception e) {
+            circuitBreaker.recordFailure();
+            recentFailures.put(failureKey, Boolean.TRUE);
             log.warn("QQ text fallback parse failed: {}", e.getMessage());
             throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
                     "qq text fallback parse failed: " + e.getMessage(), e);
@@ -264,11 +294,6 @@ public class QqTextFallbackClient {
         return null;
     }
 
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> asMap(Object v) {
-        return v instanceof Map ? (Map<String, Object>) v : null;
-    }
-
     private static String readNestedString(Map<String, Object> root, String key) {
         return root == null ? null : readString(root, key);
     }
@@ -294,10 +319,6 @@ public class QqTextFallbackClient {
         return null;
     }
 
-    private static String asString(Object v) {
-        return v == null ? null : v.toString();
-    }
-
     private static Integer firstNonNull(Integer... values) {
         for (Integer value : values) {
             if (value != null) return value;
@@ -314,11 +335,6 @@ public class QqTextFallbackClient {
 
     private static boolean isEmpty(String value) {
         return value == null || value.trim().isEmpty();
-    }
-
-    private static String truncate(String s) {
-        if (s == null) return "";
-        return s.length() > 200 ? s.substring(0, 200) + "..." : s;
     }
 
     private static final class ResolvedTrack {

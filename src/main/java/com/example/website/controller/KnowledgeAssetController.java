@@ -4,8 +4,9 @@ import com.example.website.common.ApiResponse;
 import com.example.website.common.BusinessException;
 import com.example.website.dto.kb.KbAssetUploadView;
 import com.example.website.service.UserScopeService;
+import com.example.website.service.ImageStorageService;
 import com.example.website.service.kb.KbDocService;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -33,7 +34,6 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 @RestController
-@RequiredArgsConstructor
 public class KnowledgeAssetController {
 
     private static final long MAX_IMAGE_BYTES = 10L * 1024L * 1024L;
@@ -54,6 +54,18 @@ public class KnowledgeAssetController {
 
     private final UserScopeService userScopeService;
     private final KbDocService docService;
+    private final ImageStorageService imageStorageService;
+    private final boolean remoteStorageEnabled;
+
+    public KnowledgeAssetController(UserScopeService userScopeService,
+                                    KbDocService docService,
+                                    ImageStorageService imageStorageService,
+                                    @Value("${app.storage.remote-kb-enabled:true}") boolean remoteStorageEnabled) {
+        this.userScopeService = userScopeService;
+        this.docService = docService;
+        this.imageStorageService = imageStorageService;
+        this.remoteStorageEnabled = remoteStorageEnabled;
+    }
 
     @PostMapping({"/api/user/kb/assets", "/api/admin/kb/assets"})
     public ApiResponse<KbAssetUploadView> upload(HttpServletRequest request,
@@ -74,6 +86,24 @@ public class KnowledgeAssetController {
         String extension = EXTENSIONS.get(contentType);
         if (extension == null) {
             throw new BusinessException(400, "Only image files are allowed");
+        }
+
+        if (remoteStorageEnabled && imageStorageService != null) {
+            try {
+                com.example.website.entity.ImageAsset asset = imageStorageService.storeBytes(file.getBytes(), contentType);
+                String url = asset == null ? null : asset.getImageUrl();
+                if (!StringUtils.hasText(url)) {
+                    throw new BusinessException(502, "Image upload returned no URL");
+                }
+                return ApiResponse.ok(KbAssetUploadView.builder()
+                        .url(url)
+                        .key(url)
+                        .contentType(contentType)
+                        .size(file.getSize())
+                        .build());
+            } catch (IOException e) {
+                throw new BusinessException(500, "Failed to read file");
+            }
         }
 
         String filename = userId + "-" + (docId == null ? "unassigned" : docId) + "-" + randomToken() + "." + extension;

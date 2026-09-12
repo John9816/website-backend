@@ -4,13 +4,16 @@ import com.example.website.common.BusinessException;
 import com.example.website.dto.CurrentUserView;
 import com.example.website.dto.UserProfileUpdateRequest;
 import com.example.website.entity.User;
+import com.example.website.entity.ImageAsset;
 import com.example.website.repository.UserRepository;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.MediaType;
 import org.springframework.http.MediaTypeFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -22,15 +25,39 @@ import java.util.Locale;
 import java.util.UUID;
 
 @Service
-@RequiredArgsConstructor
 public class UserProfileService {
 
     private static final long MAX_AVATAR_BYTES = 2L * 1024L * 1024L;
-    private static final Path AVATAR_DIR = Paths.get("uploads", "avatars");
     private static final String AVATAR_URL_PREFIX = "/api/v1/user/avatar/";
 
     private final UserRepository userRepository;
     private final AuthUserCacheService authUserCacheService;
+    private final Path avatarDir;
+    private final ImageStorageService imageStorageService;
+    private final boolean remoteAvatarEnabled;
+
+    @Autowired
+    public UserProfileService(UserRepository userRepository,
+                              AuthUserCacheService authUserCacheService,
+                              @Value("${app.storage.avatar-dir:uploads/avatars}") String configuredAvatarDir,
+                              ImageStorageService imageStorageService,
+                              @Value("${app.storage.remote-avatar-enabled:true}") boolean remoteAvatarEnabled) {
+        this.userRepository = userRepository;
+        this.authUserCacheService = authUserCacheService;
+        String directory = StringUtils.hasText(configuredAvatarDir)
+                ? configuredAvatarDir.trim()
+                : Paths.get("uploads", "avatars").toString();
+        this.avatarDir = Paths.get(directory).toAbsolutePath().normalize();
+        this.imageStorageService = imageStorageService;
+        this.remoteAvatarEnabled = remoteAvatarEnabled;
+    }
+
+    /** Compatibility constructor for local-avatar unit tests. */
+    public UserProfileService(UserRepository userRepository,
+                              AuthUserCacheService authUserCacheService,
+                              String configuredAvatarDir) {
+        this(userRepository, authUserCacheService, configuredAvatarDir, null, false);
+    }
 
     @Transactional(readOnly = true)
     public CurrentUserView getCurrentUser(Long userId) {
@@ -60,10 +87,31 @@ public class UserProfileService {
         return CurrentUserView.from(saved);
     }
 
-    @Transactional
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public CurrentUserView updateAvatar(Long userId, MultipartFile file) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new BusinessException(404, "User not found"));
+        if (remoteAvatarEnabled && imageStorageService != null) {
+            validateAvatar(file);
+            byte[] bytes;
+            try {
+                bytes = file.getBytes();
+            } catch (IOException e) {
+                throw new BusinessException(500, "Failed to read avatar");
+            }
+            ImageAsset asset = imageStorageService.storeBytes(bytes, normalizeContentType(file.getContentType()));
+            if (asset == null || !StringUtils.hasText(asset.getImageUrl())) {
+                throw new BusinessException(502, "Avatar upload returned no URL");
+            }
+            // Only update this field after the network call; do not merge a stale
+            // user snapshot over concurrent password/profile changes.
+            if (userRepository.updateAvatarUrl(userId, asset.getImageUrl()) != 1) {
+                throw new BusinessException(404, "User not found");
+            }
+            authUserCacheService.evict(userId);
+            return getCurrentUser(userId);
+        }
+
         String filename = storeAvatar(userId, file);
 
         String previousUrl = user.getAvatarUrl();
@@ -78,7 +126,7 @@ public class UserProfileService {
         if (!isSafeFilename(filename)) {
             throw new BusinessException(400, "Invalid filename");
         }
-        Path base = AVATAR_DIR.toAbsolutePath().normalize();
+        Path base = avatarDir;
         Path file = base.resolve(filename).normalize();
         if (!file.startsWith(base) || !Files.exists(file)) {
             throw new BusinessException(404, "Avatar not found");
@@ -93,20 +141,11 @@ public class UserProfileService {
     }
 
     private String storeAvatar(Long userId, MultipartFile file) {
-        if (file == null || file.isEmpty()) {
-            throw new BusinessException(400, "avatar is required");
-        }
-        if (file.getSize() > MAX_AVATAR_BYTES) {
-            throw new BusinessException(413, "avatar is too large");
-        }
-        String contentType = normalizeContentType(file.getContentType());
-        String extension = extensionFor(contentType);
-        if (extension == null) {
-            throw new BusinessException(400, "Only jpg, png, webp and gif avatars are allowed");
-        }
+        validateAvatar(file);
+        String extension = extensionFor(normalizeContentType(file.getContentType()));
 
         String filename = userId + "-" + UUID.randomUUID().toString().replace("-", "") + "." + extension;
-        Path base = AVATAR_DIR.toAbsolutePath().normalize();
+        Path base = avatarDir;
         Path target = base.resolve(filename).normalize();
         if (!target.startsWith(base)) {
             throw new BusinessException(400, "Invalid avatar filename");
@@ -120,6 +159,19 @@ public class UserProfileService {
         }
     }
 
+    private void validateAvatar(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new BusinessException(400, "avatar is required");
+        }
+        if (file.getSize() > MAX_AVATAR_BYTES) {
+            throw new BusinessException(413, "avatar is too large");
+        }
+        String contentType = normalizeContentType(file.getContentType());
+        if (extensionFor(contentType) == null) {
+            throw new BusinessException(400, "Only jpg, png, webp and gif avatars are allowed");
+        }
+    }
+
     private void deletePreviousAvatar(String previousUrl, String currentFilename) {
         if (!StringUtils.hasText(previousUrl) || !previousUrl.startsWith(AVATAR_URL_PREFIX)) {
             return;
@@ -129,7 +181,7 @@ public class UserProfileService {
             return;
         }
         try {
-            Path base = AVATAR_DIR.toAbsolutePath().normalize();
+            Path base = avatarDir;
             Path file = base.resolve(previousFilename).normalize();
             if (file.startsWith(base)) {
                 Files.deleteIfExists(file);

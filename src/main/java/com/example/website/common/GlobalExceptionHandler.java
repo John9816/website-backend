@@ -3,12 +3,14 @@ package com.example.website.common;
 import com.fasterxml.jackson.core.JsonParseException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BindException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -16,6 +18,7 @@ import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 import javax.validation.ConstraintViolationException;
 import java.util.stream.Collectors;
+import java.util.Map;
 
 @Slf4j
 @RestControllerAdvice
@@ -36,6 +39,12 @@ public class GlobalExceptionHandler {
             status = HttpStatus.UNAUTHORIZED;
         } else if (ex.getCode() == 403) {
             status = HttpStatus.FORBIDDEN;
+        } else if (ex.getCode() == 404) {
+            status = HttpStatus.NOT_FOUND;
+        } else if (ex.getCode() == 429) {
+            status = HttpStatus.TOO_MANY_REQUESTS;
+        } else if (ex.getCode() == 503) {
+            status = HttpStatus.SERVICE_UNAVAILABLE;
         }
         return ResponseEntity.status(status)
                 .body(ApiResponse.error(ex.getCode(), ex.getMessage()));
@@ -85,6 +94,16 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(ApiResponse.error(400, msg));
     }
 
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMethodNotSupported(HttpRequestMethodNotSupportedException ex) {
+        HttpMethod[] allowedMethods = ex.getSupportedHttpMethods() == null
+                ? new HttpMethod[0]
+                : ex.getSupportedHttpMethods().toArray(new HttpMethod[0]);
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED)
+                .allow(allowedMethods)
+                .body(ApiResponse.error(405, "Method not allowed"));
+    }
+
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<ApiResponse<Void>> handleMaxUploadSize(MaxUploadSizeExceededException ex) {
         String msg = "Uploaded file is too large. Max file size is "
@@ -97,6 +116,6 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleAny(Exception ex) {
         log.error("Unhandled exception", ex);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(ApiResponse.error(500, "Server error: " + ex.getMessage()));
+                .body(ApiResponse.error(500, "Server error"));
     }
 }

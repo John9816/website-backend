@@ -3,7 +3,11 @@ package com.example.website.service.music;
 import com.example.website.common.MusicBusinessException;
 import com.example.website.common.MusicErrorCode;
 import com.example.website.config.OkHttpConfig;
+import com.example.website.dto.music.AlbumDetailView;
+import com.example.website.dto.music.AlbumSummaryItem;
 import com.example.website.dto.music.MusicSource;
+import com.example.website.dto.music.ArtistDetailView;
+import com.example.website.dto.music.ArtistWorksView;
 import com.example.website.dto.music.MusicSearchType;
 import com.example.website.dto.music.SearchCollectionItem;
 import com.example.website.dto.music.PlaylistDetailView;
@@ -19,6 +23,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
+import okhttp3.Call;
+import okhttp3.Callback;
 import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
@@ -28,8 +34,21 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+import static com.example.website.service.music.MusicValueUtils.asString;
+import static com.example.website.service.music.MusicValueUtils.firstNonEmpty;
+import static com.example.website.service.music.MusicValueUtils.idsFromMaps;
+import static com.example.website.service.music.MusicValueUtils.idsFromValue;
+import static com.example.website.service.music.MusicValueUtils.truncate;
 
 /**
  * Kuwo search client. Note: the endpoint is HTTP, not HTTPS — this is by
@@ -38,8 +57,7 @@ import java.util.Map;
  * mixed-content blocks if they tried to call it directly; we proxy it here
  * so the frontend never sees the HTTP URL.
  *
- * <p>No native lyric endpoint is known to be stable; {@link MusicService}
- * routes kuwo lyric requests through tf-pay.play instead of calling here.
+ * <p>Lyrics use Kuwo's own Web endpoint and are normalized to LRC text here.
  */
 @Slf4j
 @Component
@@ -48,6 +66,8 @@ public class KuwoMusicClient {
 
     private static final String SEARCH_URL = "http://search.kuwo.cn/r.s";
     private static final String MUSIC_INFO_URL = "http://www.kuwo.cn/api/www/music/musicInfo";
+    private static final String LYRIC_URL = "http://www.kuwo.cn/openapi/v1/www/lyric/getlyric";
+    private static final String COVER_RESOLVE_URL = "http://artistpicserver.kuwo.cn/pic.web";
     private static final String TOPLIST_TREE_URL = "http://qukudata.kuwo.cn/q.k";
     private static final String TOPLIST_DETAIL_URL = "http://kbangserver.kuwo.cn/ksong.s";
     private static final String PLAYLIST_LIST_URL = "http://wapi.kuwo.cn/api/pc/classify/playlist/getRcmPlayList";
@@ -57,6 +77,67 @@ public class KuwoMusicClient {
     @Qualifier(OkHttpConfig.CLIENT_MUSIC)
     private final OkHttpClient okHttpClient;
     private final ObjectMapper objectMapper;
+    private final Map<String, String> coverUrlCache = new ConcurrentHashMap<>();
+
+    @SuppressWarnings("unchecked")
+    public String fetchLyric(String songId) {
+        HttpUrl url = HttpUrl.parse(LYRIC_URL).newBuilder()
+                .addQueryParameter("musicId", songId)
+                .build();
+        Request req = new Request.Builder()
+                .url(url)
+                .header("Referer", "http://www.kuwo.cn/")
+                .header("User-Agent", "Mozilla/5.0")
+                .header("Accept", "application/json")
+                .get()
+                .build();
+        Map<String, Object> json = callJson(req, MusicErrorCode.UPSTREAM_LYRIC_FAILED);
+        Integer code = asInt(json.get("code"));
+        if (code != null && code != 200) {
+            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_LYRIC_FAILED,
+                    "kuwo lyric business error code=" + code);
+        }
+        Object dataObj = json.get("data");
+        if (!(dataObj instanceof Map)) {
+            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_LYRIC_FAILED,
+                    "kuwo lyric response has no data");
+        }
+        Object rows = ((Map<String, Object>) dataObj).get("lrclist");
+        if (!(rows instanceof List)) {
+            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_LYRIC_FAILED,
+                    "kuwo lyric response has no lrclist");
+        }
+        StringBuilder lrc = new StringBuilder();
+        for (Object row : (List<?>) rows) {
+            if (!(row instanceof Map)) continue;
+            Map<String, Object> line = (Map<String, Object>) row;
+            String text = asString(line.get("lineLyric"));
+            String time = asString(line.get("time"));
+            if (text == null || time == null) continue;
+            String tag = toLrcTime(time);
+            if (tag == null) continue;
+            if (lrc.length() > 0) lrc.append('\n');
+            lrc.append(tag).append(text);
+        }
+        if (lrc.length() == 0) {
+            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_LYRIC_FAILED,
+                    "kuwo lyric response is empty");
+        }
+        return lrc.toString();
+    }
+
+    private static String toLrcTime(String rawSeconds) {
+        try {
+            long centiseconds = Math.round(Double.parseDouble(rawSeconds.trim()) * 100D);
+            if (centiseconds < 0) return null;
+            long minutes = centiseconds / 6000L;
+            long seconds = (centiseconds % 6000L) / 100L;
+            long fraction = centiseconds % 100L;
+            return String.format(Locale.ROOT, "[%02d:%02d.%02d]", minutes, seconds, fraction);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
 
     public List<SongSearchItem> search(String keyword, int page, int pageSize) {
         int pn = Math.max(0, page - 1);
@@ -144,6 +225,11 @@ public class KuwoMusicClient {
                 item.setId(firstNonEmpty(asString(s.get("albumid")), asString(s.get("id")), asString(s.get("DC_TARGETID"))));
                 item.setName(firstNonEmpty(asString(s.get("name")), asString(s.get("album")), asString(s.get("ALBUM"))));
                 item.setArtist(firstNonEmpty(asString(s.get("artist")), asString(s.get("ARTIST")), asString(s.get("fartist"))));
+                String artistId = firstNonEmpty(asString(s.get("artistid")), asString(s.get("ARTISTID")), asString(s.get("artist_id")), asString(s.get("artistId")));
+                if (artistId != null) {
+                    item.setArtistId(artistId);
+                    item.setArtistIds(Collections.singletonList(artistId));
+                }
                 item.setCoverUrl(firstNonEmpty(asString(s.get("hts_img")), asString(s.get("img")), asString(s.get("pic"))));
                 item.setTrackCount(asInt(firstNonEmpty(asString(s.get("musiccnt")), asString(s.get("songnum")))));
                 item.setPlayCount(asLongObj(firstNonEmpty(asString(s.get("PLAYCNT")), asString(s.get("playcnt")))));
@@ -225,6 +311,7 @@ public class KuwoMusicClient {
         v.setId(id);
         v.setName(name);
         v.setArtist(artist);
+        setArtistIds(v, data);
         v.setAlbum(asString(data.get("album")));
         return v;
     }
@@ -302,6 +389,14 @@ public class KuwoMusicClient {
         return parsePlaylistList(json, page, pageSize);
     }
 
+    /** Kuwo homepage recommended playlists. */
+    public PlaylistListView fetchRecommendedPlaylists(int limit) {
+        PlaylistListView view = fetchPlaylists(1, limit);
+        view.setCategory("recommend");
+        view.setOrder("recommend");
+        return view;
+    }
+
     public PlaylistDetailView fetchPlaylistDetail(String id, int page, int pageSize) {
         int pn = Math.max(0, page - 1);
         HttpUrl url = HttpUrl.parse(PLAYLIST_DETAIL_URL).newBuilder()
@@ -322,6 +417,86 @@ public class KuwoMusicClient {
                 .build();
         Map<String, Object> json = callJson(req, MusicErrorCode.UPSTREAM_PLAYLIST_FAILED);
         return parsePlaylistDetail(json, id, page, pageSize);
+    }
+
+    public AlbumDetailView fetchAlbumDetail(String id, int page, int pageSize) {
+        Map<String, Object> json = callJson(kuwoSearchRequest("albuminfo", id, null, page, pageSize),
+                MusicErrorCode.UPSTREAM_PLAYLIST_FAILED);
+        List<SongSearchItem> songs = songsFromRows(json.get("musiclist"));
+        String artistId = firstNonEmpty(asString(json.get("artistid")), asString(json.get("artistId")));
+        if (artistId != null) {
+            for (SongSearchItem song : songs) {
+                if (song.getArtistIds() == null || song.getArtistIds().isEmpty()) {
+                    song.setArtistId(artistId);
+                    song.setArtistIds(Collections.singletonList(artistId));
+                }
+            }
+        }
+        Integer total = asInt(json.get("songnum"));
+        if (total == null) total = asInt(json.get("total"));
+        return new AlbumDetailView(id, MusicSource.KUWO,
+                firstNonEmpty(asString(json.get("name")), asString(json.get("album"))),
+                kuwoAlbumCoverUrl(json), asString(json.get("info")), asString(json.get("artist")),
+                firstNonEmpty(asString(json.get("pub")), asString(json.get("releasedate"))),
+                page, pageSize, total, songs);
+    }
+
+    public ArtistWorksView fetchArtistWorks(String artistId, String type, int page, int pageSize) {
+        Map<String, Object> json = callJson(kuwoSearchRequest(
+                "album".equals(type) ? "albumlist" : "artist2music", null, artistId, page, pageSize),
+                MusicErrorCode.UPSTREAM_SEARCH_FAILED);
+        Integer total = asInt(json.get("total"));
+        if ("album".equals(type)) {
+            List<AlbumSummaryItem> albums = new ArrayList<>();
+            Object rows = json.get("albumlist");
+            if (rows instanceof List) {
+                for (Object row : (List<?>) rows) {
+                    Map<String, Object> album = row instanceof Map ? (Map<String, Object>) row : null;
+                    if (album == null) continue;
+                    String id = firstNonEmpty(asString(album.get("albumid")), asString(album.get("id")));
+                    if (id == null || id.isEmpty()) continue;
+                    String primaryArtistId = firstNonEmpty(asString(album.get("artistid")), artistId);
+                    albums.add(new AlbumSummaryItem(id, MusicSource.KUWO, asString(album.get("name")),
+                            asString(album.get("artist")), primaryArtistId,
+                            primaryArtistId == null ? Collections.emptyList() : Collections.singletonList(primaryArtistId),
+                            kuwoAlbumCoverUrl(album), firstNonEmpty(asString(album.get("pub")), asString(album.get("releasedate"))),
+                            asInt(album.get("musiccnt")), asString(album.get("info"))));
+                }
+            }
+            return new ArtistWorksView(artistId, MusicSource.KUWO, "album", page, pageSize,
+                    total, Collections.emptyList(), albums);
+        }
+        List<SongSearchItem> songs = songsFromRows(json.get("musiclist"));
+        return new ArtistWorksView(artistId, MusicSource.KUWO, "song", page, pageSize,
+                total, songs, Collections.emptyList());
+    }
+
+    private Request kuwoSearchRequest(String type, String albumId, String artistId, int page, int pageSize) {
+        HttpUrl.Builder url = HttpUrl.parse(SEARCH_URL).newBuilder()
+                .addQueryParameter("stype", type)
+                .addQueryParameter("pn", String.valueOf(Math.max(0, page - 1)))
+                .addQueryParameter("rn", String.valueOf(pageSize))
+                .addQueryParameter("encoding", "utf8")
+                .addQueryParameter("rformat", "json")
+                .addQueryParameter("vipver", "MUSIC_9.0.5.0_W1")
+                .addQueryParameter("newver", "1");
+        if (albumId != null) url.addQueryParameter("albumid", albumId);
+        if (artistId != null) url.addQueryParameter("artistid", artistId);
+        return new Request.Builder().url(url.build()).header("Accept", "application/json")
+                .header("User-Agent", "Mozilla/5.0").get().build();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<SongSearchItem> songsFromRows(Object rows) {
+        if (!(rows instanceof List)) return Collections.emptyList();
+        List<SongSearchItem> songs = new ArrayList<>();
+        for (Object row : (List<?>) rows) {
+            if (!(row instanceof Map)) continue;
+            SongSearchItem song = toSongItem((Map<String, Object>) row);
+            if (song.getId() != null && !song.getId().isEmpty()) songs.add(song);
+        }
+        enrichMissingArtistIds(songs);
+        return songs;
     }
 
     @SuppressWarnings("unchecked")
@@ -412,6 +587,8 @@ public class KuwoMusicClient {
             SongSearchItem si = toSongItem((Map<String, Object>) item);
             if (si.getId() != null && !si.getId().isEmpty()) out.add(si);
         }
+        enrichMissingArtistIds(out);
+        enrichMissingCoverUrls(out);
         v.setList(out);
         return v;
     }
@@ -470,6 +647,7 @@ public class KuwoMusicClient {
             SongSearchItem si = toSongItem((Map<String, Object>) item);
             if (si.getId() != null && !si.getId().isEmpty()) out.add(si);
         }
+        enrichMissingArtistIds(out);
         v.setList(out);
         return v;
     }
@@ -489,9 +667,15 @@ public class KuwoMusicClient {
         }
         try {
             return objectMapper.readValue(raw, MAP_TYPE);
-        } catch (Exception e) {
-            log.warn("Kuwo upstream parse failed: {}", truncate(raw));
-            throw new MusicBusinessException(onFail, "kuwo upstream parse failed: " + e.getMessage(), e);
+        } catch (Exception strictError) {
+            try {
+                ObjectMapper relaxed = objectMapper.copy();
+                relaxed.configure(JsonParser.Feature.ALLOW_SINGLE_QUOTES, true);
+                return relaxed.readValue(raw, MAP_TYPE);
+            } catch (Exception e) {
+                log.warn("Kuwo upstream parse failed: {}", truncate(raw));
+                throw new MusicBusinessException(onFail, "kuwo upstream parse failed: " + e.getMessage(), e);
+            }
         }
     }
 
@@ -509,7 +693,9 @@ public class KuwoMusicClient {
             v.setId(firstNonEmpty(asString(s.get("DC_TARGETID")), asString(s.get("MUSICRID"))));
             v.setName(firstNonEmpty(asString(s.get("NAME")), asString(s.get("SONGNAME"))));
             v.setArtist(asString(s.get("ARTIST")));
+            setArtistIds(v, s);
             v.setAlbum(asString(s.get("ALBUM")));
+            v.setAlbumId(firstNonEmpty(asString(s.get("ALBUMID")), asString(s.get("albumid"))));
             v.setCoverUrl(kuwoCoverUrl(s));
             Integer durSec = asInt(s.get("DURATION"));
             if (durSec != null) {
@@ -533,7 +719,9 @@ public class KuwoMusicClient {
                 asString(s.get("MUSICRID"))));
         si.setName(firstNonEmpty(asString(s.get("name")), asString(s.get("songname"))));
         si.setArtist(firstNonEmpty(asString(s.get("artist")), asString(s.get("ARTIST")), asString(s.get("FARTIST"))));
+        setArtistIds(si, s);
         si.setAlbum(firstNonEmpty(asString(s.get("album")), asString(s.get("ALBUM")), asString(s.get("FALBUM"))));
+        si.setAlbumId(firstNonEmpty(asString(s.get("albumid")), asString(s.get("albumId")), asString(s.get("ALBUMID"))));
         si.setCoverUrl(kuwoCoverUrl(s));
         Integer dur = asInt(s.get("duration"));
         if (dur == null) dur = asInt(s.get("DURATION"));
@@ -543,6 +731,145 @@ public class KuwoMusicClient {
         }
         si.setAvailableQualities(qualitiesFromNminfo(firstNonEmpty(asString(s.get("N_MINFO")), asString(s.get("MINFO")))));
         return si;
+    }
+
+    private void setArtistIds(SongSearchItem item, Map<String, Object> song) {
+        List<String> ids = Collections.emptyList();
+        for (String key : new String[]{"allartistid", "ALLARTISTID", "artistids", "ARTISTIDS", "artistIdList", "artistid", "ARTISTID", "artist_id", "artistId", "DC_ARTISTID"}) {
+            ids = idsFromValue(song.get(key), "id", "artistid", "artist_id", "artistId", "mid");
+            if (!ids.isEmpty()) break;
+        }
+        if (ids.isEmpty()) {
+            ids = idsFromMaps(song.get("artist"), "id", "artistid", "artist_id", "artistId", "mid");
+        }
+        item.setArtistIds(ids);
+        item.setArtistId(ids.isEmpty() ? null : ids.get(0));
+    }
+
+    /** Some Kuwo detail responses omit artistid; recover it by exact artist-name lookup. */
+    private void enrichMissingArtistIds(List<SongSearchItem> songs) {
+        if (songs == null || songs.isEmpty()) return;
+        Map<String, List<String>> resolved = new LinkedHashMap<>();
+        for (SongSearchItem song : songs) {
+            if (song == null || song.getArtistIds() != null && !song.getArtistIds().isEmpty()) continue;
+            String artist = song.getArtist();
+            if (artist == null || artist.trim().isEmpty()) continue;
+            String cacheKey = artist.trim().toLowerCase();
+            List<String> ids = resolved.computeIfAbsent(cacheKey, key -> lookupArtistIds(artist));
+            if (!ids.isEmpty()) {
+                song.setArtistIds(ids);
+                song.setArtistId(ids.get(0));
+            }
+        }
+    }
+
+    private List<String> lookupArtistIds(String artist) {
+        List<String> ids = new ArrayList<>();
+        String[] names = artist.split("\\s*/\\s*|\\s*[,&;|]\\s*");
+        for (String name : names) {
+            String query = name.trim();
+            if (query.isEmpty()) continue;
+            try {
+                NeteaseMusicClient.CollectionSearchResult result =
+                        searchCollections(query, MusicSearchType.ARTIST, 1, 5);
+                if (result == null || result.getList() == null) continue;
+                for (SearchCollectionItem item : result.getList()) {
+                    if (item == null || item.getId() == null || item.getId().isEmpty()) continue;
+                    if (query.equalsIgnoreCase(item.getName())) {
+                        if (!ids.contains(item.getId())) ids.add(item.getId());
+                        break;
+                    }
+                }
+            } catch (RuntimeException ex) {
+                log.debug("Kuwo artist id lookup failed for {}: {}", query, ex.getMessage());
+            }
+        }
+        return ids;
+    }
+
+    /** Resolve missing chart artwork concurrently; Kuwo's chart payload omits per-song pictures. */
+    private void enrichMissingCoverUrls(List<SongSearchItem> songs) {
+        if (songs == null || songs.isEmpty()) return;
+        Map<String, String> resolved = new ConcurrentHashMap<>();
+        List<String> pending = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (SongSearchItem song : songs) {
+            if (song == null || !isEmpty(song.getCoverUrl()) || isEmpty(song.getId())) continue;
+            String cached = coverUrlCache.get(song.getId());
+            if (cached != null) {
+                resolved.put(song.getId(), cached);
+            } else if (seen.add(song.getId())) {
+                pending.add(song.getId());
+            }
+        }
+        if (!pending.isEmpty()) {
+            CountDownLatch latch = new CountDownLatch(pending.size());
+            for (String songId : pending) {
+                resolveCoverUrlAsync(songId, resolved, latch);
+            }
+            try {
+                if (!latch.await(2, TimeUnit.SECONDS)) {
+                    log.debug("Kuwo cover lookup timed out with {} requests pending", latch.getCount());
+                }
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        for (SongSearchItem song : songs) {
+            if (song == null || !isEmpty(song.getCoverUrl())) continue;
+            String cover = resolved.get(song.getId());
+            if (cover != null) song.setCoverUrl(cover);
+        }
+    }
+
+    private void resolveCoverUrlAsync(String songId,
+                                      Map<String, String> resolved,
+                                      CountDownLatch latch) {
+        HttpUrl url = HttpUrl.parse(COVER_RESOLVE_URL).newBuilder()
+                .addQueryParameter("type", "rid_pic")
+                .addQueryParameter("pictype", "url")
+                .addQueryParameter("size", "500")
+                .addQueryParameter("rid", songId)
+                .build();
+        Request request = new Request.Builder()
+                .url(url)
+                .header("Referer", "http://www.kuwo.cn/")
+                .header("User-Agent", "Mozilla/5.0")
+                .get()
+                .build();
+        okHttpClient.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                latch.countDown();
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) {
+                try (Response resp = response) {
+                    ResponseBody body = resp.body();
+                    String candidate = body == null ? null : body.string().trim();
+                    if (resp.isSuccessful() && isValidKuwoImageUrl(candidate)) {
+                        coverUrlCache.put(songId, candidate);
+                        resolved.put(songId, candidate);
+                    }
+                } catch (IOException ex) {
+                    log.debug("Kuwo cover response failed for {}: {}", songId, ex.getMessage());
+                } finally {
+                    latch.countDown();
+                }
+            }
+        });
+    }
+
+    private static boolean isValidKuwoImageUrl(String candidate) {
+        if (candidate == null || candidate.isEmpty()) return false;
+        HttpUrl url = HttpUrl.parse(candidate);
+        if (url == null) return false;
+        String host = url.host().toLowerCase(Locale.ROOT);
+        return (host.equals("kuwo.cn") || host.endsWith(".kuwo.cn"))
+                && url.encodedPath() != null
+                && !url.encodedPath().isEmpty()
+                && !url.encodedPath().endsWith("/");
     }
 
     /**
@@ -561,10 +888,6 @@ public class KuwoMusicClient {
         return q;
     }
 
-    private static String asString(Object v) {
-        return v == null ? null : v.toString();
-    }
-
     private static Integer asInt(Object v) {
         if (v instanceof Number) return ((Number) v).intValue();
         if (v instanceof String) {
@@ -581,11 +904,6 @@ public class KuwoMusicClient {
         return null;
     }
 
-    private static String firstNonEmpty(String... vs) {
-        for (String v : vs) if (v != null && !v.isEmpty()) return v;
-        return null;
-    }
-
     private static String kuwoCoverUrl(Map<String, Object> s) {
         return firstNonEmpty(
                 asString(s.get("albumpic")),
@@ -595,6 +913,15 @@ public class KuwoMusicClient {
                 absoluteKuwoImage(asString(s.get("web_albumpic_short")), "star/albumcover"),
                 absoluteKuwoImage(asString(s.get("web_artistpic_short")), "star/starheads"),
                 absoluteKuwoImage(asString(s.get("PICPATH")), "star/starheads"));
+    }
+
+    private static String kuwoAlbumCoverUrl(Map<String, Object> album) {
+        String url = firstNonEmpty(asString(album.get("hts_img")), asString(album.get("img")));
+        if (url != null && (url.startsWith("http://") || url.startsWith("https://"))) {
+            return url.replaceFirst("^http://", "https://");
+        }
+        String path = firstNonEmpty(url, asString(album.get("pic")));
+        return absoluteKuwoImage(path, "star/albumcover");
     }
 
     private static String absoluteKuwoImage(String path, String basePath) {
@@ -608,8 +935,136 @@ public class KuwoMusicClient {
         return v == null || v.isEmpty();
     }
 
-    private static String truncate(String s) {
-        if (s == null) return "";
-        return s.length() > 200 ? s.substring(0, 200) + "..." : s;
+    @SuppressWarnings("unchecked")
+    public ArtistDetailView fetchArtistDetail(String id) {
+        try {
+            ArtistDetailView v = new ArtistDetailView();
+            v.setId(id);
+            v.setSource(MusicSource.KUWO);
+
+            try {
+                fillArtistInfoByExactId(v, id);
+            } catch (RuntimeException ex) {
+                log.debug("Kuwo artistInfo unavailable for {}: {}", id, ex.getMessage());
+            }
+
+            // Kuwo currently returns artist 336 for some unrelated artist IDs.
+            // Resolve the requested artist from its ID-scoped works response instead of
+            // accepting an unmatched artistInfo row.
+            if (isEmpty(v.getName())) {
+                fillArtistInfoFromWorks(v, id);
+            }
+
+            if (isEmpty(v.getName())) {
+                return null;
+            }
+            try {
+                fillArtistInfoFromSearch(v, id);
+            } catch (RuntimeException | IOException ex) {
+                log.debug("Kuwo artist search enrichment unavailable for {}: {}", id, ex.getMessage());
+            }
+            return v;
+        } catch (Exception e) {
+            log.warn("Kuwo artist detail failed for {}: {}", id, e.getMessage());
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void fillArtistInfoByExactId(ArtistDetailView view, String id) {
+        HttpUrl url = HttpUrl.parse("http://wapi.kuwo.cn/api/www/artist/artistInfo").newBuilder()
+                .addQueryParameter("artistid", id)
+                .build();
+        Request request = new Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0")
+                .header("Referer", "http://www.kuwo.cn/")
+                .get()
+                .build();
+        Map<String, Object> json = callJson(request, MusicErrorCode.UPSTREAM_SEARCH_FAILED);
+        Object dataObj = json.get("data");
+        if (!(dataObj instanceof Map)) return;
+        Object rows = ((Map<String, Object>) dataObj).get("artistList");
+        if (!(rows instanceof List)) return;
+
+        for (Object row : (List<?>) rows) {
+            if (!(row instanceof Map)) continue;
+            Map<String, Object> artist = (Map<String, Object>) row;
+            String artistId = firstNonEmpty(asString(artist.get("id")), asString(artist.get("artistid")));
+            if (!id.equals(artistId)) continue;
+            view.setName(asString(artist.get("name")));
+            view.setCoverUrl(firstNonEmpty(asString(artist.get("pic300")), asString(artist.get("pic")), asString(artist.get("pic120"))));
+            view.setSongCount(asInt(artist.get("musicNum")));
+            view.setAlbumCount(asInt(artist.get("albumNum")));
+            return;
+        }
+    }
+
+    private void fillArtistInfoFromWorks(ArtistDetailView view, String id) {
+        Map<String, Object> json = callJson(
+                kuwoSearchRequest("artist2music", null, id, 1, 1),
+                MusicErrorCode.UPSTREAM_SEARCH_FAILED);
+        view.setName(asString(json.get("artist")));
+        view.setSongCount(asInt(json.get("total")));
+    }
+
+    @SuppressWarnings("unchecked")
+    private void fillArtistInfoFromSearch(ArtistDetailView view, String id) throws IOException {
+        HttpUrl url = HttpUrl.parse(SEARCH_URL).newBuilder()
+                .addQueryParameter("client", "kt")
+                .addQueryParameter("all", view.getName())
+                .addQueryParameter("pn", "0")
+                .addQueryParameter("rn", "5")
+                .addQueryParameter("ft", "artist")
+                .addQueryParameter("encoding", "utf8")
+                .addQueryParameter("rformat", "json")
+                .addQueryParameter("vipver", "MUSIC_9.0.5.0_W1")
+                .addQueryParameter("newver", "1")
+                .build();
+        Request request = new Request.Builder()
+                .url(url)
+                .header("Accept", "application/json")
+                .header("User-Agent", "Mozilla/5.0")
+                .get()
+                .build();
+        try (Response response = okHttpClient.newCall(request).execute()) {
+            String raw = response.body() == null ? "" : response.body().string();
+            if (!response.isSuccessful()) return;
+            Map<String, Object> json = parseSearchPayload(raw);
+            Object rows = json.get("abslist");
+            if (!(rows instanceof List)) return;
+
+            Map<String, Object> nameMatch = null;
+            for (Object row : (List<?>) rows) {
+                if (!(row instanceof Map)) continue;
+                Map<String, Object> artist = (Map<String, Object>) row;
+                String artistId = firstNonEmpty(asString(artist.get("ARTISTID")), asString(artist.get("artistid")), asString(artist.get("DC_TARGETID")));
+                String name = firstNonEmpty(asString(artist.get("ARTIST")), asString(artist.get("name")));
+                if (id.equals(artistId)) {
+                    fillArtistInfoFromSearchRow(view, artist);
+                    return;
+                }
+                if (nameMatch == null && view.getName().equals(name)) {
+                    nameMatch = artist;
+                }
+            }
+            if (nameMatch != null) fillArtistInfoFromSearchRow(view, nameMatch);
+        }
+    }
+
+    private void fillArtistInfoFromSearchRow(ArtistDetailView view, Map<String, Object> artist) {
+        String description = firstNonEmpty(asString(artist.get("desc")), asString(artist.get("info")));
+        if (!isEmpty(description)) {
+            view.setDescription(description.replace("&nbsp;", " ").replace("\n", ""));
+        }
+        if (isEmpty(view.getCoverUrl())) {
+            view.setCoverUrl(firstNonEmpty(asString(artist.get("hts_PICPATH")), asString(artist.get("PICPATH")), asString(artist.get("artistpic"))));
+        }
+        if (view.getSongCount() == null) {
+            view.setSongCount(asInt(firstNonEmpty(asString(artist.get("SONGNUM")), asString(artist.get("songnum")))));
+        }
+        if (view.getAlbumCount() == null) {
+            view.setAlbumCount(asInt(firstNonEmpty(asString(artist.get("ALBUMNUM")), asString(artist.get("albumnum")))));
+        }
     }
 }

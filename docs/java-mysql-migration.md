@@ -2,7 +2,7 @@
 
 ## Current production state
 
-- Production API still runs the Node compatibility service migrated from Cloudflare Worker.
+- Production API still runs the legacy Node compatibility service (the Cloudflare Worker source has been removed from this repo).
 - Java backend is being aligned in parallel and should be deployed on a separate port first.
 - Do not switch Nginx `/api` to Java until MySQL data migration and smoke tests pass.
 
@@ -33,6 +33,8 @@
 - `/api/v1/content/assets/*`
 - `/api/v1/music/*`
 - `/api/user/music/*`
+- `/api/user/membership/*`
+- `/api/admin/redeem-codes/*`
 - `/api/public/music/share/*`
 
 ## Content factory status

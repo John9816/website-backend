@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 
 import static com.example.website.service.content.ContentTextUtils.asString;
+import static com.example.website.service.content.ContentTextUtils.countMatches;
 import static com.example.website.service.content.ContentTextUtils.defaultText;
 import static com.example.website.service.content.ContentTextUtils.extractJsonObject;
 import static com.example.website.service.content.ContentTextUtils.hasText;
@@ -518,19 +519,6 @@ public class ArticleReviewService {
             }
         }
         return false;
-    }
-
-    private int countMatches(String value, String needle) {
-        if (!hasText(value) || !hasText(needle)) {
-            return 0;
-        }
-        int count = 0;
-        int index = 0;
-        while ((index = value.indexOf(needle, index)) >= 0) {
-            count++;
-            index += needle.length();
-        }
-        return count;
     }
 
     private String stripCodeFence(String value) {

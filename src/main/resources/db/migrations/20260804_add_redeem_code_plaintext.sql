@@ -1,0 +1,2 @@
+ALTER TABLE redeem_code
+    ADD COLUMN IF NOT EXISTS code_value VARCHAR(32) DEFAULT NULL AFTER code_hash;

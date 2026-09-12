@@ -19,11 +19,16 @@ public class LinkService {
 
     private final NavLinkRepository linkRepository;
     private final CategoryRepository categoryRepository;
+    private final NavigationCacheService navigationCacheService;
 
     public List<LinkView> listAll(Long userId) {
-        return linkRepository.findByUserIdOrderBySortOrderAscIdAsc(userId).stream()
+        List<LinkView> cached = navigationCacheService.links(userId);
+        if (cached != null) return cached;
+        List<LinkView> result = linkRepository.findByUserIdOrderBySortOrderAscIdAsc(userId).stream()
                 .map(LinkView::from)
                 .collect(Collectors.toList());
+        navigationCacheService.putLinks(userId, result);
+        return result;
     }
 
     public List<LinkView> listByCategory(Long userId, Long categoryId) {
@@ -46,7 +51,9 @@ public class LinkService {
         ensureCategory(userId, req.getCategoryId());
         NavLink n = new NavLink();
         apply(userId, n, req);
-        return LinkView.from(linkRepository.save(n));
+        LinkView result = LinkView.from(linkRepository.save(n));
+        navigationCacheService.invalidateUser(userId);
+        return result;
     }
 
     @Transactional
@@ -55,7 +62,9 @@ public class LinkService {
                 .orElseThrow(() -> new BusinessException(404, "Link not found"));
         ensureCategory(userId, req.getCategoryId());
         apply(userId, n, req);
-        return LinkView.from(linkRepository.save(n));
+        LinkView result = LinkView.from(linkRepository.save(n));
+        navigationCacheService.invalidateUser(userId);
+        return result;
     }
 
     @Transactional
@@ -63,6 +72,7 @@ public class LinkService {
         NavLink link = linkRepository.findByIdAndUserId(id, userId)
                 .orElseThrow(() -> new BusinessException(404, "Link not found"));
         linkRepository.delete(link);
+        navigationCacheService.invalidateUser(userId);
     }
 
     private void ensureCategory(Long userId, Long categoryId) {

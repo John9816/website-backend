@@ -72,7 +72,7 @@ class AiConversationIntegrationTests {
 
         mockMvc.perform(get("/api/user/ai/conversations/" + conversationId)
                         .header("Authorization", "Bearer " + bobToken))
-                .andExpect(status().isBadRequest())
+                .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value(404))
                 .andExpect(jsonPath("$.message").value("Conversation not found"));
     }
@@ -157,7 +157,7 @@ class AiConversationIntegrationTests {
 
         mockMvc.perform(get("/api/user/ai/messages/" + assistantMessageId + "/audio")
                         .header("Authorization", "Bearer " + otherToken))
-                .andExpect(status().isBadRequest())
+                .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value(404));
 
         mockMvc.perform(get("/api/user/ai/conversations/" + conversationId + "/messages")
@@ -367,7 +367,7 @@ class AiConversationIntegrationTests {
                         .header("Authorization", "Bearer " + otherToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
-                .andExpect(status().isBadRequest())
+                .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value(404));
 
         // Cannot regenerate audio for a user message.

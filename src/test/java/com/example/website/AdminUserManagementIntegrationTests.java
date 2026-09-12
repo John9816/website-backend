@@ -1,5 +1,9 @@
 package com.example.website;
 
+import com.example.website.entity.MembershipType;
+import com.example.website.entity.RedeemCode;
+import com.example.website.entity.RedeemCodeStatus;
+import com.example.website.repository.RedeemCodeRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -10,6 +14,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -26,6 +31,9 @@ class AdminUserManagementIntegrationTests {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private RedeemCodeRepository redeemCodeRepository;
 
     @Test
     void regularUserCannotManageUsers() throws Exception {
@@ -169,6 +177,14 @@ class AdminUserManagementIntegrationTests {
                 .andReturn();
         long userId = readJson(createdResult).path("data").path("id").asLong();
 
+        RedeemCode redeemedCode = new RedeemCode();
+        redeemedCode.setCodeHash(String.format("%064d", userId));
+        redeemedCode.setCodePreview("OW-TEST-****-****-USER");
+        redeemedCode.setMembershipType(MembershipType.DAY);
+        redeemedCode.setStatus(RedeemCodeStatus.REDEEMED);
+        redeemedCode.setRedeemedByUserId(userId);
+        redeemedCode = redeemCodeRepository.save(redeemedCode);
+
         mockMvc.perform(delete("/api/admin/users/" + userId)
                         .header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isOk())
@@ -178,6 +194,10 @@ class AdminUserManagementIntegrationTests {
                         .header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value(404));
+
+        RedeemCode detachedCode = redeemCodeRepository.findById(redeemedCode.getId())
+                .orElseThrow(AssertionError::new);
+        assertNull(detachedCode.getRedeemedByUserId());
 
         MvcResult me = mockMvc.perform(get("/api/user/me")
                         .header("Authorization", "Bearer " + adminToken))

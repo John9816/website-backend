@@ -8,6 +8,7 @@ import com.example.website.dto.PageView;
 import com.example.website.dto.music.MusicSource;
 import com.example.website.dto.music.PlaylistCreateRequest;
 import com.example.website.dto.music.PlaylistDetailView;
+import com.example.website.dto.music.PlaylistFavoriteStatusView;
 import com.example.website.dto.music.PlaylistItemRequest;
 import com.example.website.dto.music.SongSearchItem;
 import com.example.website.dto.music.UserPlaylistDetailView;
@@ -54,6 +55,7 @@ public class UserPlaylistService {
 
     private final QqMusicClient qq;
     private final NeteaseMusicClient netease;
+    private final KuwoMusicClient kuwo;
     private final UserPlaylistRepository playlistRepository;
     private final UserPlaylistItemRepository itemRepository;
     @Qualifier(OkHttpConfig.CLIENT_QUICK)
@@ -71,12 +73,58 @@ public class UserPlaylistService {
 
         // All upstream HTTP work above is finished; only the writes go inside the transaction
         // so HikariCP connections are not held during multi-second upstream paging.
+        return persistRemotePlaylist(userId, ref, url, remote);
+    }
+
+    public UserPlaylistView favoriteRemote(Long userId, String rawSource, String rawPlaylistId) {
+        PlaylistRef ref = remoteRef(rawSource, rawPlaylistId);
+        UserPlaylist existing = playlistRepository
+                .findByUserIdAndSourceAndSourceId(userId, ref.source.getValue(), ref.externalId)
+                .orElse(null);
+        if (existing != null) {
+            return UserPlaylistView.from(existing);
+        }
+        return persistRemotePlaylist(userId, ref, null, fetchRemoteTracks(ref));
+    }
+
+    public PlaylistFavoriteStatusView favoriteStatus(Long userId,
+                                                       String rawSource,
+                                                       String rawPlaylistId) {
+        PlaylistRef ref = remoteRef(rawSource, rawPlaylistId);
+        UserPlaylist playlist = playlistRepository
+                .findByUserIdAndSourceAndSourceId(userId, ref.source.getValue(), ref.externalId)
+                .orElse(null);
+        return new PlaylistFavoriteStatusView(
+                ref.source.getValue(), ref.externalId, playlist != null,
+                playlist == null ? null : playlist.getId());
+    }
+
+    @Transactional
+    public void deleteRemoteFavorite(Long userId, String rawSource, String rawPlaylistId) {
+        PlaylistRef ref = remoteRef(rawSource, rawPlaylistId);
+        UserPlaylist playlist = playlistRepository
+                .findByUserIdAndSourceAndSourceId(userId, ref.source.getValue(), ref.externalId)
+                .orElseThrow(() -> new BusinessException(404, "歌单尚未收藏"));
+        playlistRepository.delete(playlist);
+    }
+
+    private UserPlaylistView persistRemotePlaylist(Long userId,
+                                                   PlaylistRef ref,
+                                                   String sourceUrl,
+                                                   FetchedRemotePlaylist remote) {
         return transactionTemplate.execute(status -> {
+            UserPlaylist existing = playlistRepository
+                    .findByUserIdAndSourceAndSourceId(userId, ref.source.getValue(), ref.externalId)
+                    .orElse(null);
+            if (existing != null) {
+                return UserPlaylistView.from(existing);
+            }
+
             UserPlaylist entity = new UserPlaylist();
             entity.setUserId(userId);
             entity.setSource(ref.source.getValue());
             entity.setSourceId(ref.externalId);
-            entity.setSourceUrl(limit(url, 1000));
+            entity.setSourceUrl(limit(sourceUrl, 1000));
             applyRemoteMetadata(entity, remote.firstPage);
             entity.setTrackCount(remote.songs.size());
             UserPlaylist saved = playlistRepository.save(entity);
@@ -84,10 +132,16 @@ public class UserPlaylistService {
             saved.setTrackCount(trackCount);
             playlistRepository.save(saved);
 
-            log.info("Imported playlist {}/{} ({}) for user {}: {} tracks",
+            log.info("Saved remote playlist {}/{} ({}) for user {}: {} tracks",
                     ref.source.getValue(), ref.externalId, saved.getName(), userId, trackCount);
             return UserPlaylistView.from(saved);
         });
+    }
+
+    private PlaylistRef remoteRef(String rawSource, String rawPlaylistId) {
+        return new PlaylistRef(
+                MusicSource.of(rawSource),
+                limit(requireText(rawPlaylistId, "playlistId is required"), 100));
     }
 
     /**
@@ -318,6 +372,8 @@ public class UserPlaylistService {
                 return qq.fetchPlaylistDetail(ref.externalId, page, pageSize);
             case NETEASE:
                 return netease.fetchPlaylistDetail(ref.externalId, page, pageSize);
+            case KUWO:
+                return kuwo.fetchPlaylistDetail(ref.externalId, page, pageSize);
             default:
                 throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE,
                         "import not supported for " + ref.source.getValue());

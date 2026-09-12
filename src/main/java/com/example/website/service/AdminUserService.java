@@ -47,6 +47,7 @@ public class AdminUserService {
     private final MusicFavoriteRepository musicFavoriteRepository;
     private final UserPlaylistRepository userPlaylistRepository;
     private final MusicPlayHistoryRepository musicPlayHistoryRepository;
+    private final NavigationCacheService navigationCacheService;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -96,7 +97,9 @@ public class AdminUserService {
         user.setPassword(passwordEncoder.encode(request.getPassword()));
         user.setRole(normalizeRole(request.getRole()));
         user.setEnabled(true);
-        return AdminUserView.from(userRepository.save(user));
+        AdminUserView result = AdminUserView.from(userRepository.save(user));
+        navigationCacheService.invalidateAdmin();
+        return result;
     }
 
     @Transactional
@@ -130,6 +133,7 @@ public class AdminUserService {
         }
         User saved = userRepository.save(target);
         authUserCacheService.evict(saved.getId());
+        navigationCacheService.invalidateAdmin();
         return AdminUserView.from(saved);
     }
 
@@ -185,6 +189,7 @@ public class AdminUserService {
         purgeUserOwnedData(userId);
         authUserCacheService.evict(userId);
         userRepository.delete(target);
+        navigationCacheService.invalidateAdmin();
     }
 
     private void purgeUserOwnedData(Long userId) {
@@ -234,6 +239,19 @@ public class AdminUserService {
                 .setParameter(1, userId)
                 .executeUpdate();
         entityManager.createNativeQuery("DELETE FROM music_share WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+
+        entityManager.createNativeQuery("DELETE FROM membership_redemption WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM user_membership WHERE user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery("UPDATE redeem_code SET created_by_user_id = NULL WHERE created_by_user_id = ?1")
+                .setParameter(1, userId)
+                .executeUpdate();
+        entityManager.createNativeQuery("UPDATE redeem_code SET redeemed_by_user_id = NULL WHERE redeemed_by_user_id = ?1")
                 .setParameter(1, userId)
                 .executeUpdate();
 

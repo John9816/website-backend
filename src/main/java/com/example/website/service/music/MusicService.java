@@ -2,6 +2,9 @@ package com.example.website.service.music;
 
 import com.example.website.common.MusicBusinessException;
 import com.example.website.common.MusicErrorCode;
+import com.example.website.dto.music.ArtistDetailView;
+import com.example.website.dto.music.ArtistWorksView;
+import com.example.website.dto.music.AlbumDetailView;
 import com.example.website.dto.music.LyricInfo;
 import com.example.website.dto.music.LyricView;
 import com.example.website.dto.music.MusicQuality;
@@ -27,6 +30,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
@@ -36,10 +40,14 @@ public class MusicService {
     private static final long SEARCH_TTL_SEC = 60L;
     private static final long PLAY_TTL_SEC = 1200L;
     private static final long LYRIC_TTL_SEC = 6L * 60L * 60L;
+    private static final long LYRIC_FALLBACK_TTL_SEC = 10L * 60L;
     private static final long TOPLIST_LIST_TTL_SEC = 30L * 60L;
     private static final long TOPLIST_DETAIL_TTL_SEC = 10L * 60L;
     private static final long PLAYLIST_LIST_TTL_SEC = 30L * 60L;
+    private static final long PLAYLIST_RECOMMEND_TTL_SEC = 10L * 60L;
     private static final long PLAYLIST_DETAIL_TTL_SEC = 10L * 60L;
+    private static final long ALBUM_DETAIL_TTL_SEC = 10L * 60L;
+    private static final long ARTIST_WORKS_TTL_SEC = 10L * 60L;
 
     public static final String CFG_PLAY_RESOLVER_ORDER = "music.play.resolverOrder";
     public static final String CFG_CROSS_SOURCE_ORDER = "music.play.crossSourceOrder";
@@ -61,9 +69,12 @@ public class MusicService {
     private final QqMusicClient qq;
     private final NeteaseMusicClient netease;
     private final KuwoMusicClient kuwo;
+    private final ChkszNeteaseMusicClient chkszNetease;
     private final TuneFreePayClient tfPay;
     private final QqTextFallbackClient qqTextFallback;
     private final PlayUrlVerifier playUrlVerifier;
+    private final com.example.website.service.PerformanceSingleFlight singleFlight =
+            new com.example.website.service.PerformanceSingleFlight();
 
     public SearchResultView search(String rawSource, String keyword, int page, int pageSize) {
         return search(rawSource, keyword, null, page, pageSize);
@@ -80,44 +91,32 @@ public class MusicService {
         SearchResultView cached = cache.get(key, SearchResultView.class);
         if (cached != null) return cached;
 
-        SearchResultView view;
-        if (type == MusicSearchType.SONG) {
-            List<SongSearchItem> list;
-            switch (source) {
-                case QQ:
-                    list = qq.search(kw, p, s);
-                    break;
-                case NETEASE:
-                    list = netease.search(kw, p, s);
-                    break;
-                case KUWO:
-                    list = kuwo.search(kw, p, s);
-                    break;
-                default:
-                    throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
+        return singleFlight.execute(key, () -> {
+            SearchResultView view;
+            if (type == MusicSearchType.SONG) {
+                List<SongSearchItem> list;
+                switch (source) {
+                    case QQ: list = qq.search(kw, p, s); break;
+                    case NETEASE: list = netease.search(kw, p, s); break;
+                    case KUWO: list = kuwo.search(kw, p, s); break;
+                    default: throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
+                }
+                view = SearchResultView.songs(source, kw, p, s, null, list);
+            } else {
+                NeteaseMusicClient.CollectionSearchResult result;
+                switch (source) {
+                    case QQ: result = qq.searchCollections(kw, type, p, s); break;
+                    case KUWO: result = kuwo.searchCollections(kw, type, p, s); break;
+                    case NETEASE: result = netease.searchCollections(kw, type, p, s); break;
+                    default: throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
+                }
+                List<SearchCollectionItem> items = result == null ? Collections.emptyList() : result.getList();
+                Long total = result == null ? 0L : result.getTotal();
+                view = SearchResultView.collections(source, type, kw, p, s, total, items);
             }
-            view = SearchResultView.songs(source, kw, p, s, null, list);
-        } else {
-            NeteaseMusicClient.CollectionSearchResult result;
-            switch (source) {
-                case QQ:
-                    result = qq.searchCollections(kw, type, p, s);
-                    break;
-                case KUWO:
-                    result = kuwo.searchCollections(kw, type, p, s);
-                    break;
-                case NETEASE:
-                    result = netease.searchCollections(kw, type, p, s);
-                    break;
-                default:
-                    throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
-            }
-            List<SearchCollectionItem> items = result == null ? Collections.emptyList() : result.getList();
-            Long total = result == null ? 0L : result.getTotal();
-            view = SearchResultView.collections(source, type, kw, p, s, total, items);
-        }
-        cache.put(key, view, SEARCH_TTL_SEC);
-        return view;
+            cache.put(key, view, SEARCH_TTL_SEC);
+            return view;
+        });
     }
 
     public ToplistListView toplists(String rawSource) {
@@ -221,6 +220,31 @@ public class MusicService {
         }
     }
 
+    public PlaylistListView recommendedPlaylists(String rawSource, int limit) {
+        MusicSource source = MusicSource.of(rawSource);
+        int size = Math.min(50, Math.max(1, limit));
+        String key = "music:playlist:recommend:" + source.getValue() + ":" + size;
+        PlaylistListView cached = cache.get(key, PlaylistListView.class);
+        if (cached != null) return cached;
+
+        PlaylistListView view;
+        switch (source) {
+            case QQ:
+                view = qq.fetchRecommendedPlaylists(size);
+                break;
+            case NETEASE:
+                view = netease.fetchRecommendedPlaylists(size);
+                break;
+            case KUWO:
+                view = kuwo.fetchRecommendedPlaylists(size);
+                break;
+            default:
+                throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
+        }
+        cache.put(key, view, PLAYLIST_RECOMMEND_TTL_SEC);
+        return view;
+    }
+
     public PlaylistDetailView playlistDetail(String rawSource, String id, int page, int pageSize) {
         MusicSource source = MusicSource.of(rawSource);
         String sid = requireId(id);
@@ -269,30 +293,131 @@ public class MusicService {
         return toplistDetail(rawSource, id, page, pageSize);
     }
 
-    public PlayInfo play(String rawSource, String id, String rawQuality) {
+    public List<ArtistDetailView> getArtists(String rawSource, List<String> ids) {
         MusicSource source = MusicSource.of(rawSource);
-        MusicQuality quality = MusicQuality.of(rawQuality);
-        String sid = requireId(id);
+        List<ArtistDetailView> result = new ArrayList<>();
 
-        String key = "music:play:" + source.getValue() + ":" + sid + ":" + quality.getValue();
-        PlayInfo cached = cache.get(key, PlayInfo.class);
-        if (cached != null) {
-            if (acceptCachedPlayInfo(key, source, sid, cached)) {
-                return copyWithFromCache(cached);
+        for (String id : ids) {
+            try {
+                ArtistDetailView detail = fetchArtistDetail(source, id);
+                if (detail != null) {
+                    result.add(detail);
+                }
+            } catch (Exception e) {
+                log.warn("Failed to fetch artist detail for {}:{}: {}", source, id, e.getMessage());
             }
         }
 
+        return result;
+    }
+
+    public AlbumDetailView albumDetail(String rawSource, String id, int page, int pageSize) {
+        MusicSource source = MusicSource.of(rawSource);
+        String sid = requireId(id);
+        int p = Math.max(1, page);
+        int s = Math.min(100, Math.max(1, pageSize));
+        String key = "music:album:detail:" + source.getValue() + ":" + sid + ":" + p + ":" + s;
+        AlbumDetailView cached = cache.get(key, AlbumDetailView.class);
+        if (cached != null) return cached;
+
+        AlbumDetailView view;
+        switch (source) {
+            case QQ:
+                view = qq.fetchAlbumDetail(sid, p, s);
+                break;
+            case NETEASE:
+                view = netease.fetchAlbumDetail(sid, p, s);
+                break;
+            case KUWO:
+                view = kuwo.fetchAlbumDetail(sid, p, s);
+                break;
+            default:
+                throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
+        }
+        cache.put(key, view, ALBUM_DETAIL_TTL_SEC);
+        return view;
+    }
+
+    public ArtistWorksView artistWorks(String rawSource, String id, String rawType, int page, int pageSize) {
+        MusicSource source = MusicSource.of(rawSource);
+        String sid = requireId(id);
+        String type = rawType == null ? "song" : rawType.trim().toLowerCase(Locale.ROOT);
+        if (!"song".equals(type) && !"album".equals(type)) {
+            throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "type must be song or album");
+        }
+        int p = Math.max(1, page);
+        int s = Math.min(100, Math.max(1, pageSize));
+        String key = "music:artist:works:" + source.getValue() + ":" + sid + ":" + type + ":" + p + ":" + s;
+        ArtistWorksView cached = cache.get(key, ArtistWorksView.class);
+        if (cached != null) return cached;
+
+        ArtistWorksView view;
+        switch (source) {
+            case QQ:
+                view = qq.fetchArtistWorks(sid, type, p, s);
+                break;
+            case NETEASE:
+                view = netease.fetchArtistWorks(sid, type, p, s);
+                break;
+            case KUWO:
+                view = kuwo.fetchArtistWorks(sid, type, p, s);
+                break;
+            default:
+                throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
+        }
+        cache.put(key, view, ARTIST_WORKS_TTL_SEC);
+        return view;
+    }
+
+    private ArtistDetailView fetchArtistDetail(MusicSource source, String id) {
+        switch (source) {
+            case QQ:
+                return qq.fetchArtistDetail(id);
+            case NETEASE:
+                return netease.fetchArtistDetail(id);
+            case KUWO:
+                return kuwo.fetchArtistDetail(id);
+            default:
+                return null;
+        }
+    }
+
+    public PlayInfo play(String rawSource, String id, String rawQuality) {
+        MusicSource source = MusicSource.of(rawSource);
+        PlaybackQualityRequest quality = PlaybackQualityRequest.parse(source, rawQuality);
+        String sid = requireId(id);
+
+        String key = "music:play:" + source.getValue() + ":" + sid + ":" + quality.getCacheValue();
+        PlayInfo cached = cache.get(key, PlayInfo.class);
+        if (cached != null) {
+            if (acceptCachedPlayInfo(key, source, sid, cached)) {
+                PlayInfo response = copyWithFromCache(cached);
+                response.setRequestedQuality(quality.getRequestedValue());
+                return response;
+            }
+        }
+
+        try (MusicRequestBudget.Scope ignored = MusicRequestBudget.start(8, TimeUnit.SECONDS)) {
+            return singleFlight.execute(key, () -> resolvePlay(source, quality, sid, key));
+        }
+    }
+
+    private PlayInfo resolvePlay(MusicSource source,
+                                 PlaybackQualityRequest quality,
+                                 String sid,
+                                 String key) {
         PlayInfo info;
         MusicBusinessException originalError = null;
         SongSearchItem meta = null;
 
         for (PlayResolver resolver : resolvePlayResolverOrder()) {
+            MusicRequestBudget.ensureRemaining();
             switch (resolver) {
                 case PRIMARY:
                     try {
-                        info = verifyPlayableOrThrow(source, sid, playWithQualityFallback(source, sid, quality),
+                        info = verifyPlayableOrThrow(source, sid, playWithPreferredResolver(source, sid, quality),
                                 "primary resolver");
-                        info.setRequestedQuality(quality.getValue());
+                        info.setRequestedQuality(quality.getRequestedValue());
                         cache.put(key, info, PLAY_TTL_SEC);
                         return info;
                     } catch (MusicBusinessException ex) {
@@ -304,10 +429,11 @@ public class MusicService {
                         break;
                     }
                     meta = ensureMeta(source, sid, meta);
-                    info = verifyPlayableOrNull(source, sid, tryQqTextFallback(source, sid, quality, meta),
+                    info = verifyPlayableOrNull(source, sid,
+                            tryQqTextFallback(source, sid, quality.getLegacyQuality(), meta),
                             "qq text fallback");
                     if (info != null) {
-                        info.setRequestedQuality(quality.getValue());
+                        info.setRequestedQuality(quality.getRequestedValue());
                         cache.put(key, info, PLAY_TTL_SEC);
                         return info;
                     }
@@ -315,8 +441,8 @@ public class MusicService {
                 case CROSS_SOURCE:
                     meta = ensureMeta(source, sid, meta);
                     try {
-                        info = tryFallback(source, sid, quality, meta, originalError);
-                        info.setRequestedQuality(quality.getValue());
+                        info = tryFallback(source, sid, quality.getLegacyQuality(), meta, originalError);
+                        info.setRequestedQuality(quality.getRequestedValue());
                         cache.put(key, info, PLAY_TTL_SEC);
                         return info;
                     } catch (MusicBusinessException ex) {
@@ -337,6 +463,28 @@ public class MusicService {
                 "no playable url for " + source.getValue() + ":" + sid);
     }
 
+    private PlayInfo playWithPreferredResolver(MusicSource source,
+                                               String id,
+                                               PlaybackQualityRequest quality) {
+        if (source == MusicSource.QQ) {
+            try {
+                return qq.resolvePlay(id, quality.getLegacyQuality());
+            } catch (MusicBusinessException ex) {
+                log.debug("Xunhuisi QQ resolver failed for {}/{} quality={}: {}",
+                        source.getValue(), id, quality.getCacheValue(), ex.getMessage());
+            }
+        }
+        if (source == MusicSource.NETEASE) {
+            try {
+                return chkszNetease.resolve(id, quality.getNeteaseQuality());
+            } catch (MusicBusinessException ex) {
+                log.debug("ChKSz NetEase resolver failed for {}/{} quality={}: {}",
+                        source.getValue(), id, quality.getCacheValue(), ex.getMessage());
+            }
+        }
+        return playWithQualityFallback(source, id, quality.getLegacyQuality());
+    }
+
     private boolean acceptCachedPlayInfo(String key, MusicSource requestedSource, String requestedId, PlayInfo cached) {
         if (cached == null) return false;
         if (!shouldVerifyQqPlayUrl(cached)) return true;
@@ -350,6 +498,7 @@ public class MusicService {
     private PlayInfo playWithQualityFallback(MusicSource source, String id, MusicQuality requested) {
         MusicBusinessException lastNoUrl = null;
         for (MusicQuality q : degradeChainFrom(requested)) {
+            MusicRequestBudget.ensureRemaining();
             try {
                 PlayInfo info = tfPay.play(source, id, q);
                 if (isEmpty(info.getActualQuality())) {
@@ -407,6 +556,7 @@ public class MusicService {
 
         for (MusicSource other : resolveCrossSourceOrder()) {
             if (other == requested) continue;
+            MusicRequestBudget.ensureRemaining();
             try {
                 List<SongSearchItem> hits = searchOn(other, keyword, 1, 3);
                 SongSearchItem pick = pickMatch(hits, meta);
@@ -539,61 +689,45 @@ public class MusicService {
         MusicSource source = MusicSource.of(rawSource);
         String sid = requireId(id);
 
-        String lyricKey = "music:lyric:" + source.getValue() + ":" + sid;
-        LyricView cached = cache.get(lyricKey, LyricView.class);
-        if (cached != null) return cached;
+        String officialKey = "music:lyric:official:v2:" + source.getValue() + ":" + sid;
+        LyricView cachedOfficial = cache.get(officialKey, LyricView.class);
+        if (cachedOfficial != null) return cachedOfficial;
 
-        LyricInfo fromPlay = findLyricInPlayCache(source, sid);
-        if (fromPlay != null && (fromPlay.getLineLyrics() != null || fromPlay.getKaraokeLyrics() != null)) {
-            LyricView view = new LyricView(sid, source, fromPlay.getLineLyrics(), fromPlay.getKaraokeLyrics());
-            cache.put(lyricKey, view, LYRIC_TTL_SEC);
-            return view;
+        MusicBusinessException officialError;
+        try {
+            LyricView official = fetchOfficialLyric(source, sid);
+            cache.put(officialKey, official, LYRIC_TTL_SEC);
+            return official;
+        } catch (MusicBusinessException ex) {
+            officialError = ex;
+            log.debug("Official lyric failed for {}/{}: {}", source.getValue(), sid, ex.getMessage());
         }
 
-        LyricView upstream = fetchLyricFromUpstream(source, sid);
-        cache.put(lyricKey, upstream, LYRIC_TTL_SEC);
-        return upstream;
-    }
-
-    private LyricInfo findLyricInPlayCache(MusicSource source, String id) {
-        for (MusicQuality q : MusicQuality.values()) {
-            PlayInfo p = cache.get("music:play:" + source.getValue() + ":" + id + ":" + q.getValue(), PlayInfo.class);
-            if (p != null && p.getLyric() != null) return p.getLyric();
+        String fallbackKey = "music:lyric:fallback:v2:" + source.getValue() + ":" + sid;
+        LyricView cachedFallback = cache.get(fallbackKey, LyricView.class);
+        if (cachedFallback != null) return cachedFallback;
+        try {
+            LyricView fallback = fetchFallbackLyric(source, sid);
+            if (fallback != null) {
+                cache.put(fallbackKey, fallback, LYRIC_FALLBACK_TTL_SEC);
+                return fallback;
+            }
+        } catch (MusicBusinessException ex) {
+            log.debug("Fallback lyric failed for {}/{}: {}", source.getValue(), sid, ex.getMessage());
         }
-        return null;
+        throw officialError;
     }
 
     private SongSearchItem ensureMeta(MusicSource source, String id, SongSearchItem current) {
         return current != null ? current : fetchSongInfoOn(source, id);
     }
 
-    private LyricView fetchLyricFromUpstream(MusicSource source, String id) {
+    private LyricView fetchOfficialLyric(MusicSource source, String id) {
         switch (source) {
             case QQ: {
-                String line = null;
-                MusicBusinessException officialError = null;
-                try {
-                    line = qq.fetchLyric(id);
-                } catch (MusicBusinessException ex) {
-                    officialError = ex;
-                    log.debug("QQ official lyric failed for {}: {}", id, ex.getMessage());
-                }
+                String line = qq.fetchLyric(id);
                 if (!isEmpty(line)) {
-                    return new LyricView(id, source, line, null);
-                }
-                SongSearchItem meta = qq.fetchSongInfo(id);
-                if (meta != null && !isEmpty(meta.getName())) {
-                    try {
-                        LyricInfo lyric = qqTextFallback.fetchLyric(meta);
-                        if (lyric != null && !isEmpty(lyric.getLineLyrics())) {
-                            return new LyricView(id, source, lyric.getLineLyrics(), lyric.getKaraokeLyrics());
-                        }
-                    } catch (MusicBusinessException ex) {
-                        log.debug("QQ lyric text fallback failed for {}: {}", id, ex.getMessage());
-                    }
-                }
-                if (officialError != null) {
-                    throw officialError;
+                    return new LyricView(id, source, line, null, "qq", Boolean.TRUE);
                 }
                 throw new MusicBusinessException(MusicErrorCode.UPSTREAM_LYRIC_FAILED,
                         "no lyric from qq for " + id);
@@ -604,20 +738,40 @@ public class MusicService {
                     throw new MusicBusinessException(MusicErrorCode.UPSTREAM_LYRIC_FAILED,
                             "no lyric from netease for " + id);
                 }
-                return new LyricView(id, source, both[0], both[1]);
+                return new LyricView(id, source, both[0], both[1], "netease", Boolean.TRUE);
             }
             case KUWO: {
-                PlayInfo p = tfPay.play(source, id, MusicQuality.FLAC);
-                cache.put("music:play:" + source.getValue() + ":" + id + ":" + MusicQuality.FLAC.getValue(), p, PLAY_TTL_SEC);
-                LyricInfo lyric = p.getLyric();
-                if (lyric == null || (isEmpty(lyric.getLineLyrics()) && isEmpty(lyric.getKaraokeLyrics()))) {
-                    throw new MusicBusinessException(MusicErrorCode.UPSTREAM_LYRIC_FAILED,
-                            "no lyric from kuwo for " + id);
-                }
-                return new LyricView(id, source, lyric.getLineLyrics(), lyric.getKaraokeLyrics());
+                String line = kuwo.fetchLyric(id);
+                return new LyricView(id, source, line, null, "kuwo", Boolean.TRUE);
             }
             default:
                 throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
+        }
+    }
+
+    private LyricView fetchFallbackLyric(MusicSource source, String id) {
+        switch (source) {
+            case QQ: {
+                SongSearchItem meta = qq.fetchSongInfo(id);
+                if (meta == null || isEmpty(meta.getName())) return null;
+                LyricInfo lyric = qqTextFallback.fetchLyric(meta);
+                if (lyric == null || (isEmpty(lyric.getLineLyrics()) && isEmpty(lyric.getKaraokeLyrics()))) {
+                    return null;
+                }
+                return new LyricView(id, source, lyric.getLineLyrics(), lyric.getKaraokeLyrics(),
+                        "cyapi", Boolean.FALSE);
+            }
+            case KUWO: {
+                PlayInfo play = tfPay.play(source, id, MusicQuality.FLAC);
+                LyricInfo lyric = play == null ? null : play.getLyric();
+                if (lyric == null || (isEmpty(lyric.getLineLyrics()) && isEmpty(lyric.getKaraokeLyrics()))) {
+                    return null;
+                }
+                return new LyricView(id, source, lyric.getLineLyrics(), lyric.getKaraokeLyrics(),
+                        "tunefree", Boolean.FALSE);
+            }
+            default:
+                return null;
         }
     }
 

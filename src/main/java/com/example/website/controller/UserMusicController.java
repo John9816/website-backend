@@ -10,6 +10,8 @@ import com.example.website.dto.music.MusicHistoryView;
 import com.example.website.dto.music.MusicShareRequest;
 import com.example.website.dto.music.MusicShareView;
 import com.example.website.dto.music.PlaylistCreateRequest;
+import com.example.website.dto.music.PlaylistFavoriteRequest;
+import com.example.website.dto.music.PlaylistFavoriteStatusView;
 import com.example.website.dto.music.PlaylistImportRequest;
 import com.example.website.dto.music.PlaylistItemRequest;
 import com.example.website.dto.music.PlaylistRenameRequest;
@@ -131,8 +133,36 @@ public class UserMusicController {
         return ApiResponse.ok(userPlaylistService.importFromUrl(userId, req.getUrl()));
     }
 
+    @GetMapping("/playlist-favorites/status")
+    public ApiResponse<PlaylistFavoriteStatusView> playlistFavoriteStatus(
+            HttpServletRequest request,
+            @RequestParam String source,
+            @RequestParam String playlistId) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(userPlaylistService.favoriteStatus(userId, source, playlistId));
+    }
+
+    @PostMapping("/playlist-favorites")
+    public ApiResponse<UserPlaylistView> favoritePlaylist(
+            HttpServletRequest request,
+            @Valid @RequestBody PlaylistFavoriteRequest req) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(userPlaylistService.favoriteRemote(
+                userId, req.getSource(), req.getPlaylistId()));
+    }
+
+    @DeleteMapping("/playlist-favorites")
+    public ApiResponse<Void> deletePlaylistFavorite(
+            HttpServletRequest request,
+            @RequestParam String source,
+            @RequestParam String playlistId) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        userPlaylistService.deleteRemoteFavorite(userId, source, playlistId);
+        return ApiResponse.ok();
+    }
+
     /**
-     * Re-pull tracks from QQ/NetEase for an already-imported remote playlist.
+     * Re-pull tracks from a supported remote source for an already-imported playlist.
      * Track list is remote-wins; local-only playlists return 400.
      */
     @PostMapping("/playlists/{id}/sync")

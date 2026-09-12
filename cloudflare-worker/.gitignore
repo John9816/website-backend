@@ -1,6 +1,0 @@
-node_modules/
-.wrangler/
-.wrangler-config/
-.local-logs/
-dist/
-worker-configuration.d.ts

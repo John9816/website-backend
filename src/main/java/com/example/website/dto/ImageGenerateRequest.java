@@ -15,10 +15,16 @@ public class ImageGenerateRequest {
     @Size(max = 2000)
     private String prompt;
 
+    @Size(max = 100)
+    private String model;
+
     @Min(1)
-    @Max(10)
+    @Max(3)
     private Integer n;
 
-    @Pattern(regexp = "\\d+x\\d+", message = "size must be WIDTHxHEIGHT, e.g. 1024x1024")
+    @Pattern(
+            regexp = "(?i)(auto|(?:\\d+(?:x|\\*)\\d+)|(?:1:1|4:5|3:4|2:3|3:2|4:3|16:9|9:16|21:9))",
+            message = "size must be auto, a supported ratio, WIDTHxHEIGHT, or WIDTH*HEIGHT"
+    )
     private String size;
 }

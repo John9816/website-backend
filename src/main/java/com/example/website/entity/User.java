@@ -46,7 +46,7 @@ public class User {
     @Column(name = "auth_version", nullable = false)
     private int authVersion = 0;
 
-    @Column(name = "avatar_url", length = 255)
+    @Column(name = "avatar_url", length = 1000)
     private String avatarUrl;
 
     @Column(name = "register_ip", length = 45)
@@ -60,6 +60,9 @@ public class User {
 
     @Column(name = "login_count", nullable = false)
     private int loginCount = 0;
+
+    @Column(nullable = false)
+    private int credits = 0;
 
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)

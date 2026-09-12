@@ -5,6 +5,7 @@ import com.example.website.config.OkHttpConfig;
 import com.example.website.dto.ImageEditRequest;
 import com.example.website.dto.ImageGenerateRequest;
 import com.example.website.dto.ImageGenerationsResponse;
+import com.example.website.dto.ImageModelView;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -64,10 +65,70 @@ public class ImageService {
     private final ObjectMapper objectMapper;
     private final Executor imageGenSubExecutor;
 
+    public String resolveModel(String requestedModel) {
+        if (requestedModel != null && !requestedModel.trim().isEmpty()) {
+            return requestedModel.trim();
+        }
+        return configService.getValueOrThrow(CFG_MODEL);
+    }
+
+    public List<ImageModelView> listModels() {
+        String baseUrl = configService.getValueOrThrow(CFG_BASE_URL);
+        String apiKey = configService.getValueOrThrow(CFG_API_KEY);
+        String requestUrl = deriveModelsEndpoint(baseUrl);
+        Request request = new Request.Builder()
+                .url(requestUrl)
+                .header("Authorization", "Bearer " + apiKey)
+                .header("Accept", "application/json")
+                .get()
+                .build();
+
+        String rawBody;
+        int status;
+        try (Response response = okHttpClient.newCall(request).execute()) {
+            status = response.code();
+            ResponseBody rb = response.body();
+            rawBody = rb == null ? "" : rb.string();
+        } catch (IOException e) {
+            log.error("Image model list upstream I/O failed", e);
+            throw new BusinessException(502, "Upstream image model API I/O failed: " + e.getMessage());
+        }
+
+        if (rawBody == null || rawBody.isEmpty()) {
+            throw new BusinessException(502, "Empty response from image model API (status=" + status + ")");
+        }
+        Map<String, Object> raw = readJsonOrThrow(rawBody, status);
+        throwIfUpstreamError(raw);
+        if (status >= 400) {
+            throw new BusinessException(502, "Upstream image model API returned " + status);
+        }
+
+        Object dataObj = raw.get("data");
+        if (!(dataObj instanceof List)) {
+            throw new BusinessException(502, "Upstream image model API returned no data array");
+        }
+        List<ImageModelView> models = new ArrayList<>();
+        for (Object item : (List<?>) dataObj) {
+            if (!(item instanceof Map)) continue;
+            Map<?, ?> model = (Map<?, ?>) item;
+            String id = model.get("id") == null ? null : model.get("id").toString();
+            if (id == null || id.trim().isEmpty()) continue;
+            Long created = model.get("created") instanceof Number
+                    ? ((Number) model.get("created")).longValue() : null;
+            String object = model.get("object") == null ? "model" : model.get("object").toString();
+            String ownedBy = model.get("owned_by") == null ? null : model.get("owned_by").toString();
+            models.add(new ImageModelView(id, object, created, ownedBy));
+        }
+        if (models.isEmpty()) {
+            throw new BusinessException(502, "Upstream image model API returned no models");
+        }
+        return models;
+    }
+
     public ImageGenerationsResponse generate(ImageGenerateRequest req) {
         String baseUrl = configService.getValueOrThrow(CFG_BASE_URL);
         String apiKey  = configService.getValueOrThrow(CFG_API_KEY);
-        String model   = configService.getValueOrThrow(CFG_MODEL);
+        String model   = resolveModel(req.getModel());
         int n = req.getN() != null ? req.getN() : 1;
 
         boolean imagesEndpoint = isImagesEndpoint(baseUrl);
@@ -89,7 +150,7 @@ public class ImageService {
                 .filter(v -> v != null && !v.trim().isEmpty())
                 .orElseGet(() -> deriveEditsEndpoint(configService.getValueOrThrow(CFG_BASE_URL)));
         String apiKey = configService.getValueOrThrow(CFG_API_KEY);
-        String model = configService.getValueOrThrow(CFG_MODEL);
+        String model = resolveModel(req.getModel());
         int n = req.getN() != null ? req.getN() : 1;
 
         UpstreamCallResult upstream = callUpstreamMultipart(baseUrl, apiKey, buildEditMultipartBody(model, req, n));
@@ -284,6 +345,21 @@ public class ImageService {
         return baseUrl.replace("/chat/completions", "/images/generations");
     }
 
+    private String deriveModelsEndpoint(String baseUrl) {
+        if (baseUrl == null || baseUrl.trim().isEmpty()) {
+            throw new BusinessException(500, "image.api.baseUrl is not configured");
+        }
+        String trimmed = baseUrl.trim();
+        int v1Index = trimmed.indexOf("/v1/");
+        if (v1Index >= 0) {
+            return trimmed.substring(0, v1Index) + "/v1/models";
+        }
+        if (trimmed.endsWith("/v1")) {
+            return trimmed + "/models";
+        }
+        return trimmed.replaceAll("/+$", "") + "/v1/models";
+    }
+
     private String deriveEditsEndpoint(String baseUrl) {
         if (baseUrl == null || baseUrl.trim().isEmpty()) {
             throw new BusinessException(500, "image.api.baseUrl is not configured");
@@ -309,7 +385,8 @@ public class ImageService {
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("model", model)
                 .addFormDataPart("prompt", req.getPrompt())
-                .addFormDataPart("n", String.valueOf(n));
+                .addFormDataPart("n", String.valueOf(n))
+                .addFormDataPart("response_format", "url");
         if (req.getSize() != null && !req.getSize().isEmpty()) {
             builder.addFormDataPart("size", req.getSize());
         }

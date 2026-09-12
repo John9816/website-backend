@@ -3,6 +3,9 @@ package com.example.website;
 import com.example.website.dto.music.MusicQuality;
 import com.example.website.dto.music.MusicSource;
 import com.example.website.dto.music.PlayInfo;
+import com.example.website.dto.music.PlaylistDetailView;
+import com.example.website.dto.music.SongSearchItem;
+import com.example.website.service.music.QqMusicClient;
 import com.example.website.service.music.TuneFreePayClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -17,6 +20,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -45,6 +49,9 @@ class MusicLibraryIntegrationTests {
     @MockBean
     private TuneFreePayClient tuneFreePayClient;
 
+    @MockBean
+    private QqMusicClient qqMusicClient;
+
     @Test
     void musicLibraryEndpointsRequireAuthentication() throws Exception {
         mockMvc.perform(get("/api/user/music/history"))
@@ -66,12 +73,36 @@ class MusicLibraryIntegrationTests {
                         .param("songId", "song-1"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(401));
+
+        mockMvc.perform(get("/api/user/music/playlist-favorites/status")
+                        .param("source", "qq")
+                        .param("playlistId", "playlist-1"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(401));
+    }
+
+    @Test
+    void musicSourceEndpointsRequireAuthentication() throws Exception {
+        mockMvc.perform(get("/api/v1/music/play")
+                        .param("source", "qq")
+                        .param("id", "song-1"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(401))
+                .andExpect(jsonPath("$.message").value("需要登录才能播放"));
+
+        mockMvc.perform(get("/api/v1/music/search")
+                        .param("source", "qq")
+                        .param("keyword", "test"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(401))
+                .andExpect(jsonPath("$.message").value("需要登录才能播放"));
     }
 
     @Test
     void authenticatedPlayPersistsHistoryAndKeepsOnlyMostRecent100Songs() throws Exception {
         mockPlayResponses();
         String token = registerAndExtractToken("music_history_user", "secret123");
+        activateDayMembership(token);
 
         for (int i = 1; i <= 101; i++) {
             mockMvc.perform(get("/api/v1/music/play")
@@ -148,7 +179,7 @@ class MusicLibraryIntegrationTests {
                         .header("Authorization", "Bearer " + bobToken)
                         .param("source", "qq")
                         .param("songId", "fav-song-1"))
-                .andExpect(status().isBadRequest())
+                .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value(404));
 
         mockMvc.perform(delete("/api/user/music/favorites")
@@ -208,7 +239,7 @@ class MusicLibraryIntegrationTests {
         assertEquals("320k", statusView.path("requestedQuality").asText());
 
         mockMvc.perform(get("/api/public/music/share/{token}", firstSave.path("token").asText()))
-                .andExpect(status().isBadRequest())
+                .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value(404));
 
         JsonNode publicView = readJson(mockMvc.perform(get("/api/public/music/share/{token}", rotatedSave.path("token").asText()))
@@ -240,7 +271,7 @@ class MusicLibraryIntegrationTests {
         assertTrue(deletedStatus.isNull());
 
         mockMvc.perform(get("/api/public/music/share/{token}", rotatedSave.path("token").asText()))
-                .andExpect(status().isBadRequest())
+                .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value(404));
     }
 
@@ -291,7 +322,103 @@ class MusicLibraryIntegrationTests {
         assertEquals(1, list.path("items").get(0).path("trackCount").asInt());
     }
 
+    @Test
+    void remotePlaylistFavoritesAreIdempotentAndScopedPerUser() throws Exception {
+        String aliceToken = registerAndExtractToken("playlist_favorite_alice", "secret123");
+        String bobToken = registerAndExtractToken("playlist_favorite_bob", "secret123");
+        when(qqMusicClient.fetchPlaylistDetail("remote-list-1", 1, 100))
+                .thenReturn(remotePlaylistDetail());
+
+        mockMvc.perform(get("/api/user/music/playlist-favorites/status")
+                        .header("Authorization", "Bearer " + aliceToken)
+                        .param("source", "qq")
+                        .param("playlistId", "remote-list-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.favorite").value(false))
+                .andExpect(jsonPath("$.data.userPlaylistId").isEmpty());
+
+        String favoriteBody = "{\"source\":\"qq\",\"playlistId\":\"remote-list-1\"}";
+        JsonNode first = readJson(mockMvc.perform(post("/api/user/music/playlist-favorites")
+                        .header("Authorization", "Bearer " + aliceToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(favoriteBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.name").value("Remote Favorites"))
+                .andExpect(jsonPath("$.data.trackCount").value(1))
+                .andReturn()).path("data");
+
+        JsonNode second = readJson(mockMvc.perform(post("/api/user/music/playlist-favorites")
+                        .header("Authorization", "Bearer " + aliceToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(favoriteBody))
+                .andExpect(status().isOk())
+                .andReturn()).path("data");
+        assertEquals(first.path("id").asLong(), second.path("id").asLong());
+
+        mockMvc.perform(get("/api/user/music/playlist-favorites/status")
+                        .header("Authorization", "Bearer " + aliceToken)
+                        .param("source", "qq")
+                        .param("playlistId", "remote-list-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.favorite").value(true))
+                .andExpect(jsonPath("$.data.userPlaylistId").value(first.path("id").asLong()));
+
+        mockMvc.perform(get("/api/user/music/playlist-favorites/status")
+                        .header("Authorization", "Bearer " + bobToken)
+                        .param("source", "qq")
+                        .param("playlistId", "remote-list-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.favorite").value(false));
+
+        mockMvc.perform(delete("/api/user/music/playlist-favorites")
+                        .header("Authorization", "Bearer " + aliceToken)
+                        .param("source", "qq")
+                        .param("playlistId", "remote-list-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
+
+        mockMvc.perform(get("/api/user/music/playlist-favorites/status")
+                        .header("Authorization", "Bearer " + aliceToken)
+                        .param("source", "qq")
+                        .param("playlistId", "remote-list-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.favorite").value(false));
+    }
+
+    private PlaylistDetailView remotePlaylistDetail() {
+        SongSearchItem song = new SongSearchItem();
+        song.setSource(MusicSource.QQ);
+        song.setId("remote-song-1");
+        song.setName("Remote Song");
+        song.setArtist("Remote Artist");
+        PlaylistDetailView detail = new PlaylistDetailView();
+        detail.setId("remote-list-1");
+        detail.setSource(MusicSource.QQ);
+        detail.setName("Remote Favorites");
+        detail.setCoverUrl("https://example.com/remote-list.jpg");
+        detail.setTotal(1);
+        detail.setList(Collections.singletonList(song));
+        return detail;
+    }
+
     private void mockPlayResponses() {
+        when(qqMusicClient.resolvePlay(anyString(), any(MusicQuality.class)))
+                .thenAnswer(invocation -> {
+                    String songId = invocation.getArgument(0);
+                    MusicQuality quality = invocation.getArgument(1);
+                    PlayInfo info = new PlayInfo();
+                    info.setId(songId);
+                    info.setSource(MusicSource.QQ);
+                    info.setActualSource(MusicSource.QQ);
+                    info.setName("Track " + songId);
+                    info.setArtist("Artist " + songId);
+                    info.setAlbum("Album " + songId);
+                    info.setCoverUrl("https://example.com/" + songId + ".jpg");
+                    info.setDurationSec(180);
+                    info.setPlayUrl("https://example.com/play/" + songId);
+                    info.setActualQuality(quality.getValue());
+                    return info;
+                });
         when(tuneFreePayClient.play(any(MusicSource.class), anyString(), any(MusicQuality.class)))
                 .thenAnswer(invocation -> {
                     MusicSource source = invocation.getArgument(0);
@@ -316,6 +443,31 @@ class MusicLibraryIntegrationTests {
         MvcResult result = mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(registerBody(username, password)))
+                .andExpect(status().isOk())
+                .andReturn();
+        return readJson(result).path("data").path("token").asText();
+    }
+
+    private void activateDayMembership(String userToken) throws Exception {
+        String adminToken = loginAndExtractToken("admin", "admin123");
+        MvcResult generated = mockMvc.perform(post("/api/admin/redeem-codes")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"DAY\",\"quantity\":1}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String code = readJson(generated).path("data").path("codes").get(0).asText();
+        mockMvc.perform(post("/api/user/membership/redeem")
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + code + "\"}"))
+                .andExpect(status().isOk());
+    }
+
+    private String loginAndExtractToken(String username, String password) throws Exception {
+        MvcResult result = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"password\":\"" + password + "\"}"))
                 .andExpect(status().isOk())
                 .andReturn();
         return readJson(result).path("data").path("token").asText();

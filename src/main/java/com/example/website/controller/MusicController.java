@@ -1,6 +1,9 @@
 package com.example.website.controller;
 
 import com.example.website.common.ApiResponse;
+import com.example.website.dto.music.ArtistDetailView;
+import com.example.website.dto.music.ArtistWorksView;
+import com.example.website.dto.music.AlbumDetailView;
 import com.example.website.dto.music.LyricView;
 import com.example.website.dto.music.PlaylistDetailView;
 import com.example.website.dto.music.PlaylistListView;
@@ -10,6 +13,7 @@ import com.example.website.dto.music.ToplistDetailView;
 import com.example.website.dto.music.ToplistListView;
 import com.example.website.service.music.MusicLibraryService;
 import com.example.website.service.music.MusicService;
+import com.example.website.service.MembershipService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,6 +22,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import javax.servlet.http.HttpServletRequest;
+import java.util.List;
 
 @Slf4j
 @RestController
@@ -27,6 +32,7 @@ public class MusicController {
 
     private final MusicService musicService;
     private final MusicLibraryService musicLibraryService;
+    private final MembershipService membershipService;
 
     @GetMapping("/search")
     public ApiResponse<SearchResultView> search(@RequestParam String source,
@@ -42,8 +48,9 @@ public class MusicController {
                                       @RequestParam String source,
                                       @RequestParam String id,
                                       @RequestParam(required = false) String quality) {
-        PlayInfo info = musicService.play(source, id, quality);
         Long userId = request == null ? null : (Long) request.getAttribute("userId");
+        membershipService.requireActiveMembership(userId);
+        PlayInfo info = musicService.play(source, id, quality);
         if (userId != null) {
             try {
                 musicLibraryService.recordPlay(userId, info);
@@ -82,6 +89,12 @@ public class MusicController {
         return ApiResponse.ok(musicService.playlists(source, category, order, page, pageSize));
     }
 
+    @GetMapping("/playlist/recommend")
+    public ApiResponse<PlaylistListView> recommendedPlaylists(@RequestParam String source,
+                                                              @RequestParam(defaultValue = "20") int limit) {
+        return ApiResponse.ok(musicService.recommendedPlaylists(source, limit));
+    }
+
     @GetMapping("/playlist/detail")
     public ApiResponse<PlaylistDetailView> playlistDetail(@RequestParam String source,
                                                           @RequestParam String id,
@@ -95,5 +108,28 @@ public class MusicController {
                                                    @RequestParam(defaultValue = "1") int page,
                                                    @RequestParam(defaultValue = "30") int pageSize) {
         return ApiResponse.ok(musicService.newSongs(source, page, pageSize));
+    }
+
+    @GetMapping("/artist")
+    public ApiResponse<List<ArtistDetailView>> artist(@RequestParam String source,
+                                                      @RequestParam List<String> ids) {
+        return ApiResponse.ok(musicService.getArtists(source, ids));
+    }
+
+    @GetMapping("/album/detail")
+    public ApiResponse<AlbumDetailView> albumDetail(@RequestParam String source,
+                                                    @RequestParam String id,
+                                                    @RequestParam(defaultValue = "1") int page,
+                                                    @RequestParam(defaultValue = "30") int pageSize) {
+        return ApiResponse.ok(musicService.albumDetail(source, id, page, pageSize));
+    }
+
+    @GetMapping("/artist/works")
+    public ApiResponse<ArtistWorksView> artistWorks(@RequestParam String source,
+                                                    @RequestParam String id,
+                                                    @RequestParam(defaultValue = "song") String type,
+                                                    @RequestParam(defaultValue = "1") int page,
+                                                    @RequestParam(defaultValue = "30") int pageSize) {
+        return ApiResponse.ok(musicService.artistWorks(source, id, type, page, pageSize));
     }
 }

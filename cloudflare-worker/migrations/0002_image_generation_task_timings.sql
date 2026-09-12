@@ -1,1 +1,0 @@
--- No-op: timings_json is already present in 0001_initial.sql.

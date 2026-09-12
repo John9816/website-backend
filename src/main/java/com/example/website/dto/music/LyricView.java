@@ -19,4 +19,8 @@ public class LyricView {
     private MusicSource source;
     private String lineLyrics;
     private String karaokeLyrics;
+    /** Upstream that supplied this lyric, for example qq, netease, kuwo or cyapi. */
+    private String provider;
+    /** Whether the lyric came directly from the music platform's Web endpoint. */
+    private Boolean official;
 }

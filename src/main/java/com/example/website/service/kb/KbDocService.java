@@ -31,6 +31,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -59,6 +60,8 @@ public class KbDocService {
     private final KbTagRepository tagRepository;
     private final KbSpaceService spaceService;
     private final KbTagService tagService;
+    private final KbImageDocumentNormalizer imageDocumentNormalizer;
+    private final TransactionTemplate transactionTemplate;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public KbDocView get(Long userId, Long id) {
@@ -127,8 +130,9 @@ public class KbDocService {
         return roots;
     }
 
-    @Transactional
     public KbDocView create(Long userId, KbDocCreateRequest req) {
+        // Authorize before making outbound storage calls, then validate again in the
+        // short write transaction so a concurrent ownership change cannot be bypassed.
         spaceService.requireOwned(userId, req.getSpaceId());
         if (req.getParentId() != null) {
             KbDoc parent = requireOwned(userId, req.getParentId());
@@ -136,46 +140,55 @@ public class KbDocService {
                 throw new BusinessException(400, "Parent doc belongs to a different space");
             }
         }
-        validateJson(req.getContentJson());
-
-        KbDoc d = new KbDoc();
-        d.setUserId(userId);
-        d.setSpaceId(req.getSpaceId());
-        d.setParentId(req.getParentId());
-        d.setTitle(req.getTitle());
-        d.setSummary(req.getSummary());
-        d.setContentJson(req.getContentJson());
-        d.setContentHtml(req.getContentHtml());
-        d.setStatus(normalizeStatus(req.getStatus()));
-        d.setSortOrder(req.getSortOrder() == null ? 0 : req.getSortOrder());
-        d.setVersionNo(1);
-        d = docRepository.save(d);
-
-        snapshot(d, userId, "initial");
-        spaceRepository.adjustDocCount(d.getSpaceId(), 1);
-        return assembleView(d);
+        KbImageDocumentNormalizer.Result content = imageDocumentNormalizer.normalize(
+                req.getContentJson(), req.getContentHtml());
+        return transactionTemplate.execute(status -> {
+            spaceService.requireOwned(userId, req.getSpaceId());
+            if (req.getParentId() != null) {
+                KbDoc parent = requireOwned(userId, req.getParentId());
+                if (!parent.getSpaceId().equals(req.getSpaceId())) {
+                    throw new BusinessException(400, "Parent doc belongs to a different space");
+                }
+            }
+            KbDoc d = new KbDoc();
+            d.setUserId(userId);
+            d.setSpaceId(req.getSpaceId());
+            d.setParentId(req.getParentId());
+            d.setTitle(req.getTitle());
+            d.setSummary(req.getSummary());
+            d.setContentJson(content.getContentJson());
+            d.setContentHtml(content.getContentHtml());
+            d.setStatus(normalizeStatus(req.getStatus()));
+            d.setSortOrder(req.getSortOrder() == null ? 0 : req.getSortOrder());
+            d.setVersionNo(1);
+            d = docRepository.save(d);
+            snapshot(d, userId, "initial");
+            spaceRepository.adjustDocCount(d.getSpaceId(), 1);
+            return assembleView(d);
+        });
     }
 
-    @Transactional
     public KbDocView update(Long userId, Long id, KbDocUpdateRequest req) {
-        KbDoc d = requireOwned(userId, id);
-        validateJson(req.getContentJson());
-
-        d.setTitle(req.getTitle());
-        d.setSummary(req.getSummary());
-        d.setContentJson(req.getContentJson());
-        d.setContentHtml(req.getContentHtml());
-        if (req.getStatus() != null && !req.getStatus().isEmpty()) {
-            d.setStatus(normalizeStatus(req.getStatus()));
-        }
-        if (req.getSortOrder() != null) {
-            d.setSortOrder(req.getSortOrder());
-        }
-        d.setVersionNo(d.getVersionNo() + 1);
-        d = docRepository.save(d);
-
-        snapshot(d, userId, req.getChangeNote());
-        return assembleView(d);
+        requireOwned(userId, id);
+        KbImageDocumentNormalizer.Result content = imageDocumentNormalizer.normalize(
+                req.getContentJson(), req.getContentHtml());
+        return transactionTemplate.execute(status -> {
+            KbDoc d = requireOwned(userId, id);
+            d.setTitle(req.getTitle());
+            d.setSummary(req.getSummary());
+            d.setContentJson(content.getContentJson());
+            d.setContentHtml(content.getContentHtml());
+            if (req.getStatus() != null && !req.getStatus().isEmpty()) {
+                d.setStatus(normalizeStatus(req.getStatus()));
+            }
+            if (req.getSortOrder() != null) {
+                d.setSortOrder(req.getSortOrder());
+            }
+            d.setVersionNo(d.getVersionNo() + 1);
+            d = docRepository.save(d);
+            snapshot(d, userId, req.getChangeNote());
+            return assembleView(d);
+        });
     }
 
     @Transactional
@@ -247,21 +260,25 @@ public class KbDocService {
         return KbDocVersionDetailView.from(v);
     }
 
-    @Transactional
     public KbDocView restoreVersion(Long userId, Long docId, Long versionId) {
-        KbDoc d = requireOwned(userId, docId);
+        requireOwned(userId, docId);
         KbDocVersion v = versionRepository.findByIdAndDocId(versionId, docId)
                 .orElseThrow(() -> new BusinessException(404, "Version not found"));
-
-        d.setTitle(v.getTitle());
-        d.setSummary(v.getSummary());
-        d.setContentJson(v.getContentJson());
-        d.setContentHtml(v.getContentHtml());
-        d.setVersionNo(d.getVersionNo() + 1);
-        d = docRepository.save(d);
-
-        snapshot(d, userId, "restored from v" + v.getVersionNo());
-        return assembleView(d);
+        KbImageDocumentNormalizer.Result content = imageDocumentNormalizer.normalize(
+                v.getContentJson(), v.getContentHtml());
+        return transactionTemplate.execute(status -> {
+            KbDoc d = requireOwned(userId, docId);
+            KbDocVersion currentVersion = versionRepository.findByIdAndDocId(versionId, docId)
+                    .orElseThrow(() -> new BusinessException(404, "Version not found"));
+            d.setTitle(currentVersion.getTitle());
+            d.setSummary(currentVersion.getSummary());
+            d.setContentJson(content.getContentJson());
+            d.setContentHtml(content.getContentHtml());
+            d.setVersionNo(d.getVersionNo() + 1);
+            d = docRepository.save(d);
+            snapshot(d, userId, "restored from v" + currentVersion.getVersionNo());
+            return assembleView(d);
+        });
     }
 
     KbDocView assembleView(KbDoc d) {

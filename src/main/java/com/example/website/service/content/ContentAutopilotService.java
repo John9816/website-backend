@@ -2,7 +2,6 @@ package com.example.website.service.content;
 
 import com.example.website.dto.content.ContentAgentRunRequest;
 import com.example.website.repository.ContentArticleRepository;
-import com.example.website.service.ContentArticleService;
 import com.example.website.service.SysConfigService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

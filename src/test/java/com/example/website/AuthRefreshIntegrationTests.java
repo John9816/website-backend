@@ -96,6 +96,13 @@ class AuthRefreshIntegrationTests {
                         .content("{\"refresh_token\":\"" + refresh + "\"}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(401));
+
+        // Reuse detection revokes the replacement token family as well.
+        mockMvc.perform(post("/api/auth/refresh")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refresh_token\":\"" + newRefresh + "\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(401));
     }
 
     @Test

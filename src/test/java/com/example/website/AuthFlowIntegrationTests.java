@@ -95,6 +95,47 @@ class AuthFlowIntegrationTests {
     }
 
     @Test
+    void loginAcceptsUsernameOrEmail() throws Exception {
+        String username = "login_identifier_user";
+        String email = username + "@751152.xyz";
+        String password = "secret123";
+        registerAndExtractToken(username, password, email);
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"password\":\"" + password + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.username").value(username));
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + email.toUpperCase() + "\",\"password\":\"" + password + "\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(401));
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"" + email + "\",\"password\":\"" + password + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.username").value(username));
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"email\":\"" + email
+                                + "\",\"password\":\"" + password + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        String atUsername = "login@identifier";
+        registerAndExtractToken(atUsername, password, "login_at_identifier@751152.xyz");
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + atUsername + "\",\"password\":\"" + password + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.username").value(atUsername));
+    }
+
+    @Test
     void registerRequiresUniqueQqEmail() throws Exception {
         String email = qqEmail("duplicate_email");
         mockMvc.perform(post("/api/auth/register")
@@ -141,6 +182,15 @@ class AuthFlowIntegrationTests {
                 .andExpect(jsonPath("$.message").value(
                         "Malformed JSON request body. Example: {\"username\":\"alice\",\"password\":\"secret123\"}"
                 ));
+    }
+
+    @Test
+    void unsupportedMethodReturnsMethodNotAllowed() throws Exception {
+        mockMvc.perform(get("/api/auth/login"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(header().string(HttpHeaders.ALLOW, "POST"))
+                .andExpect(jsonPath("$.code").value(405))
+                .andExpect(jsonPath("$.message").value("Method not allowed"));
     }
 
     @Test
@@ -356,9 +406,13 @@ class AuthFlowIntegrationTests {
     }
 
     private String registerAndExtractToken(String username, String password) throws Exception {
+        return registerAndExtractToken(username, password, qqEmail(username));
+    }
+
+    private String registerAndExtractToken(String username, String password, String email) throws Exception {
         MvcResult result = mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(registerBody(username, password, qqEmail(username))))
+                        .content(registerBody(username, password, email)))
                 .andExpect(status().isOk())
                 .andReturn();
         return readJson(result).path("data").path("token").asText();

@@ -5,9 +5,11 @@ import com.example.website.common.BusinessException;
 import com.example.website.dto.GeneratedImageView;
 import com.example.website.dto.ImageEditRequest;
 import com.example.website.dto.ImageGenerateRequest;
+import com.example.website.dto.ImageModelView;
 import com.example.website.dto.ImageTaskView;
 import com.example.website.dto.PageView;
 import com.example.website.service.GeneratedImageService;
+import com.example.website.service.ImageService;
 import com.example.website.service.ImageTaskService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,6 +25,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.util.List;
 import javax.servlet.http.HttpServletRequest;
 import javax.validation.Valid;
 
@@ -34,6 +37,13 @@ public class AdminImageController {
 
     private final ImageTaskService imageTaskService;
     private final GeneratedImageService historyService;
+    private final ImageService imageService;
+
+    @GetMapping("/models")
+    public ApiResponse<List<ImageModelView>> models(HttpServletRequest request) {
+        currentUserId(request);
+        return ApiResponse.ok(imageService.listModels());
+    }
 
     @PostMapping("/generate")
     public ApiResponse<ImageTaskView> generate(HttpServletRequest request,
@@ -48,10 +58,11 @@ public class AdminImageController {
                                            @RequestParam("image") MultipartFile image,
                                            @RequestParam("prompt") String prompt,
                                            @RequestParam(required = false) MultipartFile mask,
+                                           @RequestParam(required = false) String model,
                                            @RequestParam(required = false) Integer n,
                                            @RequestParam(required = false) String size) {
         Long userId = currentUserId(request);
-        ImageEditRequest req = buildEditRequest(image, prompt, mask, n, size);
+        ImageEditRequest req = buildEditRequest(image, prompt, mask, model, n, size);
         ImageTaskView task = imageTaskService.submitEdit(userId, req);
         return ApiResponse.ok(task);
     }
@@ -110,7 +121,12 @@ public class AdminImageController {
         return userId;
     }
 
-    private ImageEditRequest buildEditRequest(MultipartFile image, String prompt, MultipartFile mask, Integer n, String size) {
+    private ImageEditRequest buildEditRequest(MultipartFile image,
+                                              String prompt,
+                                              MultipartFile mask,
+                                              String model,
+                                              Integer n,
+                                              String size) {
         if (image == null || image.isEmpty()) {
             throw new BusinessException(400, "image is required");
         }
@@ -120,15 +136,20 @@ public class AdminImageController {
         if (prompt.length() > 2000) {
             throw new BusinessException(400, "prompt must be at most 2000 characters");
         }
-        if (n != null && (n < 1 || n > 10)) {
-            throw new BusinessException(400, "n must be between 1 and 10");
+        if (model != null && model.length() > 100) {
+            throw new BusinessException(400, "model must be at most 100 characters");
         }
-        if (size != null && !size.isEmpty() && !size.matches("\\d+x\\d+")) {
-            throw new BusinessException(400, "size must be WIDTHxHEIGHT, e.g. 1024x1024");
+        if (n != null && (n < 1 || n > 3)) {
+            throw new BusinessException(400, "n must be between 1 and 3");
+        }
+        if (size != null && !size.isEmpty()
+                && !size.matches("(?i)(auto|(?:\\d+(?:x|\\*)\\d+)|(?:1:1|4:5|3:4|2:3|3:2|4:3|16:9|9:16|21:9))")) {
+            throw new BusinessException(400, "size must be auto, a supported ratio, WIDTHxHEIGHT, or WIDTH*HEIGHT");
         }
 
         ImageEditRequest req = new ImageEditRequest();
         req.setPrompt(prompt);
+        req.setModel(model);
         req.setN(n);
         req.setSize(size);
         req.setImageFilename(image.getOriginalFilename());

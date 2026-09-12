@@ -5,10 +5,17 @@ import com.example.website.common.MusicErrorCode;
 import com.example.website.config.OkHttpConfig;
 import com.example.website.dto.music.MusicSource;
 import com.example.website.dto.music.MusicSearchType;
+import com.example.website.dto.music.AlbumDetailView;
+import com.example.website.dto.music.AlbumSummaryItem;
+import com.example.website.dto.music.ArtistDetailView;
+import com.example.website.dto.music.ArtistWorksView;
+import com.example.website.dto.music.LyricInfo;
+import com.example.website.dto.music.MusicQuality;
 import com.example.website.dto.music.SearchCollectionItem;
 import com.example.website.dto.music.PlaylistDetailView;
 import com.example.website.dto.music.PlaylistItem;
 import com.example.website.dto.music.PlaylistListView;
+import com.example.website.dto.music.PlayInfo;
 import com.example.website.dto.music.SongSearchItem;
 import com.example.website.dto.music.ToplistDetailView;
 import com.example.website.dto.music.ToplistItem;
@@ -19,6 +26,7 @@ import com.fasterxml.jackson.databind.ObjectWriter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.HttpUrl;
+import okhttp3.Call;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -34,8 +42,18 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+
+import static com.example.website.service.music.MusicValueUtils.asInt;
+import static com.example.website.service.music.MusicValueUtils.asLongObj;
+import static com.example.website.service.music.MusicValueUtils.asMap;
+import static com.example.website.service.music.MusicValueUtils.asString;
+import static com.example.website.service.music.MusicValueUtils.firstNonEmpty;
+import static com.example.website.service.music.MusicValueUtils.idsFromMaps;
+import static com.example.website.service.music.MusicValueUtils.truncate;
 
 @Slf4j
 @Component
@@ -47,6 +65,7 @@ public class QqMusicClient {
     private static final String LYRIC_URL  = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg";
     private static final String PLAYLIST_LIST_URL = "https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg";
     private static final String PLAYLIST_DETAIL_URL = "https://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg";
+    private static final String RESOLVER_URL = "https://api.xunhuisi.store/API/QQMusic/Song.php";
     private static final String REFERER    = "https://y.qq.com/";
     private static final MediaType JSON    = MediaType.get("application/json; charset=utf-8");
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<Map<String, Object>>() {};
@@ -54,6 +73,64 @@ public class QqMusicClient {
     @Qualifier(OkHttpConfig.CLIENT_MUSIC)
     private final OkHttpClient okHttpClient;
     private final ObjectMapper objectMapper;
+
+    /** Primary QQ playback resolver. The existing official endpoints only expose metadata. */
+    public PlayInfo resolvePlay(String songId, MusicQuality requestedQuality) {
+        HttpUrl url = HttpUrl.parse(RESOLVER_URL).newBuilder()
+                .addQueryParameter("id", songId)
+                .addQueryParameter("quality", resolverQuality(requestedQuality))
+                .build();
+        Request req = new Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0")
+                .header("Accept", "application/json")
+                .get()
+                .build();
+
+        Map<String, Object> json = callJson(req, MusicErrorCode.UPSTREAM_PLAY_FAILED);
+        Integer code = asInt(json.get("code"));
+        if (code == null || code != 200) {
+            throw new MusicBusinessException(MusicErrorCode.NO_PLAYABLE_URL,
+                    "qq resolver rejected song: " + firstNonEmpty(asString(json.get("msg")), "unknown error"));
+        }
+
+        String playUrl = asString(json.get("music_url"));
+        if (playUrl == null || playUrl.trim().isEmpty()) {
+            throw new MusicBusinessException(MusicErrorCode.NO_PLAYABLE_URL,
+                    "qq resolver returned no playable url for " + songId);
+        }
+
+        PlayInfo info = new PlayInfo();
+        info.setId(songId);
+        info.setSource(MusicSource.QQ);
+        info.setActualSource(MusicSource.QQ);
+        info.setName(firstNonEmpty(asString(json.get("title")), asString(json.get("name"))));
+        info.setArtist(firstNonEmpty(asString(json.get("singer")), asString(json.get("artist"))));
+        info.setCoverUrl(httpsCover(asString(json.get("cover"))));
+        info.setPlayUrl(playUrl);
+        info.setRequestedQuality(requestedQuality == null ? null : requestedQuality.getValue());
+        info.setActualQuality(normalizeResolverQuality(asString(json.get("quality")), requestedQuality));
+        String lyric = asString(json.get("lyric"));
+        if (lyric != null && !lyric.trim().isEmpty()) {
+            info.setLyric(new LyricInfo(lyric, null));
+        }
+        return info;
+    }
+
+    private static String resolverQuality(MusicQuality quality) {
+        if (quality == MusicQuality.K128) return "standard";
+        return "high";
+    }
+
+    private static String normalizeResolverQuality(String raw, MusicQuality requested) {
+        String value = raw == null ? "" : raw.toLowerCase(Locale.ROOT);
+        if (value.contains("128")) return MusicQuality.K128.getValue();
+        if (value.contains("320")) return MusicQuality.K320.getValue();
+        if (value.contains("flac") || value.contains("无损") || value.contains("lossless")) {
+            return MusicQuality.FLAC.getValue();
+        }
+        return requested == null ? null : requested.getValue();
+    }
 
     public List<SongSearchItem> search(String keyword, int page, int pageSize) {
         HttpUrl url = HttpUrl.parse(SEARCH_CP_URL).newBuilder()
@@ -132,7 +209,7 @@ public class QqMusicClient {
         List<SearchCollectionItem> out = new ArrayList<>();
         if (rows instanceof List) for (Object row : (List<?>) rows) if (row instanceof Map) {
             Map<String, Object> s = (Map<String, Object>) row;
-            SearchCollectionItem item = new SearchCollectionItem(firstNonEmpty(asString(s.get("mid")), asString(s.get("id")), asString(s.get("docid"))), MusicSource.QQ, type, firstNonEmpty(asString(s.get("name")), asString(s.get("singer"))), null, null, asString(s.get("pic")), null, null);
+            SearchCollectionItem item = new SearchCollectionItem(firstNonEmpty(asString(s.get("mid")), asString(s.get("id")), asString(s.get("docid"))), MusicSource.QQ, type, firstNonEmpty(asString(s.get("name")), asString(s.get("singer"))), null, null, null, null, asString(s.get("pic")), null, null);
             if (item.getId() != null && item.getName() != null) out.add(item);
         }
         int from = Math.max(0, (page - 1) * pageSize);
@@ -150,7 +227,12 @@ public class QqMusicClient {
             String mid = firstNonEmpty(asString(s.get("albumMID")), asString(s.get("albumMid")), asString(s.get("mid")), asString(s.get("albumID")), asString(s.get("id")));
             String cover = asString(s.get("pic"));
             if ((cover == null || cover.isEmpty()) && mid != null) cover = "https://y.gtimg.cn/music/photo_new/T002R500x500M000" + mid + ".jpg";
-            SearchCollectionItem item = new SearchCollectionItem(mid, MusicSource.QQ, type, firstNonEmpty(asString(s.get("albumName")), asString(s.get("name"))), firstNonEmpty(asString(s.get("singerName")), asString(s.get("singer"))), null, cover, null, null);
+            SearchCollectionItem item = new SearchCollectionItem(mid, MusicSource.QQ, type, firstNonEmpty(asString(s.get("albumName")), asString(s.get("name"))), firstNonEmpty(asString(s.get("singerName")), asString(s.get("singer"))), null, null, null, cover, null, null);
+            String artistId = firstNonEmpty(asString(s.get("singerMid")), asString(s.get("singerMID")), asString(s.get("singerId")), asString(s.get("singerID")));
+            if (artistId != null) {
+                item.setArtistId(artistId);
+                item.setArtistIds(Collections.singletonList(artistId));
+            }
             if (item.getId() != null && item.getName() != null) out.add(item);
         }
         Long total = album == null ? 0L : asLongObj(album.get("totalnum"));
@@ -241,7 +323,9 @@ public class QqMusicClient {
         v.setSource(MusicSource.QQ);
         v.setId(firstNonEmpty(asString(t.get("mid")), songMid));
         v.setName(firstNonEmpty(asString(t.get("title")), asString(t.get("name"))));
-        v.setArtist(joinSingers(t.get("singer")));
+        Object singers = singerValue(t);
+        v.setArtist(joinSingers(singers));
+        setArtistIds(v, singers, t);
         Map<String, Object> album = asMap(t.get("album"));
         if (album != null) {
             v.setAlbum(asString(album.get("name")));
@@ -335,9 +419,170 @@ public class QqMusicClient {
         return out;
     }
 
+    /** QQ homepage/editorial recommended playlists. */
+    public PlaylistListView fetchRecommendedPlaylists(int limit) {
+        Map<String, Object> req = new LinkedHashMap<>();
+        req.put("module", "playlist.HotRecommendServer");
+        req.put("method", "get_hot_recommend");
+        Map<String, Object> param = new LinkedHashMap<>();
+        param.put("async", 1);
+        param.put("cmd", 2);
+        req.put("param", param);
+
+        Map<String, Object> comm = new LinkedHashMap<>();
+        comm.put("ct", 24);
+        comm.put("cv", 0);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("comm", comm);
+        body.put("req_1", req);
+        Map<String, Object> json = musicUPost(body, MusicErrorCode.UPSTREAM_PLAYLIST_FAILED);
+
+        PlaylistListView v = new PlaylistListView(MusicSource.QQ, "recommend", "recommend", 1, limit, 0L,
+                Collections.emptyList());
+        Map<String, Object> response = asMap(json.get("req_1"));
+        Map<String, Object> reqData = response == null ? null : asMap(response.get("data"));
+        Object rows = reqData == null ? null : reqData.get("v_hot");
+        if (!(rows instanceof List)) return v;
+
+        List<PlaylistItem> out = new ArrayList<>();
+        for (Object item : ((List<?>) rows).subList(0, Math.min(limit, ((List<?>) rows).size()))) {
+            if (!(item instanceof Map)) continue;
+            Map<String, Object> s = (Map<String, Object>) item;
+            PlaylistItem p = new PlaylistItem();
+            p.setSource(MusicSource.QQ);
+            p.setId(asString(s.get("content_id")));
+            p.setName(asString(s.get("title")));
+            p.setCoverUrl(httpsCover(asString(s.get("cover"))));
+            p.setDescription(firstNonEmpty(asString(s.get("rcmdcontent")), asString(s.get("rcmdtemplate"))));
+            p.setCreatorName(asString(s.get("username")));
+            p.setPlayCount(asLongObj(s.get("listen_num")));
+            if (p.getId() != null && !p.getId().isEmpty()) out.add(p);
+        }
+        v.setTotal((long) out.size());
+        v.setList(out);
+        return v;
+    }
+
     public PlaylistDetailView fetchPlaylistDetail(String disstid, int page, int pageSize) {
         Map<String, Object> json = fetchPlaylistDetailJson(disstid);
         return parsePlaylistDetail(json, disstid, page, pageSize);
+    }
+
+    public AlbumDetailView fetchAlbumDetail(String albumMid, int page, int pageSize) {
+        int begin = Math.max(0, (page - 1) * pageSize);
+        Map<String, Object> param = new LinkedHashMap<>();
+        param.put("albumMid", albumMid);
+        param.put("begin", begin);
+        param.put("num", pageSize);
+        param.put("order", 2);
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("module", "music.musichallAlbum.AlbumSongList");
+        request.put("method", "GetAlbumSongList");
+        request.put("param", param);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("req_1", request);
+        Map<String, Object> json = musicUPost(body, MusicErrorCode.UPSTREAM_PLAYLIST_FAILED);
+
+        Map<String, Object> req = asMap(json.get("req_1"));
+        Map<String, Object> data = req == null ? null : asMap(req.get("data"));
+        List<SongSearchItem> songs = new ArrayList<>();
+        if (data != null && data.get("songList") instanceof List) {
+            for (Object row : (List<?>) data.get("songList")) {
+                Map<String, Object> wrapper = asMap(row);
+                Map<String, Object> song = wrapper == null ? null : asMap(wrapper.get("songInfo"));
+                if (song == null) song = wrapper;
+                if (song != null) songs.add(toSongItem(song));
+            }
+        }
+
+        SongSearchItem first = songs.isEmpty() ? null : songs.get(0);
+        String publishTime = null;
+        if (data != null && data.get("songList") instanceof List && !((List<?>) data.get("songList")).isEmpty()) {
+            Map<String, Object> wrapper = asMap(((List<?>) data.get("songList")).get(0));
+            Map<String, Object> song = wrapper == null ? null : asMap(wrapper.get("songInfo"));
+            Map<String, Object> album = song == null ? null : asMap(song.get("album"));
+            publishTime = album == null ? null : asString(album.get("time_public"));
+        }
+        Integer total = data == null ? null : asInt(data.get("totalNum"));
+        return new AlbumDetailView(albumMid, MusicSource.QQ,
+                first == null ? null : first.getAlbum(),
+                "https://y.gtimg.cn/music/photo_new/T002R500x500M000" + albumMid + ".jpg",
+                null,
+                first == null ? null : first.getArtist(),
+                publishTime,
+                page, pageSize, total, songs);
+    }
+
+    public ArtistWorksView fetchArtistWorks(String artistMid, String type, int page, int pageSize) {
+        if ("album".equals(type)) return fetchArtistAlbums(artistMid, page, pageSize);
+        int begin = Math.max(0, (page - 1) * pageSize);
+        Map<String, Object> comm = new LinkedHashMap<>();
+        comm.put("ct", 24);
+        comm.put("cv", 4747474);
+        Map<String, Object> param = new LinkedHashMap<>();
+        param.put("singermid", artistMid);
+        param.put("order", 5);
+        param.put("begin", begin);
+        param.put("num", pageSize);
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("module", "music.web_singer_info_svr");
+        request.put("method", "get_singer_detail_info");
+        request.put("param", param);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("comm", comm);
+        body.put("singer", request);
+        Map<String, Object> json = musicUPost(body, MusicErrorCode.UPSTREAM_SEARCH_FAILED);
+
+        Map<String, Object> singer = asMap(json.get("singer"));
+        Integer code = singer == null ? null : asInt(singer.get("code"));
+        if (code != null && code != 0) {
+            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_SEARCH_FAILED,
+                    "qq singer works business error code=" + code);
+        }
+        Map<String, Object> data = singer == null ? null : asMap(singer.get("data"));
+        List<SongSearchItem> songs = new ArrayList<>();
+        if (data != null && data.get("songlist") instanceof List) {
+            for (Object row : (List<?>) data.get("songlist")) {
+                Map<String, Object> song = asMap(row);
+                if (song != null) songs.add(toSongItem(song));
+            }
+        }
+        return new ArtistWorksView(artistMid, MusicSource.QQ, "song", page, pageSize,
+                data == null ? null : asInt(data.get("total_song")), songs, Collections.emptyList());
+    }
+
+    private ArtistWorksView fetchArtistAlbums(String artistMid, int page, int pageSize) {
+        int begin = Math.max(0, (page - 1) * pageSize);
+        Map<String, Object> param = new LinkedHashMap<>();
+        param.put("singerMid", artistMid);
+        param.put("begin", begin);
+        param.put("num", pageSize);
+        param.put("order", 0);
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("module", "music.musichallAlbum.AlbumListServer");
+        request.put("method", "GetAlbumList");
+        request.put("param", param);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("req_1", request);
+        Map<String, Object> json = musicUPost(body, MusicErrorCode.UPSTREAM_SEARCH_FAILED);
+        Map<String, Object> req = asMap(json.get("req_1"));
+        Map<String, Object> data = req == null ? null : asMap(req.get("data"));
+        List<AlbumSummaryItem> albums = new ArrayList<>();
+        if (data != null && data.get("albumList") instanceof List) {
+            for (Object row : (List<?>) data.get("albumList")) {
+                Map<String, Object> album = asMap(row);
+                if (album == null) continue;
+                String mid = asString(album.get("albumMid"));
+                if (mid == null || mid.isEmpty()) continue;
+                albums.add(new AlbumSummaryItem(mid, MusicSource.QQ,
+                        asString(album.get("albumName")), asString(album.get("singerName")),
+                        artistMid, Collections.singletonList(artistMid),
+                        "https://y.gtimg.cn/music/photo_new/T002R500x500M000" + mid + ".jpg",
+                        asString(album.get("publishDate")), asInt(album.get("totalNum")), null));
+            }
+        }
+        return new ArtistWorksView(artistMid, MusicSource.QQ, "album", page, pageSize,
+                data == null ? null : asInt(data.get("total")), Collections.emptyList(), albums);
     }
 
     /** Shared {@code musicu.fcg} POST path. Handles body serialization (forces
@@ -646,30 +891,6 @@ public class QqMusicClient {
     }
 
     @SuppressWarnings("unchecked")
-    private List<SongSearchItem> parseSearch(Map<String, Object> json) {
-        Object req1 = json.get("req_1");
-        if (!(req1 instanceof Map)) return Collections.emptyList();
-        Object data = ((Map<?, ?>) req1).get("data");
-        if (!(data instanceof Map)) return Collections.emptyList();
-        Object bodyObj = ((Map<?, ?>) data).get("body");
-        if (!(bodyObj instanceof Map)) return Collections.emptyList();
-        Object song = ((Map<?, ?>) bodyObj).get("song");
-        if (!(song instanceof Map)) return Collections.emptyList();
-        Object listObj = ((Map<?, ?>) song).get("list");
-        if (!(listObj instanceof List)) return Collections.emptyList();
-
-        List<SongSearchItem> out = new ArrayList<>();
-        for (Object item : (List<?>) listObj) {
-            if (!(item instanceof Map)) continue;
-            SongSearchItem v = toSongItem((Map<String, Object>) item);
-            if (v.getId() != null && !v.getId().isEmpty()) {
-                out.add(v);
-            }
-        }
-        return out;
-    }
-
-    @SuppressWarnings("unchecked")
     private List<SongSearchItem> parseCpSearch(Map<String, Object> json) {
         Map<String, Object> data = asMap(json.get("data"));
         if (data == null) return Collections.emptyList();
@@ -694,7 +915,9 @@ public class QqMusicClient {
         v.setSource(MusicSource.QQ);
         v.setId(firstNonEmpty(asString(s.get("songmid")), asString(s.get("songid"))));
         v.setName(firstNonEmpty(asString(s.get("songname")), asString(s.get("songorig")), asString(s.get("name"))));
-        v.setArtist(joinSingers(s.get("singer")));
+        Object singers = singerValue(s);
+        v.setArtist(joinSingers(singers));
+        setArtistIds(v, singers, s);
         v.setAlbum(firstNonEmpty(asString(s.get("albumname")), asString(s.get("albumdesc"))));
         v.setAlbumId(asString(s.get("albummid")));
         String albumMid = asString(s.get("albummid"));
@@ -722,7 +945,9 @@ public class QqMusicClient {
         v.setSource(MusicSource.QQ);
         v.setId(asString(s.get("mid")));
         v.setName(firstNonEmpty(asString(s.get("title")), asString(s.get("name"))));
-        v.setArtist(joinSingers(s.get("singer")));
+        Object singers = singerValue(s);
+        v.setArtist(joinSingers(singers));
+        setArtistIds(v, singers, s);
         Map<String, Object> album = asMap(s.get("album"));
         if (album != null) {
             v.setAlbum(firstNonEmpty(asString(album.get("title")), asString(album.get("name"))));
@@ -747,16 +972,20 @@ public class QqMusicClient {
         if (asLong(file.get("size_128mp3")) > 0) q.add("128k");
         if (asLong(file.get("size_320mp3")) > 0) q.add("320k");
         if (asLong(file.get("size_flac")) > 0) q.add("flac");
+        if (asLong(file.get("size_hires")) > 0) q.add("flac24bit");
         return q;
     }
 
     @SuppressWarnings("unchecked")
     private String joinSingers(Object singerObj) {
+        if (singerObj instanceof Map) singerObj = Collections.singletonList(singerObj);
+        if (singerObj instanceof String) return (String) singerObj;
         if (!(singerObj instanceof List)) return null;
         StringBuilder sb = new StringBuilder();
         for (Object s : (List<?>) singerObj) {
-            if (!(s instanceof Map)) continue;
-            String n = asString(((Map<String, Object>) s).get("name"));
+            String n = s instanceof Map
+                    ? firstNonEmpty(asString(((Map<String, Object>) s).get("name")), asString(((Map<String, Object>) s).get("singerName")))
+                    : asString(s);
             if (n == null || n.isEmpty()) continue;
             if (sb.length() > 0) sb.append(" / ");
             sb.append(n);
@@ -764,8 +993,36 @@ public class QqMusicClient {
         return sb.length() == 0 ? null : sb.toString();
     }
 
+    private void setArtistIds(SongSearchItem item, Object singerObj, Map<String, Object> song) {
+        List<String> ids = idsFromMaps(singerObj, "mid", "id", "singerMid", "singerid");
+        if (ids.isEmpty()) {
+            String id = firstNonEmpty(asString(song.get("singerMid")), asString(song.get("singerMID")),
+                    asString(song.get("singerId")), asString(song.get("singerid")));
+            if (id != null && !id.isEmpty()) ids = Collections.singletonList(id);
+        }
+        item.setArtistIds(ids);
+        item.setArtistId(ids.isEmpty() ? null : ids.get(0));
+    }
+
+    /** Normalizes QQ's full singer list and toplist summary fields. */
+    private Object singerValue(Map<String, Object> song) {
+        Object singers = song.get("singer");
+        if (singers instanceof List && !((List<?>) singers).isEmpty()) return singers;
+        if (singers instanceof Map || singers instanceof String) return singers;
+        String name = firstNonEmpty(asString(song.get("singerName")), asString(song.get("artist")));
+        String mid = firstNonEmpty(asString(song.get("singerMid")), asString(song.get("singerMID")),
+                asString(song.get("singerId")), asString(song.get("singerid")));
+        if (name == null && mid == null) return singers;
+        Map<String, Object> fallback = new LinkedHashMap<>();
+        fallback.put("name", name);
+        fallback.put("mid", mid);
+        return Collections.singletonList(fallback);
+    }
+
     private Map<String, Object> callJson(Request req, MusicErrorCode onFail) {
-        try (Response resp = okHttpClient.newCall(req).execute()) {
+        Call call = okHttpClient.newCall(req);
+        MusicRequestBudget.constrain(call, 5, TimeUnit.SECONDS);
+        try (Response resp = call.execute()) {
             ResponseBody rb = resp.body();
             String raw = rb == null ? "" : rb.string();
             if (!resp.isSuccessful()) {
@@ -826,23 +1083,6 @@ public class QqMusicClient {
         return s;
     }
 
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> asMap(Object v) {
-        return v instanceof Map ? (Map<String, Object>) v : null;
-    }
-
-    private static String asString(Object v) {
-        return v == null ? null : v.toString();
-    }
-
-    private static Integer asInt(Object v) {
-        if (v instanceof Number) return ((Number) v).intValue();
-        if (v instanceof String) {
-            try { return Integer.parseInt((String) v); } catch (NumberFormatException e) { return null; }
-        }
-        return null;
-    }
-
     private static long asLong(Object v) {
         if (v instanceof Number) return ((Number) v).longValue();
         if (v instanceof String) {
@@ -851,30 +1091,12 @@ public class QqMusicClient {
         return 0L;
     }
 
-    private static Long asLongObj(Object v) {
-        if (v instanceof Number) return ((Number) v).longValue();
-        if (v instanceof String) {
-            try { return Long.parseLong((String) v); } catch (NumberFormatException e) { return null; }
-        }
-        return null;
-    }
-
     private static String unescapeHtml(String s) {
         if (s == null) return null;
         return s.replace("&#160;", " ")
                 .replace("&nbsp;", " ")
                 .replace("&amp;", "&")
                 .replace("&quot;", "\"");
-    }
-
-    private static String firstNonEmpty(String... vs) {
-        for (String v : vs) if (v != null && !v.isEmpty()) return v;
-        return null;
-    }
-
-    private static String truncate(String s) {
-        if (s == null) return "";
-        return s.length() > 200 ? s.substring(0, 200) + "..." : s;
     }
 
     private void ensureQqJsonSuccess(Map<String, Object> json, MusicErrorCode onFail) {
@@ -902,6 +1124,10 @@ public class QqMusicClient {
         return trimmed;
     }
 
+    private static String httpsCover(String value) {
+        return value == null ? null : value.replaceFirst("^http://", "https://");
+    }
+
     private static String qqPlaylistSortId(String order) {
         if (order == null || order.trim().isEmpty()) return "5";
         String trimmed = order.trim().toLowerCase();
@@ -915,5 +1141,59 @@ public class QqMusicClient {
             if (!Character.isDigit(trimmed.charAt(i))) return "5";
         }
         return trimmed;
+    }
+
+    @SuppressWarnings("unchecked")
+    public ArtistDetailView fetchArtistDetail(String id) {
+        try {
+            // The old c.y.qq.com singer endpoint now returns code=-1. The
+            // musicu detail-info method still returns the singer profile and
+            // song list for both current and newly added singer mids.
+            Map<String, Object> comm = new LinkedHashMap<>();
+            comm.put("ct", 24);
+            comm.put("cv", 4747474);
+            Map<String, Object> param = new LinkedHashMap<>();
+            param.put("singermid", id);
+            param.put("order", 5);
+            param.put("begin", 0);
+            param.put("num", 30);
+            Map<String, Object> singerReq = new LinkedHashMap<>();
+            singerReq.put("module", "music.web_singer_info_svr");
+            singerReq.put("method", "get_singer_detail_info");
+            singerReq.put("param", param);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("comm", comm);
+            body.put("singer", singerReq);
+            Map<String, Object> json = musicUPost(body, MusicErrorCode.UPSTREAM_SEARCH_FAILED);
+
+            Map<String, Object> singer = asMap(json.get("singer"));
+            if (singer == null || !Integer.valueOf(0).equals(asInt(singer.get("code")))) return null;
+            Map<String, Object> data = asMap(singer.get("data"));
+            if (data == null) return null;
+            Map<String, Object> info = asMap(data.get("singer_info"));
+            ArtistDetailView v = new ArtistDetailView();
+            v.setId(id);
+            v.setSource(MusicSource.QQ);
+            if (info != null) {
+                v.setName(asString(info.get("name")));
+                String mid = firstNonEmpty(asString(info.get("mid")), id);
+                if (mid != null && !mid.isEmpty()) {
+                    v.setCoverUrl("https://y.gtimg.cn/music/photo_new/T001R500x500M000" + mid + ".jpg");
+                }
+            }
+            v.setSongCount(asInt(data.get("total_song")));
+            v.setAlbumCount(asInt(data.get("total_album")));
+            v.setDescription(firstNonEmpty(
+                    asString(data.get("singer_brief")),
+                    asString(data.get("briefDesc"))
+            ));
+            if ((v.getName() == null || v.getName().isEmpty()) && (v.getDescription() == null || v.getDescription().isEmpty())) {
+                return null;
+            }
+            return v;
+        } catch (Exception e) {
+            log.warn("QQ artist detail failed for {}: {}", id, e.getMessage());
+            return null;
+        }
     }
 }

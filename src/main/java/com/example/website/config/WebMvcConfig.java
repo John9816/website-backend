@@ -16,6 +16,7 @@ public class WebMvcConfig implements WebMvcConfigurer {
     private static final long ASYNC_REQUEST_TIMEOUT_MS = 10 * 60 * 1000L;
 
     private final PublicCacheControlInterceptor publicCacheControlInterceptor;
+    private final RequestMetricsInterceptor requestMetricsInterceptor;
 
     @Bean
     public AsyncTaskExecutor mvcAsyncTaskExecutor() {
@@ -40,5 +41,7 @@ public class WebMvcConfig implements WebMvcConfigurer {
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(publicCacheControlInterceptor)
                 .addPathPatterns("/api/public/**");
+        registry.addInterceptor(requestMetricsInterceptor)
+                .addPathPatterns("/api/**");
     }
 }

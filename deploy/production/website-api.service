@@ -1,0 +1,44 @@
+[Unit]
+Description=Website Spring Boot API
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/website/current/backend
+EnvironmentFile=/opt/website/backend/.env
+# JVM优化参数：针对2核4GB ECS
+ExecStart=/usr/bin/java \
+  -server \
+  -Xms1536m \
+  -Xmx2048m \
+  -XX:MetaspaceSize=256m \
+  -XX:MaxMetaspaceSize=512m \
+  -XX:+UseG1GC \
+  -XX:MaxGCPauseMillis=200 \
+  -XX:G1HeapRegionSize=8m \
+  -XX:InitiatingHeapOccupancyPercent=45 \
+  -XX:+ParallelRefProcEnabled \
+  -XX:+UseStringDeduplication \
+  -XX:+ExplicitGCInvokesConcurrent \
+  -XX:+UnlockExperimentalVMOptions \
+  -XX:G1NewSizePercent=30 \
+  -XX:G1MaxNewSizePercent=40 \
+  -XX:+AlwaysPreTouch \
+  -XX:-OmitStackTraceInFastThrow \
+  -Djava.security.egd=file:/dev/./urandom \
+  -Dfile.encoding=UTF-8 \
+  -Duser.timezone=Asia/Shanghai \
+  -Djava.awt.headless=true \
+  -jar /opt/website/current/backend/website.jar \
+  --server.port=8090
+Restart=always
+RestartSec=10
+SuccessExitStatus=143
+TimeoutStopSec=30
+LimitNOFILE=65535
+# OOM时自动重启
+OOMPolicy=stop
+
+[Install]
+WantedBy=multi-user.target

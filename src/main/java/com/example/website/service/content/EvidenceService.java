@@ -34,8 +34,6 @@ import static com.example.website.service.content.ContentTextUtils.trimToNull;
 public class EvidenceService {
 
     public static final String CFG_ENABLED = "content.evidence.enabled";
-    public static final String CFG_MAX_QUERIES = "content.evidence.maxQueries";
-    public static final String CFG_PER_QUERY = "content.evidence.perQuery";
 
     private final SysConfigService configService;
     private final WebSearchService webSearchService;
@@ -92,22 +90,6 @@ public class EvidenceService {
     private boolean enabled() {
         // Default on: if a key is present, evidence is worth using unless explicitly disabled.
         return !"false".equalsIgnoreCase(config(CFG_ENABLED));
-    }
-
-    private static int clamp(int value, int min, int max) {
-        return Math.max(min, Math.min(max, value));
-    }
-
-    private static int parseInt(String value, int fallback) {
-        String text = trimToNull(value);
-        if (text == null) {
-            return fallback;
-        }
-        try {
-            return Integer.parseInt(text);
-        } catch (NumberFormatException e) {
-            return fallback;
-        }
     }
 
     private String config(String key) {

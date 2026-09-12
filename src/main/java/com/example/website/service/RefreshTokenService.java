@@ -3,7 +3,10 @@ package com.example.website.service;
 import com.example.website.config.AppProperties;
 import com.example.website.entity.RefreshToken;
 import com.example.website.repository.RefreshTokenRepository;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
 import lombok.RequiredArgsConstructor;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -14,7 +17,6 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.Base64;
-import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -42,27 +44,18 @@ public class RefreshTokenService {
     }
 
     /**
-     * Validates a raw refresh token and returns the active row if present.
-     */
-    @Transactional(readOnly = true)
-    public Optional<RefreshToken> findActive(String rawToken) {
-        if (!StringUtils.hasText(rawToken)) {
-            return Optional.empty();
-        }
-        return refreshTokenRepository.findByTokenHash(hash(rawToken.trim()))
-                .filter(token -> token.isActive(LocalDateTime.now()));
-    }
-
-    /**
      * Rotates refresh: revokes the presented token and issues a replacement.
      * If the old token was already revoked (possible reuse), revokes all of the user's tokens.
      *
-     * @return raw replacement token
+     * @return user id and raw replacement token, or null when rotation is rejected
      */
     @Transactional
-    public String rotate(String rawToken) {
+    public RotationResult rotate(String rawToken) {
+        if (!StringUtils.hasText(rawToken)) {
+            return null;
+        }
         String hash = hash(rawToken.trim());
-        RefreshToken existing = refreshTokenRepository.findByTokenHash(hash).orElse(null);
+        RefreshToken existing = refreshTokenRepository.findByTokenHashForUpdate(hash).orElse(null);
         LocalDateTime now = LocalDateTime.now();
 
         if (existing == null) {
@@ -92,7 +85,7 @@ public class RefreshTokenService {
         next.setTokenHash(replacementHash);
         next.setExpiresAt(now.plusDays(props.getJwt().getRefreshExpireDays()));
         refreshTokenRepository.save(next);
-        return replacementRaw;
+        return new RotationResult(existing.getUserId(), replacementRaw);
     }
 
     @Transactional
@@ -114,6 +107,14 @@ public class RefreshTokenService {
             return;
         }
         refreshTokenRepository.revokeAllActiveForUser(userId, LocalDateTime.now());
+    }
+
+    @Scheduled(fixedDelayString = "${JWT_REFRESH_CLEANUP_INTERVAL_MS:86400000}",
+            initialDelayString = "${JWT_REFRESH_CLEANUP_INITIAL_DELAY_MS:120000}")
+    @Transactional
+    public void removeOldTokens() {
+        long retentionDays = Math.max(1, props.getJwt().getCleanupRetentionDays());
+        refreshTokenRepository.deleteExpiredOrRevokedBefore(LocalDateTime.now().minusDays(retentionDays));
     }
 
     static String hash(String raw) {
@@ -138,5 +139,12 @@ public class RefreshTokenService {
         byte[] bytes = new byte[32];
         SECURE_RANDOM.nextBytes(bytes);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    @Getter
+    @AllArgsConstructor
+    public static class RotationResult {
+        private final Long userId;
+        private final String refreshToken;
     }
 }

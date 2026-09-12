@@ -1,0 +1,18 @@
+[Unit]
+Description=Website frontend and same-origin proxy
+After=network-online.target website-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/website/current/frontend
+EnvironmentFile=/opt/website/.env.ecs
+Environment=HOST=127.0.0.1
+ExecStart=/usr/bin/env DIST_DIR=/opt/website/current/frontend/dist node /opt/website/current/frontend/server/ecs-server.mjs
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -7,11 +7,14 @@ import com.example.website.dto.music.LyricInfo;
 import com.example.website.dto.music.MusicQuality;
 import com.example.website.dto.music.MusicSource;
 import com.example.website.dto.music.PlayInfo;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.HttpUrl;
+import okhttp3.Call;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -22,6 +25,15 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
+import java.util.concurrent.TimeUnit;
+
+import static com.example.website.service.music.MusicValueUtils.asInt;
+import static com.example.website.service.music.MusicValueUtils.asLongObj;
+import static com.example.website.service.music.MusicValueUtils.asMap;
+import static com.example.website.service.music.MusicValueUtils.asString;
+import static com.example.website.service.music.MusicValueUtils.firstNonEmpty;
+import static com.example.website.service.music.MusicValueUtils.truncate;
 
 /**
  * tf-pay.sayqz.com client for play-URL resolution. Uses the TuneFree token;
@@ -37,26 +49,58 @@ public class TuneFreePayClient {
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<Map<String, Object>>() {};
 
     private final TuneFreeAuthService auth;
-    @Qualifier(OkHttpConfig.CLIENT_MUSIC)
+    @Qualifier(OkHttpConfig.CLIENT_MUSIC_THIRD_PARTY)
     private final OkHttpClient okHttpClient;
     private final ObjectMapper objectMapper;
+    private final ThirdPartyCircuitBreaker circuitBreaker =
+            new ThirdPartyCircuitBreaker("tunefree-pay");
+    private final Cache<String, Boolean> recentFailures = Caffeine.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterWrite(30, TimeUnit.SECONDS)
+            .build();
+    private final Cache<String, Boolean> recentMissingUrls = Caffeine.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterWrite(30, TimeUnit.SECONDS)
+            .build();
 
     public PlayInfo play(MusicSource source, String id, MusicQuality quality) {
+        String requestKey = source.getValue() + ":" + id + ":" + quality.getValue();
+        if (recentMissingUrls.getIfPresent(requestKey) != null) {
+            throw new MusicBusinessException(MusicErrorCode.NO_PLAYABLE_URL,
+                    "no playable url for " + source.getValue() + ":" + id + " (recently checked)");
+        }
+        if (recentFailures.getIfPresent(requestKey) != null) {
+            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
+                    "tunefree-pay recently failed for " + source.getValue() + ":" + id);
+        }
+
         String token = auth.getToken();
         PayResult r = call(source, id, quality, token);
-        if (r.ok) return toPlayInfo(source, id, quality, r.data0);
+        if (r.ok) {
+            recentFailures.invalidate(requestKey);
+            recentMissingUrls.invalidate(requestKey);
+            return toPlayInfo(source, id, quality, r.data0);
+        }
 
-        log.info("tf-pay first attempt failed, refreshing token and retrying. reason={}", r.reason);
-        token = auth.refresh(true);
-        r = call(source, id, quality, token);
-        if (r.ok) return toPlayInfo(source, id, quality, r.data0);
+        if (r.authFailure) {
+            log.info("tf-pay authentication failed, refreshing token once. reason={}", r.reason);
+            token = auth.refresh(true);
+            r = call(source, id, quality, token);
+            if (r.ok) {
+                recentFailures.invalidate(requestKey);
+                recentMissingUrls.invalidate(requestKey);
+                return toPlayInfo(source, id, quality, r.data0);
+            }
+        }
 
         if (r.playUrlMissing) {
+            recentMissingUrls.put(requestKey, Boolean.TRUE);
             throw new MusicBusinessException(MusicErrorCode.NO_PLAYABLE_URL,
                     "no playable url for " + source.getValue() + ":" + id);
         }
+        if (r.infrastructureFailure) recentFailures.put(requestKey, Boolean.TRUE);
         throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
-                "tf-pay failed after retry: " + r.reason);
+                "tf-pay failed: " + r.reason);
     }
 
     private PayResult call(MusicSource source, String id, MusicQuality quality, String token) {
@@ -71,34 +115,60 @@ public class TuneFreePayClient {
 
         String raw;
         int status;
-        try (Response resp = okHttpClient.newCall(req).execute()) {
+        circuitBreaker.acquire(MusicErrorCode.UPSTREAM_PLAY_FAILED);
+        Call call = okHttpClient.newCall(req);
+        MusicRequestBudget.constrain(call, 5, TimeUnit.SECONDS);
+        try (Response resp = call.execute()) {
             status = resp.code();
             ResponseBody rb = resp.body();
             raw = rb == null ? "" : rb.string();
         } catch (IOException e) {
-            return PayResult.fail("io: " + e.getMessage(), false);
+            circuitBreaker.recordFailure();
+            return PayResult.fail("io: " + e.getMessage(), false, false, true);
         }
 
         if (status < 200 || status >= 300) {
-            return PayResult.fail("http " + status + ": " + truncate(raw), false);
+            boolean authFailure = status == 401 || status == 403;
+            if (authFailure) circuitBreaker.recordSuccess();
+            else circuitBreaker.recordFailure();
+            return PayResult.fail("http " + status + ": " + truncate(raw),
+                    false, authFailure, !authFailure);
         }
 
         Map<String, Object> json;
         try {
             json = objectMapper.readValue(raw, MAP_TYPE);
         } catch (Exception e) {
-            return PayResult.fail("non-json: " + truncate(raw), false);
+            circuitBreaker.recordFailure();
+            return PayResult.fail("non-json: " + truncate(raw), false, false, true);
         }
 
         Map<String, Object> data0 = extractDataZero(json);
         if (data0 == null) {
-            return PayResult.fail("no data[0] in response: " + truncate(raw), false);
+            boolean authFailure = hasAuthenticationHint(raw);
+            if (authFailure) circuitBreaker.recordSuccess();
+            else circuitBreaker.recordFailure();
+            return PayResult.fail("no data[0] in response: " + truncate(raw),
+                    false, authFailure, !authFailure);
         }
         Object urlObj = data0.get("url");
         if (!(urlObj instanceof String) || ((String) urlObj).isEmpty()) {
-            return PayResult.fail("empty url in data[0]", true);
+            circuitBreaker.recordSuccess();
+            return PayResult.fail("empty url in data[0]", true, false, false);
         }
+        circuitBreaker.recordSuccess();
         return PayResult.ok(data0);
+    }
+
+    private static boolean hasAuthenticationHint(String raw) {
+        if (raw == null) return false;
+        String normalized = raw.toLowerCase(Locale.ROOT);
+        return normalized.contains("token")
+                || normalized.contains("unauthorized")
+                || normalized.contains("login")
+                || normalized.contains("登录")
+                || normalized.contains("过期")
+                || normalized.contains("认证");
     }
 
     @SuppressWarnings("unchecked")
@@ -131,7 +201,7 @@ public class TuneFreePayClient {
         p.setRequestedQuality(firstNonEmpty(asString(d.get("requestedQuality")), quality.getValue()));
         p.setActualQuality(asString(d.get("actualQuality")));
         p.setFileSize(asLongObj(d.get("fileSize")));
-        p.setExpireSec(asIntObj(d.get("expire")));
+        p.setExpireSec(asInt(d.get("expire")));
         p.setFromCache(asBool(d.get("fromCache")));
         p.setCoverUrl(asString(d.get("cover")));
 
@@ -140,7 +210,7 @@ public class TuneFreePayClient {
             p.setName(asString(info.get("name")));
             p.setArtist(asString(info.get("artist")));
             p.setAlbum(asString(info.get("album")));
-            p.setDurationSec(asIntObj(info.get("duration")));
+            p.setDurationSec(asInt(info.get("duration")));
         }
 
         String line = asString(d.get("lyrics"));
@@ -151,33 +221,8 @@ public class TuneFreePayClient {
         return p;
     }
 
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> asMap(Object v) {
-        return v instanceof Map ? (Map<String, Object>) v : null;
-    }
-
-    private static String asString(Object v) {
-        return v == null ? null : v.toString();
-    }
-
     private static String emptyToNull(String s) {
         return (s == null || s.isEmpty()) ? null : s;
-    }
-
-    private static Integer asIntObj(Object v) {
-        if (v instanceof Number) return ((Number) v).intValue();
-        if (v instanceof String) {
-            try { return Integer.parseInt((String) v); } catch (NumberFormatException e) { return null; }
-        }
-        return null;
-    }
-
-    private static Long asLongObj(Object v) {
-        if (v instanceof Number) return ((Number) v).longValue();
-        if (v instanceof String) {
-            try { return Long.parseLong((String) v); } catch (NumberFormatException e) { return null; }
-        }
-        return null;
     }
 
     private static Boolean asBool(Object v) {
@@ -186,35 +231,38 @@ public class TuneFreePayClient {
         return null;
     }
 
-    private static String firstNonEmpty(String... vs) {
-        for (String v : vs) if (v != null && !v.isEmpty()) return v;
-        return null;
-    }
-
-    private static String truncate(String s) {
-        if (s == null) return "";
-        return s.length() > 200 ? s.substring(0, 200) + "..." : s;
-    }
-
     private static final class PayResult {
         final boolean ok;
         final Map<String, Object> data0;
         final String reason;
         final boolean playUrlMissing;
+        final boolean authFailure;
+        final boolean infrastructureFailure;
 
-        private PayResult(boolean ok, Map<String, Object> data0, String reason, boolean playUrlMissing) {
+        private PayResult(boolean ok,
+                          Map<String, Object> data0,
+                          String reason,
+                          boolean playUrlMissing,
+                          boolean authFailure,
+                          boolean infrastructureFailure) {
             this.ok = ok;
             this.data0 = data0;
             this.reason = reason;
             this.playUrlMissing = playUrlMissing;
+            this.authFailure = authFailure;
+            this.infrastructureFailure = infrastructureFailure;
         }
 
         static PayResult ok(Map<String, Object> data0) {
-            return new PayResult(true, data0, null, false);
+            return new PayResult(true, data0, null, false, false, false);
         }
 
-        static PayResult fail(String reason, boolean playUrlMissing) {
-            return new PayResult(false, null, reason, playUrlMissing);
+        static PayResult fail(String reason,
+                              boolean playUrlMissing,
+                              boolean authFailure,
+                              boolean infrastructureFailure) {
+            return new PayResult(false, null, reason, playUrlMissing,
+                    authFailure, infrastructureFailure);
         }
     }
 }

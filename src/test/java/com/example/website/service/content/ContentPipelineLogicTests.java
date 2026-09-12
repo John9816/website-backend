@@ -1,9 +1,15 @@
 package com.example.website.service.content;
 
+import com.example.website.entity.ContentArticle;
 import org.junit.jupiter.api.Test;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -117,5 +123,42 @@ class ContentPipelineLogicTests {
         assertFalse(pick.isSkip());
         assertEquals("选中的标题", pick.getTopic().get("title"));
         assertEquals("信息差最强", pick.getReason());
+    }
+
+    @Test
+    void pipelineReconcilesQualityScoresWithoutChangingGateRules() {
+        ContentPipelineService pipeline = new ContentPipelineService(null, null, null, null, null, null, null);
+        PublishableArticleContract.Evaluation pass = new PublishableArticleContract.Evaluation(
+                "pass", 92, true, Collections.emptyList(), new LinkedHashMap<>());
+        PublishableArticleContract.Evaluation block = new PublishableArticleContract.Evaluation(
+                "block", 72, false, Collections.emptyList(), new LinkedHashMap<>());
+
+        assertEquals(92, pipeline.reconcileQualityScore(86, 92, pass));
+        assertEquals(72, pipeline.reconcileQualityScore(86, 72, block));
+    }
+
+    @Test
+    void pipelineRecognizesExistingWriterFallbackMarkers() {
+        ContentPipelineService pipeline = new ContentPipelineService(null, null, null, null, null, null, null);
+        ContentArticle article = new ContentArticle();
+        article.setRiskTipsJson("[\"local template fallback\"]");
+        assertTrue(pipeline.hasGenerationFallback(article));
+
+        article.setRiskTipsJson("[]");
+        assertFalse(pipeline.hasGenerationFallback(article));
+    }
+
+    @Test
+    void articleVisualServiceKeepsDefaultCoverContract() throws Exception {
+        System.setProperty("java.awt.headless", "true");
+        ArticleVisualService visualService = new ArticleVisualService(null, null, null, null);
+        byte[] bytes = visualService.generateDefaultCoverBytes("测试标题", "科技 / 互联网");
+        BufferedImage image = ImageIO.read(new ByteArrayInputStream(bytes));
+
+        assertEquals(900, image.getWidth());
+        assertEquals(500, image.getHeight());
+        assertEquals("cover.png", visualService.coverFilename(null));
+        assertEquals("cover.png", visualService.coverFilename("https://example.com/cover.png?x=1"));
+        assertEquals("cover.jpg", visualService.coverFilename("/api/v1/image/file/cover"));
     }
 }

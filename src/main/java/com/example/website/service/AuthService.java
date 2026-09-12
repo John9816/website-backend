@@ -4,8 +4,8 @@ import com.example.website.common.BusinessException;
 import com.example.website.config.AppProperties;
 import com.example.website.dto.LoginRequest;
 import com.example.website.dto.LoginResponse;
+import com.example.website.dto.PasswordResetRequest;
 import com.example.website.dto.RegisterRequest;
-import com.example.website.entity.RefreshToken;
 import com.example.website.entity.User;
 import com.example.website.repository.UserRepository;
 import com.example.website.util.JwtUtil;
@@ -18,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.util.Locale;
 
 @Service
 @RequiredArgsConstructor
@@ -29,17 +30,14 @@ public class AuthService {
     private final AppProperties props;
     private final AuthUserCacheService authUserCacheService;
     private final RefreshTokenService refreshTokenService;
+    private final EmailVerificationService emailVerificationService;
+    private final UserCreditService userCreditService;
 
     @Transactional
     public LoginResponse login(LoginRequest req, String clientIp) {
-        String username = normalizeUsername(req.getUsername());
-        User user = userRepository.findByUsername(username)
-                .orElseThrow(() -> new BadCredentialsException("Invalid username or password"));
-        if (!user.isEnabled()) {
-            throw new BadCredentialsException("Invalid username or password");
-        }
-        if (!passwordEncoder.matches(req.getPassword(), user.getPassword())) {
-            throw new BadCredentialsException("Invalid username or password");
+        User user = resolveLoginUser(req);
+        if (!user.isEnabled() || !passwordEncoder.matches(req.getPassword(), user.getPassword())) {
+            throw invalidCredentials();
         }
         if (passwordEncoder.upgradeEncoding(user.getPassword())) {
             user.setPassword(passwordEncoder.encode(req.getPassword()));
@@ -47,7 +45,6 @@ public class AuthService {
         user.setLastLoginAt(LocalDateTime.now());
         user.setLastLoginIp(clientIp);
         user.setLoginCount(user.getLoginCount() + 1);
-        userRepository.save(user);
         authUserCacheService.evict(user.getId());
         return buildLoginResponse(user);
     }
@@ -56,11 +53,13 @@ public class AuthService {
     public LoginResponse register(RegisterRequest req, String clientIp) {
         String username = normalizeUsername(req.getUsername());
         String email = normalizeEmail(req.getEmail());
-        if (userRepository.existsByUsername(username)) {
-            throw new BusinessException(409, "Username already exists");
+        boolean usernameExists = userRepository.existsByUsername(username);
+        boolean emailExists = userRepository.existsByEmail(email);
+        if (usernameExists || emailExists) {
+            throw new BusinessException(409, "用户名或邮箱已被使用");
         }
-        if (userRepository.existsByEmail(email)) {
-            throw new BusinessException(409, "Email already exists");
+        if (props.getRegistration().getEmailVerification().isRequired()) {
+            emailVerificationService.verifyRegistrationCode(email, req.getVerificationCode());
         }
 
         User user = new User();
@@ -69,6 +68,7 @@ public class AuthService {
         user.setPassword(passwordEncoder.encode(req.getPassword()));
         user.setRole(User.ROLE_USER);
         user.setRegisterIp(clientIp);
+        user.setCredits(userCreditService.initialCredits());
         userRepository.save(user);
         authUserCacheService.evict(user.getId());
         return buildLoginResponse(user);
@@ -78,26 +78,16 @@ public class AuthService {
      * Exchanges a valid refresh token for a new access JWT and a rotated refresh token.
      * Invalid / expired / reused refresh → business code 401 (mapped to HTTP 401).
      */
-    @Transactional
     public LoginResponse refresh(String rawRefreshToken) {
         if (!StringUtils.hasText(rawRefreshToken)) {
             throw unauthorizedRefresh();
         }
-        String presented = rawRefreshToken.trim();
-
-        RefreshToken active = refreshTokenService.findActive(presented).orElse(null);
-        if (active == null) {
-            // Reuse of a revoked token triggers family revoke inside rotate().
-            refreshTokenService.rotate(presented);
+        RefreshTokenService.RotationResult rotation = refreshTokenService.rotate(rawRefreshToken.trim());
+        if (rotation == null) {
             throw unauthorizedRefresh();
         }
-
-        User user = loadEnabledUser(active.getUserId());
-        String newRefresh = refreshTokenService.rotate(presented);
-        if (newRefresh == null) {
-            throw unauthorizedRefresh();
-        }
-        return buildLoginResponseWithRefresh(user, newRefresh);
+        User user = loadEnabledUser(rotation.getUserId());
+        return buildLoginResponseWithRefresh(user, rotation.getRefreshToken());
     }
 
     @Transactional
@@ -121,11 +111,44 @@ public class AuthService {
         refreshTokenService.revokeAllForUser(userId);
     }
 
+    @Transactional
+    public void resetPassword(PasswordResetRequest req) {
+        String email = normalizeEmail(req.getEmail());
+        emailVerificationService.verifyPasswordResetCode(email, req.getVerificationCode());
+        User user = userRepository.findByEmailIgnoreCase(email)
+                .orElseThrow(() -> new BusinessException(400,
+                        "邮箱验证码不存在、已过期或不正确"));
+        user.setPassword(passwordEncoder.encode(req.getNewPassword()));
+        user.setAuthVersion(user.getAuthVersion() + 1);
+        userRepository.save(user);
+        authUserCacheService.evict(user.getId());
+        refreshTokenService.revokeAllForUser(user.getId());
+    }
+
     private User loadEnabledUser(Long userId) {
         User user = userRepository.findById(userId).orElse(null);
         if (user == null || !user.isEnabled()) {
             refreshTokenService.revokeAllForUser(userId);
             throw unauthorizedRefresh();
+        }
+        return user;
+    }
+
+    private User resolveLoginUser(LoginRequest req) {
+        boolean hasUsername = StringUtils.hasText(req.getUsername());
+        boolean hasEmail = StringUtils.hasText(req.getEmail());
+        if (hasUsername && hasEmail) {
+            throw new BusinessException(400, "用户名和邮箱只能填写一个");
+        }
+        if (!hasUsername && !hasEmail) {
+            throw new BusinessException(400, "请输入用户名或邮箱");
+        }
+
+        String identifier = (hasEmail ? req.getEmail() : req.getUsername()).trim();
+        User user = hasEmail ? userRepository.findByEmailIgnoreCase(identifier).orElse(null)
+                : userRepository.findByUsername(identifier).orElse(null);
+        if (user == null) {
+            throw invalidCredentials();
         }
         return user;
     }
@@ -155,6 +178,10 @@ public class AuthService {
         return new BusinessException(HttpStatus.UNAUTHORIZED.value(), "Invalid refresh token");
     }
 
+    private static BadCredentialsException invalidCredentials() {
+        return new BadCredentialsException("Invalid username or password");
+    }
+
     private String normalizeUsername(String username) {
         return username == null ? null : username.trim();
     }
@@ -163,6 +190,6 @@ public class AuthService {
         if (!StringUtils.hasText(email)) {
             throw new BusinessException(400, "Email is required");
         }
-        return email.trim().toLowerCase();
+        return email.trim().toLowerCase(Locale.ROOT);
     }
 }

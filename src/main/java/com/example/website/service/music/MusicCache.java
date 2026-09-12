@@ -1,6 +1,8 @@
 package com.example.website.service.music;
 
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
+import com.example.website.config.PerformanceMetrics;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -17,16 +19,29 @@ import java.util.concurrent.ConcurrentHashMap;
 public class MusicCache {
 
     private final Map<String, Entry> store = new ConcurrentHashMap<>();
+    private final PerformanceMetrics metrics;
+
+    public MusicCache() {
+        this(new PerformanceMetrics());
+    }
+
+    @Autowired
+    public MusicCache(PerformanceMetrics metrics) {
+        this.metrics = metrics;
+    }
 
     public <T> T get(String key, Class<T> type) {
         Entry e = store.get(key);
-        if (e == null) return null;
+        if (e == null) { metrics.recordCacheMiss("music"); return null; }
         if (e.expiresAtMs < System.currentTimeMillis()) {
             store.remove(key, e);
+            metrics.recordCacheMiss("music");
             return null;
         }
         Object v = e.value;
-        return type.isInstance(v) ? type.cast(v) : null;
+        if (!type.isInstance(v)) { metrics.recordCacheMiss("music"); return null; }
+        metrics.recordCacheHit("music");
+        return type.cast(v);
     }
 
     public void put(String key, Object value, long ttlSeconds) {

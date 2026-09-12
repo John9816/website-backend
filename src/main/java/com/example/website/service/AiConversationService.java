@@ -746,23 +746,6 @@ public class AiConversationService {
         return model;
     }
 
-    private String resolveRequestedModel(String requestedModel, String fallbackModel) {
-        List<String> supportedModels = getSupportedModels();
-        String requested = trimToNull(requestedModel);
-        if (requested != null) {
-            if (!supportedModels.contains(requested)) {
-                throw new BusinessException(400, "Unsupported model: " + requested);
-            }
-            return requested;
-        }
-
-        String fallback = trimToNull(fallbackModel);
-        if (fallback != null && supportedModels.contains(fallback)) {
-            return fallback;
-        }
-        return resolveConfiguredModel();
-    }
-
     private List<String> getSupportedModels() {
         String configured = configService.getValue(CFG_MODELS).orElse(String.join(",", FALLBACK_MODELS));
         List<String> models = Arrays.stream(configured.split("[,\\r\\n]+"))

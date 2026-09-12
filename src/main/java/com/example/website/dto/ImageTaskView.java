@@ -29,7 +29,7 @@ public class ImageTaskView {
 
     public static ImageTaskView from(ImageGenerationTask t) {
         ImageGenerationsResponse result = null;
-        if (t.getResultJson() != null) {
+        if (ImageGenerationTask.STATUS_COMPLETED.equals(t.getStatus()) && t.getResultJson() != null) {
             try {
                 result = MAPPER.readValue(t.getResultJson(), ImageGenerationsResponse.class);
             } catch (Exception ignore) {

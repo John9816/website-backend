@@ -22,24 +22,33 @@ public class CategoryService {
 
     private final CategoryRepository categoryRepository;
     private final NavLinkRepository linkRepository;
+    private final NavigationCacheService navigationCacheService;
 
     public List<CategoryView> listAll(Long userId) {
-        return categoryRepository.findByUserIdOrderBySortOrderAscIdAsc(userId).stream()
+        List<CategoryView> cached = navigationCacheService.categories(userId);
+        if (cached != null) return cached;
+        List<CategoryView> result = categoryRepository.findByUserIdOrderBySortOrderAscIdAsc(userId).stream()
                 .map(CategoryView::from)
                 .collect(Collectors.toList());
+        navigationCacheService.putCategories(userId, result);
+        return result;
     }
 
     public List<CategoryView> listAllWithLinks(Long userId) {
+        List<CategoryView> cached = navigationCacheService.navigation(userId);
+        if (cached != null) return cached;
         List<Category> categories = categoryRepository.findByUserIdOrderBySortOrderAscIdAsc(userId);
         Map<Long, List<LinkView>> linksByCategory = linkRepository.findByUserIdOrderBySortOrderAscIdAsc(userId)
                 .stream()
                 .map(LinkView::from)
                 .collect(Collectors.groupingBy(LinkView::getCategoryId));
-        return categories.stream().map(c -> {
+        List<CategoryView> result = categories.stream().map(c -> {
             CategoryView v = CategoryView.from(c);
             v.setLinks(linksByCategory.getOrDefault(c.getId(), java.util.Collections.emptyList()));
             return v;
         }).collect(Collectors.toList());
+        navigationCacheService.putNavigation(userId, result);
+        return result;
     }
 
     public CategoryView get(Long userId, Long id) {
@@ -55,7 +64,9 @@ public class CategoryService {
         c.setIcon(req.getIcon());
         c.setSortOrder(req.getSortOrder() == null ? 0 : req.getSortOrder());
         c.setUserId(userId);
-        return CategoryView.from(categoryRepository.save(c));
+        CategoryView result = CategoryView.from(categoryRepository.save(c));
+        navigationCacheService.invalidateUser(userId);
+        return result;
     }
 
     @Transactional
@@ -67,7 +78,9 @@ public class CategoryService {
         if (req.getSortOrder() != null) {
             c.setSortOrder(req.getSortOrder());
         }
-        return CategoryView.from(categoryRepository.save(c));
+        CategoryView result = CategoryView.from(categoryRepository.save(c));
+        navigationCacheService.invalidateUser(userId);
+        return result;
     }
 
     @Transactional
@@ -76,5 +89,6 @@ public class CategoryService {
                 .orElseThrow(() -> new BusinessException(404, "Category not found"));
         linkRepository.deleteByCategoryIdAndUserId(id, userId);
         categoryRepository.delete(category);
+        navigationCacheService.invalidateUser(userId);
     }
 }

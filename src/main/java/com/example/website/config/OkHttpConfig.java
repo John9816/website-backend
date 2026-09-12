@@ -17,7 +17,9 @@ public class OkHttpConfig {
     public static final String CLIENT_AI_UPSTREAM = "aiUpstreamHttpClient";
     public static final String CLIENT_IMAGE_UPSTREAM = "imageUpstreamHttpClient";
     public static final String CLIENT_MUSIC = "musicHttpClient";
+    public static final String CLIENT_MUSIC_THIRD_PARTY = "musicThirdPartyHttpClient";
     public static final String CLIENT_QUICK = "quickHttpClient";
+    public static final String CLIENT_BOOKS = "booksHttpClient";
 
     @Bean
     public ConnectionPool sharedConnectionPool() {
@@ -34,13 +36,15 @@ public class OkHttpConfig {
 
     @Bean
     @Primary
-    public OkHttpClient okHttpClient(ConnectionPool sharedConnectionPool, Dispatcher sharedDispatcher) {
+    public OkHttpClient okHttpClient(ConnectionPool sharedConnectionPool, Dispatcher sharedDispatcher,
+                                     UpstreamMetricsInterceptor upstreamMetricsInterceptor) {
         return new OkHttpClient.Builder()
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(60, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
                 .connectionPool(sharedConnectionPool)
                 .dispatcher(sharedDispatcher)
+                .addInterceptor(upstreamMetricsInterceptor)
                 .retryOnConnectionFailure(true)
                 .build();
     }
@@ -76,12 +80,42 @@ public class OkHttpConfig {
                 .build();
     }
 
+    @Bean(name = CLIENT_MUSIC_THIRD_PARTY)
+    public OkHttpClient musicThirdPartyHttpClient() {
+        Dispatcher dispatcher = new Dispatcher();
+        dispatcher.setMaxRequests(16);
+        dispatcher.setMaxRequestsPerHost(8);
+        return new OkHttpClient.Builder()
+                .connectTimeout(2, TimeUnit.SECONDS)
+                .readTimeout(4, TimeUnit.SECONDS)
+                .writeTimeout(4, TimeUnit.SECONDS)
+                .callTimeout(5, TimeUnit.SECONDS)
+                .connectionPool(new ConnectionPool(10, 2, TimeUnit.MINUTES))
+                .dispatcher(dispatcher)
+                .retryOnConnectionFailure(false)
+                .build();
+    }
+
     @Bean(name = CLIENT_QUICK)
     public OkHttpClient quickHttpClient(OkHttpClient okHttpClient) {
         return okHttpClient.newBuilder()
                 .connectTimeout(5, TimeUnit.SECONDS)
                 .readTimeout(8, TimeUnit.SECONDS)
                 .writeTimeout(8, TimeUnit.SECONDS)
+                .build();
+    }
+
+    @Bean(name = CLIENT_BOOKS)
+    public OkHttpClient booksHttpClient(OkHttpClient okHttpClient) {
+        // Book sources are untrusted upstreams. Redirects are followed by the
+        // source client itself only after each target has passed host checks.
+        return okHttpClient.newBuilder()
+                .connectTimeout(8, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .writeTimeout(8, TimeUnit.SECONDS)
+                .callTimeout(25, TimeUnit.SECONDS)
+                .followRedirects(false)
+                .followSslRedirects(false)
                 .build();
     }
 

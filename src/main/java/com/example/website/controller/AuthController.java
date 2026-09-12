@@ -3,14 +3,18 @@ package com.example.website.controller;
 import com.example.website.common.ApiResponse;
 import com.example.website.dto.ChangePasswordRequest;
 import com.example.website.dto.CurrentUserView;
+import com.example.website.dto.EmailVerificationCodeRequest;
+import com.example.website.dto.EmailVerificationCodeView;
 import com.example.website.dto.LoginRequest;
 import com.example.website.dto.LoginResponse;
+import com.example.website.dto.PasswordResetRequest;
 import com.example.website.dto.RefreshTokenRequest;
 import com.example.website.dto.RegisterRequest;
 import com.example.website.dto.UserProfileUpdateRequest;
 import com.example.website.service.AuthService;
 import com.example.website.service.UserProfileService;
 import com.example.website.util.ClientIpResolver;
+import com.example.website.service.EmailVerificationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
@@ -28,6 +32,31 @@ public class AuthController {
 
     private final AuthService authService;
     private final UserProfileService userProfileService;
+    private final EmailVerificationService emailVerificationService;
+
+    @PostMapping("/api/auth/email-code")
+    public ApiResponse<EmailVerificationCodeView> sendEmailCode(
+            @Valid @RequestBody EmailVerificationCodeRequest req,
+            HttpServletRequest request) {
+        return ApiResponse.ok(emailVerificationService.sendRegistrationCode(
+                req.getEmail(), ClientIpResolver.resolve(request)));
+    }
+
+    @PostMapping("/api/auth/password-reset/email-code")
+    public ApiResponse<EmailVerificationCodeView> sendPasswordResetCode(
+            @Valid @RequestBody EmailVerificationCodeRequest req,
+            HttpServletRequest request) {
+        return ApiResponse.ok(emailVerificationService.sendPasswordResetCode(
+                req.getEmail(), ClientIpResolver.resolve(request)));
+    }
+
+    @PostMapping("/api/auth/password-reset/confirm")
+    public ApiResponse<Void> resetPassword(@Valid @RequestBody PasswordResetRequest req,
+                                           HttpServletResponse response) {
+        preventAuthCaching(response);
+        authService.resetPassword(req);
+        return ApiResponse.ok();
+    }
 
     @PostMapping("/api/auth/register")
     public ApiResponse<LoginResponse> register(@Valid @RequestBody RegisterRequest req,

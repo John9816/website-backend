@@ -3,6 +3,10 @@ package com.example.website.service.music;
 import com.example.website.common.MusicBusinessException;
 import com.example.website.common.MusicErrorCode;
 import com.example.website.config.OkHttpConfig;
+import com.example.website.dto.music.AlbumDetailView;
+import com.example.website.dto.music.AlbumSummaryItem;
+import com.example.website.dto.music.ArtistDetailView;
+import com.example.website.dto.music.ArtistWorksView;
 import com.example.website.dto.music.MusicSearchType;
 import com.example.website.dto.music.MusicSource;
 import com.example.website.dto.music.PlaylistDetailView;
@@ -25,10 +29,20 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+
+import static com.example.website.service.music.MusicValueUtils.asInt;
+import static com.example.website.service.music.MusicValueUtils.asLongObj;
+import static com.example.website.service.music.MusicValueUtils.asMap;
+import static com.example.website.service.music.MusicValueUtils.asString;
+import static com.example.website.service.music.MusicValueUtils.firstNonEmpty;
+import static com.example.website.service.music.MusicValueUtils.idsFromMaps;
+import static com.example.website.service.music.MusicValueUtils.truncate;
 
 @Slf4j
 @Component
@@ -40,6 +54,7 @@ public class NeteaseMusicClient {
     private static final String LYRIC_URL  = "https://music.163.com/api/song/lyric/v1";
     private static final String TOPLIST_URL = "https://music.163.com/api/toplist";
     private static final String PLAYLIST_LIST_URL = "https://music.163.com/api/playlist/list";
+    private static final String RECOMMENDED_PLAYLIST_URL = "https://music.163.com/api/personalized/playlist";
     private static final String PLAYLIST_DETAIL_URL = "https://music.163.com/api/v3/playlist/detail";
     private static final String REFERER    = "https://music.163.com";
     private static final String COOKIE     = "os=pc";
@@ -172,6 +187,7 @@ public class NeteaseMusicClient {
         Object arr = s.get("artists");
         if (!(arr instanceof List)) arr = s.get("ar");
         v.setArtist(joinArtists(arr));
+        setArtistIds(v, arr);
         Map<String, Object> al = asMap(s.get("album"));
         if (al == null) al = asMap(s.get("al"));
         if (al != null) {
@@ -185,6 +201,40 @@ public class NeteaseMusicClient {
      * charts exposed on music.163.com — each entry's {@code id} can be fed
      * back into {@link #fetchToplistDetail} to pull the songs.
      */
+
+    @SuppressWarnings("unchecked")
+    public ArtistDetailView fetchArtistDetail(String id) {
+        try {
+            // Working endpoint: /api/v1/artist/{id} returns briefDesc.
+            HttpUrl url = HttpUrl.parse("https://music.163.com/api/v1/artist/" + id).newBuilder().build();
+            Request req = new Request.Builder()
+                    .url(url)
+                    .header("Referer", REFERER)
+                    .header("Cookie", COOKIE)
+                    .header("User-Agent", USER_AGENT)
+                    .get()
+                    .build();
+            Map<String, Object> json = callJson(req, MusicErrorCode.UPSTREAM_PLAY_FAILED);
+            Object artistObj = json.get("artist");
+            if (!(artistObj instanceof Map)) {
+                return null;
+            }
+            Map<String, Object> artist = (Map<String, Object>) artistObj;
+            ArtistDetailView v = new ArtistDetailView();
+            v.setId(id);
+            v.setSource(MusicSource.NETEASE);
+            v.setName(asString(artist.get("name")));
+            v.setCoverUrl(firstNonEmpty(asString(artist.get("picUrl")), asString(artist.get("img1v1Url"))));
+            v.setSongCount(asInt(artist.get("musicSize")));
+            v.setAlbumCount(asInt(artist.get("albumSize")));
+            v.setDescription(asString(artist.get("briefDesc")));
+            return v;
+        } catch (Exception e) {
+            log.warn("Netease artist detail failed for {}: {}", id, e.getMessage());
+            return null;
+        }
+    }
+
     public List<ToplistItem> fetchToplists() {
         Request req = new Request.Builder()
                 .url(TOPLIST_URL)
@@ -216,6 +266,15 @@ public class NeteaseMusicClient {
         return parsePlaylistList(json, category, order, page, pageSize);
     }
 
+    /** Anonymous/homepage recommended playlists. This is separate from the category playlist feed. */
+    public PlaylistListView fetchRecommendedPlaylists(int limit) {
+        HttpUrl url = HttpUrl.parse(RECOMMENDED_PLAYLIST_URL).newBuilder()
+                .addQueryParameter("limit", String.valueOf(limit))
+                .build();
+        Map<String, Object> json = callJson(officialGet(url), MusicErrorCode.UPSTREAM_PLAYLIST_FAILED);
+        return parseRecommendedPlaylists(json, limit);
+    }
+
     public PlaylistDetailView fetchPlaylistDetail(String id, int page, int pageSize) {
         HttpUrl url = HttpUrl.parse(PLAYLIST_DETAIL_URL).newBuilder()
                 .addQueryParameter("id", id)
@@ -231,6 +290,94 @@ public class NeteaseMusicClient {
                 .build();
         Map<String, Object> json = callJson(req, MusicErrorCode.UPSTREAM_PLAYLIST_FAILED);
         return parsePlaylistDetail(json, id, page, pageSize);
+    }
+
+    public AlbumDetailView fetchAlbumDetail(String id, int page, int pageSize) {
+        Request req = new Request.Builder()
+                .url("https://music.163.com/api/album/" + id)
+                .header("Referer", REFERER)
+                .header("Cookie", COOKIE)
+                .header("User-Agent", USER_AGENT)
+                .get()
+                .build();
+        Map<String, Object> json = callJson(req, MusicErrorCode.UPSTREAM_PLAYLIST_FAILED);
+        Map<String, Object> album = asMap(json.get("album"));
+        List<SongSearchItem> all = new ArrayList<>();
+        Object songsObj = album == null ? null : album.get("songs");
+        if (songsObj instanceof List) {
+            for (Object row : (List<?>) songsObj) {
+                Map<String, Object> song = asMap(row);
+                if (song != null) all.add(toSongItem(song));
+            }
+        }
+        int from = Math.min(all.size(), Math.max(0, (page - 1) * pageSize));
+        int to = Math.min(all.size(), from + pageSize);
+        List<SongSearchItem> songs = new ArrayList<>(all.subList(from, to));
+        Object artists = album == null ? null : album.get("artists");
+        if (!(artists instanceof List) && album != null) artists = singletonArtist(album.get("artist"));
+        return new AlbumDetailView(id, MusicSource.NETEASE,
+                album == null ? null : asString(album.get("name")),
+                album == null ? null : asString(album.get("picUrl")),
+                album == null ? null : asString(album.get("description")),
+                joinArtists(artists),
+                album == null ? null : formatDate(album.get("publishTime")),
+                page, pageSize,
+                album == null ? null : firstNonNull(asInt(album.get("size")), all.size()), songs);
+    }
+
+    public ArtistWorksView fetchArtistWorks(String artistId, String type, int page, int pageSize) {
+        int offset = Math.max(0, (page - 1) * pageSize);
+        if ("album".equals(type)) {
+            HttpUrl url = HttpUrl.parse("https://music.163.com/api/artist/albums/" + artistId).newBuilder()
+                    .addQueryParameter("offset", String.valueOf(offset))
+                    .addQueryParameter("limit", String.valueOf(pageSize))
+                    .build();
+            Map<String, Object> json = callJson(officialGet(url), MusicErrorCode.UPSTREAM_SEARCH_FAILED);
+            List<AlbumSummaryItem> albums = new ArrayList<>();
+            Object rows = json.get("hotAlbums");
+            if (rows instanceof List) {
+                for (Object row : (List<?>) rows) {
+                    Map<String, Object> album = asMap(row);
+                    if (album == null) continue;
+                    Object artists = album.get("artists");
+                    if (!(artists instanceof List)) artists = singletonArtist(album.get("artist"));
+                    List<String> artistIds = idsFromMaps(artists, "id", "artistId");
+                    albums.add(new AlbumSummaryItem(asString(album.get("id")), MusicSource.NETEASE,
+                            asString(album.get("name")), joinArtists(artists),
+                            artistIds.isEmpty() ? null : artistIds.get(0), artistIds,
+                            asString(album.get("picUrl")), formatDate(album.get("publishTime")),
+                            asInt(album.get("size")), asString(album.get("description"))));
+                }
+            }
+            Map<String, Object> artist = asMap(json.get("artist"));
+            Integer total = firstNonNull(asInt(json.get("total")), artist == null ? null : asInt(artist.get("albumSize")));
+            if (total == null && !Boolean.TRUE.equals(json.get("more"))) total = offset + albums.size();
+            return new ArtistWorksView(artistId, MusicSource.NETEASE, "album", page, pageSize,
+                    total, Collections.emptyList(), albums);
+        }
+
+        HttpUrl url = HttpUrl.parse("https://music.163.com/api/v1/artist/songs").newBuilder()
+                .addQueryParameter("id", artistId)
+                .addQueryParameter("offset", String.valueOf(offset))
+                .addQueryParameter("limit", String.valueOf(pageSize))
+                .addQueryParameter("order", "hot")
+                .build();
+        Map<String, Object> json = callJson(officialGet(url), MusicErrorCode.UPSTREAM_SEARCH_FAILED);
+        List<SongSearchItem> songs = new ArrayList<>();
+        Object rows = json.get("songs");
+        if (rows instanceof List) {
+            for (Object row : (List<?>) rows) {
+                Map<String, Object> song = asMap(row);
+                if (song != null) songs.add(toSongItem(song));
+            }
+        }
+        return new ArtistWorksView(artistId, MusicSource.NETEASE, "song", page, pageSize,
+                asInt(json.get("total")), songs, Collections.emptyList());
+    }
+
+    private Request officialGet(HttpUrl url) {
+        return new Request.Builder().url(url).header("Referer", REFERER)
+                .header("Cookie", COOKIE).header("User-Agent", USER_AGENT).get().build();
     }
 
     /**
@@ -306,7 +453,7 @@ public class NeteaseMusicClient {
             p.setName(asString(s.get("name")));
             p.setCoverUrl(asString(s.get("coverImgUrl")));
             p.setDescription(asString(s.get("description")));
-            p.setTrackCount(asIntObj(s.get("trackCount")));
+            p.setTrackCount(asInt(s.get("trackCount")));
             p.setPlayCount(asLongObj(s.get("playCount")));
             Map<String, Object> creator = asMap(s.get("creator"));
             if (creator != null) {
@@ -314,6 +461,32 @@ public class NeteaseMusicClient {
             }
             if (p.getId() != null && !p.getId().isEmpty()) out.add(p);
         }
+        v.setList(out);
+        return v;
+    }
+
+    @SuppressWarnings("unchecked")
+    private PlaylistListView parseRecommendedPlaylists(Map<String, Object> json, int limit) {
+        PlaylistListView v = new PlaylistListView(MusicSource.NETEASE, "recommend", "recommend", 1, limit, 0L,
+                Collections.emptyList());
+        Object resultObj = json.get("result");
+        if (!(resultObj instanceof List)) return v;
+
+        List<PlaylistItem> out = new ArrayList<>();
+        for (Object item : (List<?>) resultObj) {
+            if (!(item instanceof Map)) continue;
+            Map<String, Object> s = (Map<String, Object>) item;
+            PlaylistItem p = new PlaylistItem();
+            p.setSource(MusicSource.NETEASE);
+            p.setId(asString(s.get("id")));
+            p.setName(asString(s.get("name")));
+            p.setCoverUrl(firstNonEmpty(asString(s.get("picUrl")), asString(s.get("coverImgUrl"))));
+            p.setDescription(firstNonEmpty(asString(s.get("copywriter")), asString(s.get("description"))));
+            p.setTrackCount(asInt(s.get("trackCount")));
+            p.setPlayCount(asLongObj(s.get("playCount")));
+            if (p.getId() != null && !p.getId().isEmpty()) out.add(p);
+        }
+        v.setTotal((long) out.size());
         v.setList(out);
         return v;
     }
@@ -339,7 +512,7 @@ public class NeteaseMusicClient {
         Object ut = playlist.get("updateTime");
         if (ut != null) v.setUpdateTime(asString(ut));
 
-        Integer trackCount = asIntObj(playlist.get("trackCount"));
+        Integer trackCount = asInt(playlist.get("trackCount"));
         Object tracksObj = playlist.get("tracks");
         if (!(tracksObj instanceof List)) {
             v.setTotal(trackCount);
@@ -389,7 +562,7 @@ public class NeteaseMusicClient {
             v.setCreatorName(asString(creator.get("nickname")));
         }
 
-        Integer trackCount = asIntObj(playlist.get("trackCount"));
+        Integer trackCount = asInt(playlist.get("trackCount"));
         Object tracksObj = playlist.get("tracks");
         if (!(tracksObj instanceof List)) {
             v.setTotal(trackCount);
@@ -481,16 +654,20 @@ public class NeteaseMusicClient {
         switch (type) {
             case ARTIST:
                 item.setCoverUrl(firstNonEmpty(asString(s.get("picUrl")), asString(s.get("img1v1Url"))));
-                item.setTrackCount(asIntObj(s.get("musicSize")));
+                item.setTrackCount(asInt(s.get("musicSize")));
                 break;
             case ALBUM:
                 item.setCoverUrl(asString(s.get("picUrl")));
-                item.setTrackCount(asIntObj(s.get("size")));
-                item.setArtist(joinArtists(firstValue(s.get("artists"), singletonArtist(s.get("artist")))));
+                item.setTrackCount(asInt(s.get("size")));
+                Object albumArtists = firstValue(s.get("artists"), singletonArtist(s.get("artist")));
+                item.setArtist(joinArtists(albumArtists));
+                List<String> albumArtistIds = idsFromMaps(albumArtists, "id", "artistId");
+                item.setArtistIds(albumArtistIds);
+                item.setArtistId(albumArtistIds.isEmpty() ? null : albumArtistIds.get(0));
                 break;
             case PLAYLIST:
                 item.setCoverUrl(asString(s.get("coverImgUrl")));
-                item.setTrackCount(asIntObj(s.get("trackCount")));
+                item.setTrackCount(asInt(s.get("trackCount")));
                 item.setPlayCount(asLongObj(s.get("playCount")));
                 Map<String, Object> creator = asMap(s.get("creator"));
                 if (creator != null) {
@@ -526,6 +703,7 @@ public class NeteaseMusicClient {
         Object artists = s.get("ar");
         if (!(artists instanceof List)) artists = s.get("artists");
         v.setArtist(joinArtists(artists));
+        setArtistIds(v, artists);
         Map<String, Object> al = asMap(s.get("al"));
         if (al == null) al = asMap(s.get("album"));
         if (al != null) {
@@ -534,6 +712,7 @@ public class NeteaseMusicClient {
             v.setCoverUrl(firstNonEmpty(asString(al.get("picUrl")), neteaseImageUrl(al.get("picId"))));
         }
         Long dt = asLongObj(s.get("dt"));
+        if (dt == null) dt = asLongObj(s.get("duration"));
         if (dt != null) {
             v.setDurationMs(dt);
             v.setDurationSec((int) (dt / 1000L));
@@ -544,11 +723,21 @@ public class NeteaseMusicClient {
 
     private List<String> qualitiesFromSong(Map<String, Object> s) {
         List<String> q = new ArrayList<>();
-        if (s.get("l")  != null) q.add("128k");
-        if (s.get("h")  != null) q.add("320k");
-        if (s.get("sq") != null) q.add("flac");
-        if (s.get("hr") != null) q.add("flac24bit");
+        if (firstValue(s.get("l"), s.get("lMusic")) != null) q.add("128k");
+        if (firstValue(s.get("h"), s.get("hMusic")) != null) q.add("320k");
+        if (firstValue(s.get("sq"), s.get("sqMusic")) != null) q.add("flac");
+        if (firstValue(s.get("hr"), s.get("hrMusic")) != null) q.add("flac24bit");
         return q;
+    }
+
+    private static Integer firstNonNull(Integer first, Integer second) {
+        return first != null ? first : second;
+    }
+
+    private static String formatDate(Object epochMillis) {
+        Long value = asLongObj(epochMillis);
+        if (value == null) return asString(epochMillis);
+        return Instant.ofEpochMilli(value).atZone(ZoneOffset.ofHours(8)).toLocalDate().toString();
     }
 
     @SuppressWarnings("unchecked")
@@ -563,6 +752,12 @@ public class NeteaseMusicClient {
             sb.append(n);
         }
         return sb.length() == 0 ? null : sb.toString();
+    }
+
+    private void setArtistIds(SongSearchItem item, Object artists) {
+        List<String> ids = idsFromMaps(artists, "id", "artistId");
+        item.setArtistIds(ids);
+        item.setArtistId(ids.isEmpty() ? null : ids.get(0));
     }
 
     private Map<String, Object> callJson(Request req, MusicErrorCode onFail) {
@@ -587,31 +782,6 @@ public class NeteaseMusicClient {
     }
 
     @SuppressWarnings("unchecked")
-    private static Map<String, Object> asMap(Object v) {
-        return v instanceof Map ? (Map<String, Object>) v : null;
-    }
-
-    private static String asString(Object v) {
-        return v == null ? null : v.toString();
-    }
-
-    private static Long asLongObj(Object v) {
-        if (v instanceof Number) return ((Number) v).longValue();
-        if (v instanceof String) {
-            try { return Long.parseLong((String) v); } catch (NumberFormatException e) { return null; }
-        }
-        return null;
-    }
-
-    private static Integer asIntObj(Object v) {
-        if (v instanceof Number) return ((Number) v).intValue();
-        if (v instanceof String) {
-            try { return Integer.parseInt((String) v); } catch (NumberFormatException e) { return null; }
-        }
-        return null;
-    }
-
-    @SuppressWarnings("unchecked")
     private static Object singletonArtist(Object artist) {
         if (artist instanceof Map) {
             List<Map<String, Object>> list = new ArrayList<>();
@@ -625,11 +795,6 @@ public class NeteaseMusicClient {
         for (Object value : values) {
             if (value != null) return value;
         }
-        return null;
-    }
-
-    private static String firstNonEmpty(String... vs) {
-        for (String v : vs) if (v != null && !v.isEmpty()) return v;
         return null;
     }
 
@@ -657,8 +822,4 @@ public class NeteaseMusicClient {
         }
     }
 
-    private static String truncate(String s) {
-        if (s == null) return "";
-        return s.length() > 200 ? s.substring(0, 200) + "..." : s;
-    }
 }

@@ -221,6 +221,26 @@ class ImageServiceTests {
     }
 
     @Test
+    void listModelsCallsOpenAiCompatibleModelsEndpoint() throws IOException {
+        when(configService.getValueOrThrow(ImageService.CFG_BASE_URL)).thenReturn(IMAGES_URL);
+        when(configService.getValueOrThrow(ImageService.CFG_API_KEY)).thenReturn(API_KEY);
+        when(okHttpClient.newCall(any(Request.class))).thenReturn(call);
+        when(call.execute()).thenReturn(okResponse("https://api.67.si/v1/models",
+                "{\"object\":\"list\",\"data\":[{\"id\":\"gpt-image-2\",\"object\":\"model\",\"created\":0,\"owned_by\":\"provider\"}]}"));
+
+        java.util.List<com.example.website.dto.ImageModelView> models = imageService.listModels();
+        assertEquals("gpt-image-2", models.get(0).getId());
+        assertEquals("provider", models.get(0).getOwnedBy());
+
+        ArgumentCaptor<Request> requestCaptor = ArgumentCaptor.forClass(Request.class);
+        verify(okHttpClient).newCall(requestCaptor.capture());
+        assertEquals("GET", requestCaptor.getAllValues().get(0).method());
+        assertTrue(requestCaptor.getAllValues().get(0).url().toString().endsWith("/v1/models"));
+        assertEquals("Bearer " + API_KEY,
+                requestCaptor.getAllValues().get(0).header("Authorization"));
+    }
+
+    @Test
     void editDerivesImagesEditsEndpointAndSendsMultipartRequest() throws IOException {
         when(configService.getValue(ImageService.CFG_EDIT_BASE_URL)).thenReturn(java.util.Optional.empty());
         when(configService.getValueOrThrow(ImageService.CFG_BASE_URL)).thenReturn(BASE_URL);
@@ -257,6 +277,8 @@ class ImageServiceTests {
         assertTrue(body.contains("add a red hat"));
         assertTrue(body.contains("name=\"size\""));
         assertTrue(body.contains("1024x1024"));
+        assertTrue(body.contains("name=\"response_format\""));
+        assertTrue(body.contains("url"));
         assertTrue(body.contains("name=\"image\"; filename=\"source.png\""));
         assertTrue(body.contains("name=\"mask\"; filename=\"mask.png\""));
         assertEquals(GPT_IMAGE_MODEL, resp.getModel());

@@ -1,15 +1,19 @@
 package com.example.website.service.content;
 
+import com.example.website.entity.ContentArticle;
 import com.example.website.service.SysConfigService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static com.example.website.service.content.ContentTextUtils.defaultText;
 import static com.example.website.service.content.ContentTextUtils.hasText;
 
 /**
@@ -29,11 +33,15 @@ import static com.example.website.service.content.ContentTextUtils.hasText;
 @RequiredArgsConstructor
 public class ContentPipelineService {
 
+    private static final String DEFAULT_IMAGE_MODE = "generate";
+
     private final SysConfigService configService;
     private final EvidenceService evidenceService;
     private final ArticlePlanService articlePlanService;
     private final ArticleReviewService articleReviewService;
     private final PublishableArticleContract publishableArticleContract;
+    private final ContentAutomationBuilder automationBuilder;
+    private final ObjectMapper objectMapper;
 
     public PreWriting prepare(String topic, String category, String angle, String audience) {
         return prepare(topic, category, angle, audience, true);
@@ -175,6 +183,178 @@ public class ContentPipelineService {
                 riskTips,
                 gate
         );
+    }
+
+    boolean blocksWechatDraft(ContentArticle article) {
+        if (article == null || hasGenerationFallback(article)) {
+            return true;
+        }
+        PublishableArticleContract.Evaluation live = publishableArticleContract.evaluateArticle(article);
+        if (live.blocksPublish()) {
+            return true;
+        }
+        Integer stored = article.getQualityScore();
+        int best = Math.max(stored == null ? 0 : stored, live.getScore());
+        if (best >= PublishableArticleContract.MIN_PUBLISH_SCORE) {
+            if (stored == null || stored < best) {
+                article.setQualityScore(best);
+            }
+            return false;
+        }
+        return true;
+    }
+
+    PublishableArticleContract.Evaluation evaluateArticle(ContentArticle article) {
+        return publishableArticleContract.evaluateArticle(article);
+    }
+
+    PublishableArticleContract.Evaluation evaluateGate(ContentArticle article,
+                                                        String length,
+                                                        String imageMode,
+                                                        boolean writerFallback) {
+        if (article == null) {
+            return publishableArticleContract.evaluateDraft(null, null, null, length, false, false, writerFallback);
+        }
+        if ("none".equalsIgnoreCase(defaultText(imageMode, DEFAULT_IMAGE_MODE))) {
+            PublishableArticleContract.Evaluation textGate = publishableArticleContract.evaluateDraft(
+                    article.getTitle(),
+                    article.getContentMarkdown(),
+                    article.getContentHtml(),
+                    defaultText(length, "standard"),
+                    hasText(article.getEvidenceJson()),
+                    hasText(article.getPlanJson()),
+                    writerFallback || hasGenerationFallback(article)
+            );
+            textGate.getIssues().add("Text-only mode: cover/inline images skipped; add visuals before WeChat draft.");
+            textGate.getMetrics().put("textOnly", true);
+            textGate.getMetrics().put("hasCoverImage", false);
+            return textGate;
+        }
+        return publishableArticleContract.evaluateArticle(article);
+    }
+
+    int reconcileQualityScore(int reviewScore,
+                              int contractScore,
+                              PublishableArticleContract.Evaluation gate) {
+        int review = Math.max(0, Math.min(100, reviewScore));
+        int contract = Math.max(0, Math.min(100, contractScore));
+        if (gate != null && !gate.blocksPublish() && contract >= PublishableArticleContract.MIN_PUBLISH_SCORE) {
+            return Math.max(review, contract);
+        }
+        return Math.min(review, contract);
+    }
+
+    void applyQualityState(ContentArticle article,
+                           PublishableArticleContract.Evaluation gate,
+                           boolean writerFallback) {
+        boolean blocked = writerFallback || gate == null || gate.blocksPublish()
+                || article.getQualityScore() == null
+                || article.getQualityScore() < PublishableArticleContract.MIN_PUBLISH_SCORE;
+        if (!blocked) {
+            article.setErrorMessage(null);
+            article.setAutomationJson(writeJson(automationBuilder.buildAutomation(article, null, "draft_ready")));
+            return;
+        }
+        String message;
+        if (writerFallback) {
+            String risks = defaultText(article.getRiskTipsJson(), "");
+            if (risks.contains("upstream unreachable") || risks.contains("连接失败") || risks.contains("Connect timed out")
+                    || risks.contains("connect timeout") || risks.contains("timed out")) {
+                message = "发布门禁未通过：AI 写稿上游连不上（当前 ai.chat.baseUrl 超时/不可达），"
+                        + "本地模板不能推微信。请更新可用的对话 API 地址与密钥后重新生成。";
+            } else {
+                message = "发布门禁未通过：AI 正文失败后使用了本地模板，请重新生成后再推微信草稿。";
+            }
+        } else if (gate == null) {
+            message = "发布门禁未通过：审稿未完成，请改稿或重新生成。";
+        } else {
+            List<String> issues = gate.getIssues() == null ? Collections.emptyList() : gate.getIssues();
+            List<String> translatedIssues = new ArrayList<>();
+            for (String issue : issues) {
+                translatedIssues.add(toChineseGateIssue(issue));
+                if (translatedIssues.size() >= 5) {
+                    break;
+                }
+            }
+            boolean textOnly = "none".equalsIgnoreCase(defaultText(article.getImageMode(), DEFAULT_IMAGE_MODE));
+            boolean textReady = article.getQualityScore() != null
+                    && article.getQualityScore() >= PublishableArticleContract.MIN_PUBLISH_SCORE
+                    && !writerFallback;
+            if (textOnly && textReady) {
+                message = "正文已达发布分，但本次为无图模式：推微信草稿前请补封面与 2-3 张内联图（或改 imageMode 后重配图）。";
+            } else {
+                int shown = article.getQualityScore() == null ? gate.getScore() : article.getQualityScore();
+                String detail = translatedIssues.isEmpty()
+                        ? ("契约分=" + gate.getScore() + "，当前记录分=" + shown
+                        + "。常见缺口：开场场景、H2 数量、封面或 2-3 张内联图未就绪（正文不要写参考资料）。")
+                        : String.join("；", translatedIssues);
+                message = "发布门禁未通过（" + gate.getDecision() + "，分=" + shown
+                        + "，需≥" + PublishableArticleContract.MIN_PUBLISH_SCORE + "）：" + detail;
+            }
+        }
+        article.setErrorMessage(message);
+        article.setAutomationJson(writeJson(automationBuilder.buildAutomation(article, message, "quality_gate")));
+    }
+
+    boolean hasGenerationFallback(ContentArticle article) {
+        String risks = article == null ? null : article.getRiskTipsJson();
+        return hasText(risks) && (risks.contains("AI \u6b63\u6587\u751f\u6210\u5931\u8d25")
+                || risks.contains("\u5df2\u56de\u9000\u672c\u5730\u6a21\u677f")
+                || risks.contains("local template fallback"));
+    }
+
+    private String toChineseGateIssue(String issue) {
+        String text = defaultText(issue, "").trim();
+        if (!hasText(text)) {
+            return "存在未说明问题";
+        }
+        if (text.contains("Text-only mode") || text.contains("textOnly") || text.contains("images skipped")) {
+            return "无图模式：正文可先达标，推微信前再补封面与 2-3 张内联图";
+        }
+        if (text.contains("Missing cover") || text.contains("cover image")) {
+            return "缺少可用封面图";
+        }
+        if (text.contains("inline image") || text.contains("Inline image")
+                || text.contains("inline images") || text.contains("Inline images")) {
+            return "内联配图不足或不可用（需 2-3 张）";
+        }
+        if (text.contains("local template") || text.contains("writer fallback") || text.contains("fallback")) {
+            return "使用了本地模板回退，不能当正式成稿";
+        }
+        if (text.contains("Backstage") || text.contains("meta writing") || text.contains("planning residue")) {
+            return "正文含写作说明/提纲等后台残留，需改成读者向成稿";
+        }
+        if (text.contains("too short") || text.contains("Body is too short")) {
+            return "正文字数不足";
+        }
+        if (text.contains("H2") || text.contains("section")) {
+            return "小节结构不完整";
+        }
+        if (text.contains("should not include a 参考资料") || text.contains("Body should not include")
+                || text.contains("参考资料/来源小节") || text.contains("strip it for reader")) {
+            return "正文不应包含参考资料/来源小节，请删掉";
+        }
+        if (text.contains("Missing references") || text.contains("reference section")) {
+            return "正文无需参考资料小节（已取消该要求）";
+        }
+        if (text.contains("Title") || text.contains("title") || text.contains("Weak") || text.contains("Clickbait")) {
+            return "标题偏弱或不合规：" + text;
+        }
+        if (text.contains("evidence") || text.contains("Evidence")) {
+            return "证据包不足，事实需人工核验";
+        }
+        if (text.contains("template") || text.contains("reusable") || text.contains("methodology")) {
+            return "正文像万能模板/写作方法论，缺少选题专属性";
+        }
+        return text;
+    }
+
+    private String writeJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            return "null";
+        }
     }
 
     private String extractTitle(String markdown, String fallback) {

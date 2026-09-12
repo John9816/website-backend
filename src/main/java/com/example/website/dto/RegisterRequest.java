@@ -23,4 +23,6 @@ public class RegisterRequest {
     @NotBlank(message = "password is required")
     @Size(min = 6, max = 64, message = "password length must be 6-64")
     private String password;
+
+    private String verificationCode;
 }

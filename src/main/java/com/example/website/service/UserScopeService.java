@@ -13,6 +13,7 @@ import javax.servlet.http.HttpServletRequest;
 public class UserScopeService {
 
     private final UserRepository userRepository;
+    private final NavigationCacheService navigationCacheService;
 
     public Long requireAuthenticatedUserId(HttpServletRequest request) {
         Long userId = currentUserId(request);
@@ -27,9 +28,9 @@ public class UserScopeService {
     }
 
     public Long adminUserId() {
-        return userRepository.findFirstByRoleOrderByIdAsc(User.ROLE_ADMIN)
+        return navigationCacheService.adminId(() -> userRepository.findFirstByRoleOrderByIdAsc(User.ROLE_ADMIN)
                 .map(User::getId)
-                .orElseThrow(() -> new BusinessException(500, "Admin user not found"));
+                .orElseThrow(() -> new BusinessException(500, "Admin user not found")));
     }
 
     private Long currentUserId(HttpServletRequest request) {

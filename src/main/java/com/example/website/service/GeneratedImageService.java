@@ -5,8 +5,9 @@ import com.example.website.dto.GeneratedImageView;
 import com.example.website.dto.ImageGenerationsResponse;
 import com.example.website.dto.PageView;
 import com.example.website.entity.GeneratedImage;
+import com.example.website.entity.ImageAsset;
 import com.example.website.repository.GeneratedImageRepository;
-import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -15,63 +16,53 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.IOException;
-import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.time.LocalDate;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
-@Slf4j
 @Service
 public class GeneratedImageService {
 
     private static final int MAX_PAGE_SIZE = 100;
-    private static final int DAILY_GENERATION_LIMIT = 100;
-    private static final Pattern BASE64_DATA_PATTERN =
-            Pattern.compile("data:image/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)");
-    private static final String SERVE_PATH_PREFIX = "/api/v1/image/file/";
     private static final String TYPE_IMAGE = "image";
 
     private final GeneratedImageRepository repository;
-    private final SysConfigService sysConfigService;
-    private final GoFileClient goFileClient;
     private final TransactionTemplate transactionTemplate;
+    private final String sharedStorageDir;
+    private final String configuredImageUploadDir;
+    private final ImageStorageService imageStorageService;
 
     public GeneratedImageService(GeneratedImageRepository repository,
-                                 SysConfigService sysConfigService,
-                                 GoFileClient goFileClient,
-                                 TransactionTemplate transactionTemplate) {
+                                 TransactionTemplate transactionTemplate,
+                                 @Value("${app.storage.shared-dir:}") String sharedStorageDir,
+                                 @Value("${app.storage.image-dir:uploads/images}") String configuredImageUploadDir,
+                                 ImageStorageService imageStorageService) {
         this.repository = repository;
-        this.sysConfigService = sysConfigService;
-        this.goFileClient = goFileClient;
         this.transactionTemplate = transactionTemplate;
+        this.sharedStorageDir = sharedStorageDir;
+        this.configuredImageUploadDir = configuredImageUploadDir;
+        this.imageStorageService = imageStorageService;
     }
 
-    public void checkDailyLimit(Long userId) {
-        long todayCount = repository.countByUserIdSince(userId, LocalDate.now().atStartOfDay());
-        if (todayCount >= DAILY_GENERATION_LIMIT) {
-            throw new BusinessException(429, "今日生图次数已达上限（" + DAILY_GENERATION_LIMIT + " 张），请明天再试");
-        }
-    }
 
-    public void saveBatch(Long userId, String prompt, String size, ImageGenerationsResponse resp) {
+    public ImageGenerationsResponse saveBatch(Long userId, String prompt, String size,
+                                              ImageGenerationsResponse resp) {
         if (userId == null || resp == null || resp.getData() == null || resp.getData().isEmpty()) {
-            return;
+            return resp;
         }
-        // Resolve image references outside any transaction so HikariCP connections
-        // are not held during multi-second HTTP calls or filesystem writes.
+        // Resolve every item before mutating the response or history. A task may only
+        // become successful when every result has a durable public URL.
         List<GeneratedImage> toPersist = new ArrayList<>();
+        List<String> persistedUrls = new ArrayList<>();
         for (ImageGenerationsResponse.ImageDataItem item : resp.getData()) {
-            if (item.getUrl() == null || item.getUrl().isEmpty()) continue;
-            String resolved = resolveImageUrl(item.getUrl());
-            if (resolved == null) continue;
+            String reference = imageReference(item);
+            if (reference == null) {
+                throw new BusinessException(502, "Image upstream returned an empty image reference");
+            }
+            String resolved = resolveImageUrl(reference);
+            persistedUrls.add(resolved);
             GeneratedImage e = new GeneratedImage();
             e.setUserId(userId);
             e.setType(TYPE_IMAGE);
@@ -81,130 +72,55 @@ public class GeneratedImageService {
             e.setImageUrl(resolved);
             toPersist.add(e);
         }
-        if (toPersist.isEmpty()) {
-            return;
+        for (int index = 0; index < resp.getData().size(); index++) {
+            ImageGenerationsResponse.ImageDataItem item = resp.getData().get(index);
+            item.setUrl(persistedUrls.get(index));
+            item.setB64Json(null);
         }
         // Now open a short transaction just for the inserts.
         transactionTemplate.execute(status -> {
             repository.saveAll(toPersist);
             return null;
         });
+        return resp;
     }
 
     private String resolveImageUrl(String rawUrl) {
-        if (isRemoteHttpUrl(rawUrl) && useDirectRemoteUrlMode() && rawUrl.length() <= 1000) {
-            return rawUrl;
+        ImageAsset asset = imageStorageService.storeReference(rawUrl);
+        String persisted = asset == null ? null : asset.getImageUrl();
+        if (persisted == null || persisted.trim().isEmpty()) {
+            throw new BusinessException(502, "Image storage returned no public URL");
         }
-
-        // Extract bytes from whatever source: base64 data URL or remote HTTP URL
-        ImageBytes img = extractBytes(rawUrl);
-        if (img == null) {
-            log.warn("Cannot extract image bytes from {}", rawUrl.substring(0, Math.min(80, rawUrl.length())));
-            return null;
-        }
-
-        // Try go-file first
-        String goFileUrl = sysConfigService.getValue(ImageService.CFG_GOFILE_URL).orElse(null);
-        if (goFileUrl != null && !goFileUrl.trim().isEmpty()) {
-            String goFileToken = sysConfigService.getValue(ImageService.CFG_GOFILE_TOKEN).orElse(null);
-            Optional<String> publicUrl = goFileClient.upload(goFileUrl, goFileToken, img.bytes, img.filename);
-            if (publicUrl.isPresent()) {
-                return publicUrl.get();
-            }
-            log.warn("go-file upload failed, falling back to local disk");
-        }
-
-        // Fallback to local filesystem
-        String filename = saveToFile(img.bytes, img.ext);
-        if (filename != null) {
-            return SERVE_PATH_PREFIX + filename;
-        }
-        log.warn("Failed to persist image, skipping");
-        return null;
+        return persisted.trim();
     }
 
     public String persistImageReference(String rawUrl) {
         return resolveImageUrl(rawUrl);
     }
 
-    private ImageBytes extractBytes(String rawUrl) {
-        // Case 1: base64 data URL
-        Matcher b64 = BASE64_DATA_PATTERN.matcher(rawUrl);
-        if (b64.find()) {
-            String ext = b64.group(1).equalsIgnoreCase("png") ? "png" : b64.group(1);
-            byte[] bytes = Base64.getDecoder().decode(b64.group(2));
-            return new ImageBytes(bytes, ext, UUID.randomUUID().toString().replace("-", "") + "." + ext);
+    /** Uploads an in-memory image and returns its durable public URL. */
+    public String persistImageBytes(byte[] bytes, String contentType) {
+        ImageAsset asset = imageStorageService.storeBytes(bytes, contentType);
+        if (asset == null || asset.getImageUrl() == null || asset.getImageUrl().trim().isEmpty()) {
+            throw new BusinessException(502, "Image storage returned no public URL");
         }
+        return asset.getImageUrl().trim();
+    }
 
-        // Case 2: remote HTTP URL — download it
-        if (isRemoteHttpUrl(rawUrl)) {
-            byte[] bytes = goFileClient.downloadBytes(rawUrl);
-            if (bytes != null) {
-                String ext = inferExt(rawUrl, null);
-                return new ImageBytes(bytes, ext, UUID.randomUUID().toString().replace("-", "") + "." + ext);
-            }
-            return null;
+    private String imageReference(ImageGenerationsResponse.ImageDataItem item) {
+        if (item.getUrl() != null && !item.getUrl().trim().isEmpty()) {
+            return item.getUrl();
         }
-
+        if (item.getB64Json() != null && !item.getB64Json().trim().isEmpty()) {
+            return "data:image/png;base64," + item.getB64Json().trim();
+        }
         return null;
     }
 
-    private boolean useDirectRemoteUrlMode() {
-        return true;
-    }
-
-    private boolean isRemoteHttpUrl(String rawUrl) {
-        return rawUrl != null && (rawUrl.startsWith("http://") || rawUrl.startsWith("https://"));
-    }
-
-    private String inferExt(String url, String contentType) {
-        String lower = url.toLowerCase();
-        if (lower.contains(".png")) return "png";
-        if (lower.contains(".jpg") || lower.contains(".jpeg")) return "jpg";
-        if (lower.contains(".webp")) return "webp";
-        if (lower.contains(".gif")) return "gif";
-        if (contentType != null) {
-            if (contentType.contains("png")) return "png";
-            if (contentType.contains("jpeg") || contentType.contains("jpg")) return "jpg";
-            if (contentType.contains("webp")) return "webp";
-        }
-        return "png";
-    }
-
-    private static class ImageBytes {
-        final byte[] bytes;
-        final String ext;
-        final String filename;
-
-        ImageBytes(byte[] bytes, String ext, String filename) {
-            this.bytes = bytes;
-            this.ext = ext;
-            this.filename = filename;
-        }
-    }
-
-
-    private String saveToFile(byte[] data, String ext) {
-        String uploadDir = imageUploadDir();
-        try {
-            Path dir = Paths.get(uploadDir.trim());
-            Files.createDirectories(dir);
-            String filename = UUID.randomUUID().toString().replace("-", "") + "." + ext;
-            Path file = dir.resolve(filename);
-            try (OutputStream out = Files.newOutputStream(file)) {
-                out.write(data);
-            }
-            return filename;
-        } catch (IOException e) {
-            log.error("Failed to write image file to {}: {}", uploadDir, e.getMessage());
-            return null;
-        }
-    }
-
     public byte[] readFile(String filename) {
-        String uploadDir = imageUploadDir();
-        Path file = Paths.get(uploadDir.trim()).resolve(filename).normalize();
-        if (!file.startsWith(Paths.get(uploadDir.trim()).normalize())) {
+        Path uploadDir = imageUploadDir();
+        Path file = uploadDir.resolve(filename).normalize();
+        if (!file.startsWith(uploadDir)) {
             throw new BusinessException(400, "Invalid filename");
         }
         try {
@@ -223,8 +139,16 @@ public class GeneratedImageService {
         return PageView.from(result, GeneratedImageView::from);
     }
 
-    private String imageUploadDir() {
-        return System.getProperty("website.image.upload-dir", "uploads/images");
+    private Path imageUploadDir() {
+        String uploadDir = System.getProperty("website.image.upload-dir", configuredImageUploadDir);
+        if (uploadDir == null || uploadDir.trim().isEmpty()) {
+            uploadDir = "uploads/images";
+        }
+        Path resolved = Paths.get(uploadDir.trim());
+        if (!resolved.isAbsolute() && sharedStorageDir != null && !sharedStorageDir.trim().isEmpty()) {
+            resolved = Paths.get(sharedStorageDir.trim()).resolve(resolved);
+        }
+        return resolved.toAbsolutePath().normalize();
     }
 
     @Transactional

@@ -1,5 +1,6 @@
 package com.example.website.service.content;
 
+import com.example.website.common.BusinessException;
 import com.example.website.config.OkHttpConfig;
 import com.example.website.dto.ImageGenerateRequest;
 import com.example.website.dto.ImageGenerationsResponse;
@@ -13,9 +14,19 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import javax.imageio.ImageIO;
+import java.awt.Color;
+import java.awt.Font;
+import java.awt.FontMetrics;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -34,6 +45,7 @@ public class ArticleVisualService {
 
     private static final Pattern H2 = Pattern.compile("(?m)^##\\s+(.+?)\\s*$");
     private static final int MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+    private static final Path CONTENT_ASSET_DIR = Paths.get("uploads", "content-assets");
 
     private final ImageService imageService;
     private final GeneratedImageService generatedImageService;
@@ -134,26 +146,133 @@ public class ArticleVisualService {
             request.setN(1);
             request.setSize("1200x675");
             ImageGenerationsResponse response = imageService.generate(request);
-            if (response == null || response.getData() == null) {
-                return null;
-            }
-            for (ImageGenerationsResponse.ImageDataItem item : response.getData()) {
-                String reference = item.getUrl();
-                if (!hasText(reference) && hasText(item.getB64Json())) {
-                    reference = "data:image/png;base64," + item.getB64Json();
-                }
-                if (!hasText(reference)) {
-                    continue;
-                }
-                String persisted = generatedImageService.persistImageReference(reference);
-                if (hasText(persisted)) {
-                    return persisted;
+            if (response.getData() != null) {
+                for (ImageGenerationsResponse.ImageDataItem item : response.getData()) {
+                    if (hasText(item.getUrl())) {
+                        return generatedImageService.persistImageReference(item.getUrl());
+                    }
                 }
             }
         } catch (Exception ignored) {
             return null;
         }
         return null;
+    }
+
+    public byte[] readCoverBytes(String coverImageUrl) {
+        String url = ContentTextUtils.trimToNull(coverImageUrl);
+        if (url == null) {
+            return null;
+        }
+        try {
+            if (url.startsWith("/api/v1/content/assets/")) {
+                return readLocalFile(CONTENT_ASSET_DIR, url.substring("/api/v1/content/assets/".length()));
+            }
+            if (url.startsWith("/api/v1/image/file/")) {
+                return generatedImageService.readFile(url.substring("/api/v1/image/file/".length()));
+            }
+            if (url.startsWith("http://") || url.startsWith("https://")) {
+                Request request = new Request.Builder().url(url).get().build();
+                try (Response response = okHttpClient.newCall(request).execute()) {
+                    if (!response.isSuccessful() || response.body() == null) {
+                        throw new BusinessException(502, "下载文章封面失败：HTTP " + response.code());
+                    }
+                    return response.body().bytes();
+                }
+            }
+            return null;
+        } catch (BusinessException e) {
+            throw e;
+        } catch (IOException e) {
+            throw new BusinessException(500, "读取文章封面失败：" + e.getMessage());
+        }
+    }
+
+    public String coverFilename(String coverImageUrl) {
+        String value = defaultText(coverImageUrl, "cover.png");
+        int slash = value.lastIndexOf('/');
+        String filename = slash >= 0 ? value.substring(slash + 1) : value;
+        int query = filename.indexOf('?');
+        if (query >= 0) {
+            filename = filename.substring(0, query);
+        }
+        if (!hasText(filename)) {
+            return "cover.jpg";
+        }
+        return filename.contains(".") ? filename : filename + ".jpg";
+    }
+
+    public byte[] generateDefaultCoverBytes(String title, String category) {
+        int width = 900;
+        int height = 500;
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = image.createGraphics();
+        try {
+            graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            graphics.setColor(new Color(248, 250, 252));
+            graphics.fillRect(0, 0, width, height);
+            graphics.setColor(new Color(22, 101, 52));
+            graphics.fillRect(0, 0, 18, height);
+            graphics.setColor(new Color(15, 23, 42));
+            graphics.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 54));
+            drawWrappedText(graphics, defaultText(title, "早一步信息差"), 72, 130, 760, 68, 3);
+            graphics.setColor(new Color(71, 85, 105));
+            graphics.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 28));
+            drawWrappedText(graphics, defaultText(category, "热点解读"), 74, 360, 760, 38, 1);
+            graphics.setColor(new Color(22, 101, 52));
+            graphics.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 30));
+            graphics.drawString("早一步信息差", 72, 430);
+        } finally {
+            graphics.dispose();
+        }
+        try (ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            ImageIO.write(image, "png", output);
+            return output.toByteArray();
+        } catch (IOException e) {
+            throw new BusinessException(500, "生成默认微信封面失败：" + e.getMessage());
+        }
+    }
+
+    private byte[] readLocalFile(Path baseDir, String filename) throws IOException {
+        if (filename == null || !filename.matches("^[A-Za-z0-9._-]+$")) {
+            throw new BusinessException(400, "文章封面文件名不合法");
+        }
+        Path base = baseDir.normalize();
+        Path file = base.resolve(filename).normalize();
+        if (!file.startsWith(base) || !Files.exists(file)) {
+            throw new BusinessException(404, "文章封面文件不存在");
+        }
+        return Files.readAllBytes(file);
+    }
+
+    private void drawWrappedText(Graphics2D graphics,
+                                 String text,
+                                 int x,
+                                 int y,
+                                 int maxWidth,
+                                 int lineHeight,
+                                 int maxLines) {
+        FontMetrics metrics = graphics.getFontMetrics();
+        String normalized = defaultText(text, "").replaceAll("\\s+", " ");
+        StringBuilder line = new StringBuilder();
+        int lines = 0;
+        for (int i = 0; i < normalized.length(); i++) {
+            char character = normalized.charAt(i);
+            String candidate = line.toString() + character;
+            if (metrics.stringWidth(candidate) > maxWidth && line.length() > 0) {
+                lines++;
+                graphics.drawString(line.toString(), x, y + (lines - 1) * lineHeight);
+                if (lines >= maxLines) {
+                    return;
+                }
+                line.setLength(0);
+            }
+            line.append(character);
+        }
+        if (line.length() > 0 && lines < maxLines) {
+            graphics.drawString(line.toString(), x, y + lines * lineHeight);
+        }
     }
 
     private ArticleInlineImage findOpenImage(String slotId,
@@ -192,6 +311,24 @@ public class ArticleVisualService {
         if (info == null || info.width < 480 || info.height < 270) {
             return null;
         }
+        String persistedUrl = sourceUrl;
+        if (sourceUrl.startsWith("http://") || sourceUrl.startsWith("https://")
+                || sourceUrl.startsWith("data:image/")) {
+            try {
+                persistedUrl = generatedImageService.persistImageReference(sourceUrl);
+            } catch (Exception ignored) {
+                return null;
+            }
+            if (!hasText(persistedUrl)) {
+                return null;
+            }
+            if (!persistedUrl.equals(sourceUrl)) {
+                info = inspect(persistedUrl, null);
+                if (info == null || info.width < 480 || info.height < 270) {
+                    return null;
+                }
+            }
+        }
         if ("open_image".equals(sourceType)
                 && (!hasText(license) || !hasText(attribution) || !hasText(sourcePageUrl))) {
             return null;
@@ -203,7 +340,7 @@ public class ArticleVisualService {
                 .prompt(prompt)
                 .alt(section + "配图")
                 .sourceType(sourceType)
-                .sourceUrl(sourceUrl)
+                .sourceUrl(persistedUrl)
                 .sourcePageUrl(sourcePageUrl)
                 .author(author)
                 .license(license)

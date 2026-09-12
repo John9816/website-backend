@@ -2,6 +2,7 @@ package com.example.website.service.music;
 
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.HttpUrl;
+import okhttp3.Call;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -41,7 +42,9 @@ public class PlayUrlVerifier {
                 .get()
                 .build();
 
-        try (Response resp = probeClient.newCall(req).execute()) {
+        Call call = probeClient.newCall(req);
+        MusicRequestBudget.constrain(call, 5, TimeUnit.SECONDS);
+        try (Response resp = call.execute()) {
             int status = resp.code();
             if (status == 200 || status == 206) {
                 return true;

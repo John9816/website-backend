@@ -12,6 +12,7 @@ import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
@@ -19,10 +20,14 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.io.IOException;
 
+import okio.Timeout;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -34,6 +39,11 @@ class QqTextFallbackClientTests {
 
     @Mock
     private Call call;
+
+    @BeforeEach
+    void setUp() {
+        when(call.timeout()).thenReturn(new Timeout());
+    }
 
     @Test
     void fetchSongUrlBuildsKeywordAndParsesTopLevelUrlAndLyric() throws IOException {
@@ -91,6 +101,22 @@ class QqTextFallbackClientTests {
         assertEquals("https://example.com/fallback.flac", info.getPlayUrl());
         assertEquals("flac", info.getActualQuality());
         assertEquals("[00:01.00]line-two", info.getLyric().getLineLyrics());
+    }
+
+    @Test
+    void networkFailureIsNegativeCached() throws IOException {
+        QqTextFallbackClient client = new QqTextFallbackClient(okHttpClient, new ObjectMapper());
+        SongSearchItem meta = song("track-three", "artist-three");
+
+        when(okHttpClient.newCall(any(Request.class))).thenReturn(call);
+        when(call.execute()).thenThrow(new IOException("offline"));
+
+        assertThrows(RuntimeException.class,
+                () -> client.fetchSongUrl("song-mid", MusicQuality.K128, meta));
+        assertThrows(RuntimeException.class,
+                () -> client.fetchSongUrl("song-mid", MusicQuality.K128, meta));
+
+        verify(okHttpClient, times(1)).newCall(any(Request.class));
     }
 
     private SongSearchItem song(String name, String artist) {

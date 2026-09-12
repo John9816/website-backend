@@ -49,8 +49,12 @@ public class SecurityConfig {
                     resp.setStatus(401);
                     resp.setContentType(MediaType.APPLICATION_JSON_VALUE);
                     resp.setCharacterEncoding("UTF-8");
+                    String message = req.getRequestURI().startsWith("/api/v1/music/")
+                            || req.getRequestURI().startsWith("/api/v1/videos/")
+                            ? "需要登录才能播放"
+                            : "Unauthorized";
                     new ObjectMapper().writeValue(resp.getWriter(),
-                            ApiResponse.error(401, "Unauthorized"));
+                            ApiResponse.error(401, message));
                 })
                 .accessDeniedHandler((req, resp, ex) -> {
                     resp.setStatus(403);
@@ -63,15 +67,19 @@ public class SecurityConfig {
                 .authorizeRequests()
                 .antMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/health").permitAll()
+                .antMatchers(HttpMethod.GET, "/updates/**").permitAll()
                 .antMatchers("/api/auth/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/v1/image/file/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/v1/user/avatar/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/v1/kb/assets/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/v1/content/assets/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/public/**").permitAll()
+                .antMatchers("/api/v1/music/**").authenticated()
+                .antMatchers("/api/v1/videos/**").authenticated()
+                .antMatchers("/api/v1/books/**").authenticated()
                 .antMatchers("/api/admin/**").hasRole(ROLE_ADMIN)
                 .antMatchers("/api/user/**").authenticated()
-                .anyRequest().permitAll()
+                .anyRequest().denyAll()
                 .and()
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
 

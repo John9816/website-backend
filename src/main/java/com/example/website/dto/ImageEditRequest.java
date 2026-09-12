@@ -6,6 +6,7 @@ import lombok.Data;
 public class ImageEditRequest {
 
     private String prompt;
+    private String model;
     private Integer n;
     private String size;
     private byte[] imageBytes;

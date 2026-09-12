@@ -12,6 +12,16 @@ spring:
         dialect: org.hibernate.dialect.H2Dialect
 
 app:
+  storage:
+    remote-avatar-enabled: false
+    remote-kb-enabled: false
+  music:
+    chksz:
+      enabled: false
+      api-key:
+  video-sources:
+    ncat21-base-url: https://www.ncat21.com
+    cache-minutes: 1
   jwt:
     secret: Y2hhbmdlLXRoaXMtdG8tYS1zdHJvbmctc2VjcmV0LWtleS1hdC1sZWFzdC0zMi1ieXRlcw==
     expire-minutes: 120
@@ -21,6 +31,9 @@ app:
   admin:
     default-username: admin
     default-password: admin123
+  registration:
+    email-verification:
+      required: false
 
 logging:
   level:

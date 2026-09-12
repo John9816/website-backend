@@ -3,6 +3,7 @@ package com.example.website.service.music;
 import com.example.website.common.BusinessException;
 import com.example.website.common.MusicBusinessException;
 import com.example.website.common.MusicErrorCode;
+import com.example.website.config.AppProperties;
 import com.example.website.config.OkHttpConfig;
 import com.example.website.dto.PageView;
 import com.example.website.dto.music.MusicSource;
@@ -33,6 +34,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.IOException;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -61,6 +63,7 @@ public class UserPlaylistService {
     @Qualifier(OkHttpConfig.CLIENT_QUICK)
     private final OkHttpClient okHttpClient;
     private final TransactionTemplate transactionTemplate;
+    private final AppProperties appProperties;
 
     public UserPlaylistView importFromUrl(Long userId, String rawUrl) {
         String url = requireText(rawUrl, "url is required");
@@ -298,12 +301,55 @@ public class UserPlaylistService {
 
     public UserPlaylistDetailView detail(Long userId, Long playlistId, int page, int size) {
         UserPlaylist playlist = requireOwned(userId, playlistId);
+
+        // 自动同步远程歌单（如果需要）
+        playlist = autoSyncIfNeeded(userId, playlist);
+
         Pageable pageable = PageRequest.of(Math.max(page, 0), normalizeSize(size));
         Page<UserPlaylistItem> items = itemRepository.findByPlaylistIdOrderBySortOrderAscIdAsc(playlist.getId(), pageable);
         return new UserPlaylistDetailView(
                 UserPlaylistView.from(playlist),
                 PageView.from(items, UserPlaylistItemView::from)
         );
+    }
+
+    /**
+     * 如果歌单是远程歌单且距离上次更新超过阈值，则自动同步
+     */
+    private UserPlaylist autoSyncIfNeeded(Long userId, UserPlaylist playlist) {
+        // 检查是否启用自动同步
+        if (!appProperties.getPlaylist().getAutoSync().isEnabled()) {
+            return playlist;
+        }
+
+        // 本地歌单不需要同步
+        if (LOCAL_PLAYLIST_SOURCE.equalsIgnoreCase(playlist.getSource())) {
+            return playlist;
+        }
+
+        // 没有source或sourceId的跳过
+        if (trimmedOrNull(playlist.getSource()) == null || trimmedOrNull(playlist.getSourceId()) == null) {
+            return playlist;
+        }
+
+        // 检查是否需要同步（距离上次更新超过配置的时间间隔）
+        int intervalHours = appProperties.getPlaylist().getAutoSync().getIntervalHours();
+        if (playlist.getUpdatedAt() != null &&
+            playlist.getUpdatedAt().isAfter(LocalDateTime.now().minusHours(intervalHours))) {
+            log.debug("歌单 {} 最近已同步（{}小时内），跳过自动同步", playlist.getId(), intervalHours);
+            return playlist;
+        }
+
+        try {
+            log.info("自动同步远程歌单: id={}, source={}, sourceId={}",
+                    playlist.getId(), playlist.getSource(), playlist.getSourceId());
+            syncFromRemote(userId, playlist.getId());
+            // 重新加载以获取更新后的数据
+            return requireOwned(userId, playlist.getId());
+        } catch (Exception e) {
+            log.warn("自动同步歌单 {} 失败，使用缓存数据: {}", playlist.getId(), e.getMessage());
+            return playlist;
+        }
     }
 
     @Transactional

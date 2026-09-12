@@ -22,6 +22,7 @@ public class AppProperties {
     private final BookSources bookSources = new BookSources();
     private final Music music = new Music();
     private final VideoSources videoSources = new VideoSources();
+    private final Playlist playlist = new Playlist();
 
     @Getter
     @Setter
@@ -160,5 +161,20 @@ public class AppProperties {
             private int sortOrder;
             private String defaultSiteKey;
         }
+    }
+
+    @Getter
+    @Setter
+    public static class Playlist {
+        private final AutoSync autoSync = new AutoSync();
+    }
+
+    @Getter
+    @Setter
+    public static class AutoSync {
+        /** 是否启用自动同步（获取歌单详情时） */
+        private boolean enabled = true;
+        /** 同步间隔（小时），距离上次更新超过此时间才会重新同步 */
+        private int intervalHours = 6;
     }
 }

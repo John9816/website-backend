@@ -100,6 +100,13 @@ app:
       enabled: ${CHKSZ_ENABLED:true}
       base-url: ${CHKSZ_BASE_URL:https://api.chksz.com}
       api-key: ${CHKSZ_API_KEY:}
+  playlist:
+    # 自动同步配置
+    auto-sync:
+      # 是否启用自动同步（获取歌单详情时）
+      enabled: ${PLAYLIST_AUTO_SYNC_ENABLED:true}
+      # 同步间隔（小时），距离上次更新超过此时间才会重新同步
+      interval-hours: ${PLAYLIST_AUTO_SYNC_INTERVAL_HOURS:6}
   book-sources:
     pinshuzhai-base-url: ${BOOK_SOURCE_PINSHUZHAI_BASE_URL:https://www.pinshuzhai.com}
     yckceo-book-catalog: ${BOOK_SOURCE_YCKCEO_BOOK_CATALOG:https://www.yckceo.com/yuedu/shuyuan/index.html}

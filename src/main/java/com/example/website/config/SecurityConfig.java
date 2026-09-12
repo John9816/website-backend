@@ -65,6 +65,7 @@ public class SecurityConfig {
                 })
                 .and()
                 .authorizeRequests()
+                // Public endpoints
                 .antMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/health").permitAll()
                 .antMatchers(HttpMethod.GET, "/updates/**").permitAll()
@@ -74,11 +75,20 @@ public class SecurityConfig {
                 .antMatchers(HttpMethod.GET, "/api/v1/kb/assets/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/v1/content/assets/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/public/**").permitAll()
+                .antMatchers(HttpMethod.GET, "/api/nav/**").permitAll()
+                .antMatchers("/actuator/health", "/actuator/info").permitAll()
+                // Authenticated endpoints
                 .antMatchers("/api/v1/music/**").authenticated()
                 .antMatchers("/api/v1/videos/**").authenticated()
                 .antMatchers("/api/v1/books/**").authenticated()
+                .antMatchers(HttpMethod.GET, "/api/v1/image/list").authenticated()
+                .antMatchers(HttpMethod.GET, "/api/v1/kb/**").authenticated()
+                // Admin endpoints
                 .antMatchers("/api/admin/**").hasRole(ROLE_ADMIN)
+                .antMatchers("/actuator/**").hasRole(ROLE_ADMIN)
+                // User endpoints
                 .antMatchers("/api/user/**").authenticated()
+                // Deny all others
                 .anyRequest().denyAll()
                 .and()
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);

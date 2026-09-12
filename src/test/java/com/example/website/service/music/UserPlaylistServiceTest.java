@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class UserPlaylistServiceTest {
 
     private final UserPlaylistService service = new UserPlaylistService(
-            null, null, null, null, null, null, null);
+            null, null, null, null, null, null, null, null);
 
     @Test
     void parsesQqDesktopPlaylistUrl() {

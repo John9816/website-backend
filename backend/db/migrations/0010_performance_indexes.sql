@@ -1,182 +1,124 @@
 -- 性能优化索引创建脚本
--- 版本: 1.0
+-- 版本: 2.0 (精简版，基于实际表结构)
 -- 日期: 2026-09-12
--- 说明: 为核心业务表创建性能索引
 
 USE website;
 
 -- ============================================
 -- 1. 用户表 (users)
 -- ============================================
-
--- 邮箱查询索引
-CREATE INDEX IF NOT EXISTS idx_email ON users(email);
-
--- 用户创建时间索引（用于统计和排序）
-CREATE INDEX IF NOT EXISTS idx_created_at ON users(created_at);
-
--- 签到时间索引（用于签到功能查询）
-CREATE INDEX IF NOT EXISTS idx_last_check_in ON users(last_check_in_date);
+CREATE INDEX IF NOT EXISTS idx_last_login_at ON users(last_login_at);
+CREATE INDEX IF NOT EXISTS idx_role_created ON users(role, created_at DESC);
 
 -- ============================================
--- 2. 导航链接表 (nav_links)
+-- 2. 导航链接表 (nav_link)
 -- ============================================
-
--- 分类+排序组合索引（最常用的查询场景）
-CREATE INDEX IF NOT EXISTS idx_category_order ON nav_links(category_id, display_order);
-
--- URL查询索引（用于去重和查找）
-CREATE INDEX IF NOT EXISTS idx_url ON nav_links(url(255));
-
--- 状态索引（用于筛选活跃链接）
-CREATE INDEX IF NOT EXISTS idx_is_active ON nav_links(is_active);
+CREATE INDEX IF NOT EXISTS idx_category_sort ON nav_link(category_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_user_category ON nav_link(user_id, category_id);
+CREATE INDEX IF NOT EXISTS idx_url ON nav_link(url(255));
+CREATE INDEX IF NOT EXISTS idx_name ON nav_link(name);
 
 -- ============================================
--- 3. 导航分类表 (nav_categories)
+-- 3. 导航分类表 (category)
 -- ============================================
-
--- 父分类+排序组合索引
-CREATE INDEX IF NOT EXISTS idx_parent_order ON nav_categories(parent_id, display_order);
-
--- 分类名称索引
-CREATE INDEX IF NOT EXISTS idx_name ON nav_categories(name);
+CREATE INDEX IF NOT EXISTS idx_user_sort ON category(user_id, sort_order);
 
 -- ============================================
--- 4. 音乐歌曲表 (music_songs)
+-- 4. 音乐播放历史表 (music_play_history)
 -- ============================================
-
--- 提供商+ID+排序组合索引（播放列表查询）
-CREATE INDEX IF NOT EXISTS idx_provider_id_order ON music_songs(provider, provider_song_id, display_order);
-
--- 提供商+ID索引（单曲查询）
-CREATE INDEX IF NOT EXISTS idx_provider_id ON music_songs(provider, provider_song_id);
-
--- 歌曲名+歌手组合索引（搜索场景）
-CREATE INDEX IF NOT EXISTS idx_name_artist ON music_songs(name(100), artist(100));
-
--- 专辑索引
-CREATE INDEX IF NOT EXISTS idx_album ON music_songs(album(100));
+CREATE INDEX IF NOT EXISTS idx_user_played ON music_play_history(user_id, played_at DESC);
+CREATE INDEX IF NOT EXISTS idx_source_song_played ON music_play_history(source, song_id, played_at DESC);
+CREATE INDEX IF NOT EXISTS idx_played_at ON music_play_history(played_at DESC);
 
 -- ============================================
--- 5. 音乐播放列表表 (music_playlists)
+-- 5. 音乐收藏表 (music_favorite)
 -- ============================================
-
--- 提供商+类型组合索引
-CREATE INDEX IF NOT EXISTS idx_provider_type ON music_playlists(provider, playlist_type);
-
--- 提供商+ID索引（单个播放列表查询）
-CREATE INDEX IF NOT EXISTS idx_provider_id ON music_playlists(provider, provider_playlist_id);
-
--- 播放列表名称索引
-CREATE INDEX IF NOT EXISTS idx_name ON music_playlists(name(100));
+CREATE INDEX IF NOT EXISTS idx_user_song ON music_favorite(user_id, song_id, source);
+CREATE INDEX IF NOT EXISTS idx_user_created ON music_favorite(user_id, created_at DESC);
 
 -- ============================================
--- 6. 音乐榜单表 (music_charts)
+-- 6. 用户播放列表表 (user_playlist)
 -- ============================================
-
--- 提供商+类型组合索引
-CREATE INDEX IF NOT EXISTS idx_provider_type ON music_charts(provider, chart_type);
-
--- 提供商+ID索引
-CREATE INDEX IF NOT EXISTS idx_provider_id ON music_charts(provider, provider_chart_id);
+CREATE INDEX IF NOT EXISTS idx_user_created ON user_playlist(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_source ON user_playlist(source);
 
 -- ============================================
--- 7. 用户播放记录表 (user_music_play_records)
+-- 7. 用户播放列表项表 (user_playlist_item)
 -- ============================================
-
--- 用户+歌曲组合索引（查询用户是否播放过某首歌）
-CREATE INDEX IF NOT EXISTS idx_user_song ON user_music_play_records(user_id, song_id);
-
--- 用户+创建时间组合索引（用户播放历史查询）
-CREATE INDEX IF NOT EXISTS idx_user_created ON user_music_play_records(user_id, created_at DESC);
-
--- 歌曲+创建时间组合索引（歌曲热度统计）
-CREATE INDEX IF NOT EXISTS idx_song_created ON user_music_play_records(song_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_playlist_sort ON user_playlist_item(playlist_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_playlist_song ON user_playlist_item(playlist_id, song_id, source);
 
 -- ============================================
--- 8. 用户音乐提供商表 (user_music_providers)
+-- 8. 用户书源表 (user_book_source)
 -- ============================================
-
--- 用户+提供商组合索引（查询用户的提供商配置）
-CREATE INDEX IF NOT EXISTS idx_user_provider ON user_music_providers(user_id, provider);
-
--- ============================================
--- 9. 用户书源表 (user_book_sources)
--- ============================================
-
--- 用户+书源组合索引
-CREATE INDEX IF NOT EXISTS idx_user_source ON user_book_sources(user_id, source_id);
+CREATE INDEX IF NOT EXISTS idx_user_type ON user_book_source(user_id, source_type);
+CREATE INDEX IF NOT EXISTS idx_source_name ON user_book_source(source_name);
+CREATE INDEX IF NOT EXISTS idx_status ON user_book_source(status, enabled);
 
 -- ============================================
--- 10. 图片生成任务表 (image_generation_tasks)
+-- 9. 图片生成任务表 (image_generation_task)
 -- ============================================
-
--- 用户+状态+创建时间组合索引（用户任务列表查询）
-CREATE INDEX IF NOT EXISTS idx_user_status_created ON image_generation_tasks(user_id, status, created_at DESC);
-
--- 状态+创建时间索引（任务队列查询）
-CREATE INDEX IF NOT EXISTS idx_status_created ON image_generation_tasks(status, created_at);
-
--- 提示词索引（搜索功能）
-CREATE INDEX IF NOT EXISTS idx_prompt ON image_generation_tasks(prompt(100));
+CREATE INDEX IF NOT EXISTS idx_user_status_created ON image_generation_task(user_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_status_created ON image_generation_task(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_completed ON image_generation_task(completed_at DESC);
 
 -- ============================================
--- 11. 知识库条目表 (kb_entries)
+-- 10. 生成的图片表 (generated_image)
 -- ============================================
-
--- 用户+创建时间索引（用户知识库列表）
-CREATE INDEX IF NOT EXISTS idx_user_created ON kb_entries(user_id, created_at DESC);
-
--- 用户+分类组合索引（按分类筛选）
-CREATE INDEX IF NOT EXISTS idx_user_category ON kb_entries(user_id, category);
-
--- 标题索引（搜索功能）
-CREATE INDEX IF NOT EXISTS idx_title ON kb_entries(title(100));
-
--- 标签索引（按标签筛选）
-CREATE INDEX IF NOT EXISTS idx_tags ON kb_entries(tags(100));
+CREATE INDEX IF NOT EXISTS idx_user_created ON generated_image(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_prompt ON generated_image(prompt(100));
+CREATE INDEX IF NOT EXISTS idx_shared ON generated_image(is_shared, created_at DESC);
 
 -- ============================================
--- 12. 内容文章表 (content_articles)
+-- 11. 知识库空间表 (kb_space)
 -- ============================================
-
--- 用户+状态+发布时间组合索引（用户文章列表）
-CREATE INDEX IF NOT EXISTS idx_user_status_published ON content_articles(user_id, status, published_at DESC);
-
--- 状态+发布时间索引（公开文章列表）
-CREATE INDEX IF NOT EXISTS idx_status_published ON content_articles(status, published_at DESC);
-
--- 标题索引（搜索功能）
-CREATE INDEX IF NOT EXISTS idx_title ON content_articles(title(100));
-
--- Slug索引（URL访问）
-CREATE INDEX IF NOT EXISTS idx_slug ON content_articles(slug(100));
-
--- 分类索引（按分类筛选）
-CREATE INDEX IF NOT EXISTS idx_category ON content_articles(category);
-
--- 自动化配置索引（自动化任务查询）
-CREATE INDEX IF NOT EXISTS idx_automation_config ON content_articles(automation_config_id);
+CREATE INDEX IF NOT EXISTS idx_user_created ON kb_space(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_name ON kb_space(name);
 
 -- ============================================
--- 索引创建完成统计
+-- 12. 知识库文档表 (kb_doc)
 -- ============================================
+CREATE INDEX IF NOT EXISTS idx_space_status_updated ON kb_doc(space_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_status_created ON kb_doc(user_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_parent_sort ON kb_doc(parent_id, sort_order);
 
-SELECT
-    '✅ 索引创建完成！' AS status,
-    COUNT(*) AS total_indexes,
-    GROUP_CONCAT(DISTINCT TABLE_NAME) AS tables_optimized
-FROM information_schema.STATISTICS
-WHERE TABLE_SCHEMA = 'website'
-  AND INDEX_NAME LIKE 'idx_%';
+-- ============================================
+-- 13. 内容文章表 (content_article)
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_user_status_created ON content_article(user_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_status_created ON content_article(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_title ON content_article(title(100));
+CREATE INDEX IF NOT EXISTS idx_category ON content_article(category);
+CREATE INDEX IF NOT EXISTS idx_quality ON content_article(quality_score DESC);
 
--- 显示每个表的索引数量
+-- ============================================
+-- 14. AI对话表 (ai_conversation)
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_user_last_message ON ai_conversation(user_id, last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_title ON ai_conversation(title);
+
+-- ============================================
+-- 15. AI消息表 (ai_chat_message)
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_conversation_created ON ai_chat_message(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_role ON ai_chat_message(role, created_at);
+
+-- ============================================
+-- 16. 用户签到表 (user_check_in)
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_user_date ON user_check_in(user_id, check_in_date DESC);
+CREATE INDEX IF NOT EXISTS idx_date ON user_check_in(check_in_date DESC);
+
+-- ============================================
+-- 统计信息
+-- ============================================
+SELECT '✅ 索引创建完成！' AS status;
+
 SELECT
     TABLE_NAME,
-    COUNT(*) AS index_count,
-    GROUP_CONCAT(INDEX_NAME) AS indexes
+    COUNT(*) AS index_count
 FROM information_schema.STATISTICS
 WHERE TABLE_SCHEMA = 'website'
   AND INDEX_NAME LIKE 'idx_%'
 GROUP BY TABLE_NAME
-ORDER BY TABLE_NAME;
+ORDER BY index_count DESC;

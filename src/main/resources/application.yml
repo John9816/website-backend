@@ -168,6 +168,7 @@ logging:
     com.zaxxer.hikari: WARN
     org.hibernate.SQL: WARN
     org.hibernate.type.descriptor.sql.BasicBinder: WARN
+    org.springframework.security: DEBUG
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
 
@@ -175,13 +176,15 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: "*"
       base-path: /actuator
   endpoint:
     health:
-      show-details: when-authorized
+      show-details: always
   metrics:
     export:
       simple:
         enabled: true
+    tags:
+      application: ${spring.application.name}
 

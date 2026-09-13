@@ -49,6 +49,15 @@ public class KbSpace {
     @Column(name = "doc_count", nullable = false)
     private Integer docCount = 0;
 
+    @Column(name = "config_json", columnDefinition = "TEXT")
+    private String configJson;
+
+    @Column(name = "is_default")
+    private Boolean isDefault = false;
+
+    @Column(name = "document_count")
+    private Integer documentCount = 0;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

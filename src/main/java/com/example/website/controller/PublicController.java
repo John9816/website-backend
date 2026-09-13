@@ -1,6 +1,7 @@
 package com.example.website.controller;
 
 import com.example.website.common.ApiResponse;
+import com.example.website.config.PerformanceMetrics;
 import com.example.website.dto.CategoryView;
 import com.example.website.dto.LinkView;
 import com.example.website.service.CategoryService;
@@ -20,6 +21,7 @@ public class PublicController {
     private final CategoryService categoryService;
     private final LinkService linkService;
     private final UserScopeService userScopeService;
+    private final PerformanceMetrics performanceMetrics;
 
     @GetMapping("/categories")
     public ApiResponse<List<CategoryView>> categories(HttpServletRequest request) {
@@ -38,5 +40,10 @@ public class PublicController {
         return ApiResponse.ok(categoryId == null
                 ? linkService.listAll(userId)
                 : linkService.listByCategory(userId, categoryId));
+    }
+
+    @GetMapping("/metrics")
+    public ApiResponse<PerformanceMetrics.Snapshot> metrics() {
+        return ApiResponse.ok(performanceMetrics.snapshot());
     }
 }

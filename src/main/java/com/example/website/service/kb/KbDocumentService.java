@@ -339,7 +339,7 @@ public class KbDocumentService {
 
     private String markdownToHtml(String markdown) {
         try {
-            var document = markdownParser.parse(markdown);
+            org.commonmark.node.Node document = markdownParser.parse(markdown);
             return htmlRenderer.render(document);
         } catch (Exception e) {
             log.error("Markdown转换HTML失败", e);

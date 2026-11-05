@@ -147,7 +147,7 @@ cp "$SCRIPT_DIR/frontend.env.example" "$PAYLOAD_DIR/ops/frontend.env.example"
 ARTIFACT_DIR="$BACKEND_ROOT/target/releases"
 mkdir -p "$ARTIFACT_DIR"
 ARCHIVE="$ARTIFACT_DIR/website-release-$RELEASE_ID.tar.gz"
-tar -C "$STAGE_DIR" -czf "$ARCHIVE" "$RELEASE_ID"
+tar --no-xattrs -C "$STAGE_DIR" -czf "$ARCHIVE" "$RELEASE_ID"
 echo "==> Archive: $ARCHIVE"
 
 if [ "$BUILD_ONLY" = "true" ]; then

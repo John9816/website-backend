@@ -24,7 +24,7 @@ public class SysConfigService {
     private static final Set<String> INTERNAL_CONFIG_KEYS = new java.util.HashSet<>(java.util.Arrays.asList(
             "image.upload.dir", "image.persist.remote-url-mode",
             "music.tunefree.udid", "music.tunefree.token", "music.tunefree.token_updated_at",
-            "music.tunefree.token_status", "music.play.resolverOrder", "music.play.crossSourceOrder",
+            "music.tunefree.token_status",
             "migration.legacyNav.done", "content.autopilot.dedupDays",
             "content.evidence.maxQueries", "content.evidence.perQuery",
             "content.review.minScore", "content.review.maxRevisions",
@@ -66,7 +66,7 @@ public class SysConfigService {
         }
         SysConfig c = new SysConfig();
         c.setConfigKey(req.getConfigKey());
-        c.setConfigValue(req.getConfigValue());
+        c.setConfigValue(requireCreateValue(req));
         c.setDescription(req.getDescription());
         return SysConfigView.from(configRepository.save(c));
     }
@@ -80,10 +80,26 @@ public class SysConfigService {
                 && configRepository.existsByConfigKey(req.getConfigKey())) {
             throw new BusinessException(409, "configKey already exists: " + req.getConfigKey());
         }
+        String previousKey = c.getConfigKey();
         c.setConfigKey(req.getConfigKey());
-        c.setConfigValue(req.getConfigValue());
+        if (!Boolean.TRUE.equals(req.getPreserveValue())) {
+            c.setConfigValue(req.getConfigValue() == null ? "" : req.getConfigValue());
+        } else if (!SysConfigView.isSensitiveKey(previousKey)
+                || !SysConfigView.isSensitiveKey(req.getConfigKey())) {
+            throw new BusinessException(400, "preserveValue is only valid for an existing sensitive config");
+        }
         c.setDescription(req.getDescription());
         return SysConfigView.from(configRepository.save(c));
+    }
+
+    private String requireCreateValue(SysConfigRequest req) {
+        if (Boolean.TRUE.equals(req.getPreserveValue())) {
+            throw new BusinessException(400, "preserveValue cannot be used when creating a config");
+        }
+        if (req.getConfigValue() == null) {
+            throw new BusinessException(400, "configValue is required");
+        }
+        return req.getConfigValue();
     }
 
     @Transactional

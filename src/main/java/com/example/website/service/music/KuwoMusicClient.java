@@ -161,7 +161,9 @@ public class KuwoMusicClient {
                 .build();
 
         String raw;
-        try (Response resp = okHttpClient.newCall(req).execute()) {
+        Call call = okHttpClient.newCall(req);
+        MusicRequestBudget.constrainToRemaining(call);
+        try (Response resp = call.execute()) {
             ResponseBody rb = resp.body();
             raw = rb == null ? "" : rb.string();
             if (!resp.isSuccessful()) {
@@ -196,7 +198,9 @@ public class KuwoMusicClient {
                 .addQueryParameter("encoding", "utf8").addQueryParameter("rformat", "json")
                 .addQueryParameter("vipver", "MUSIC_9.0.5.0_W1").addQueryParameter("newver", "1").build();
         Request req = new Request.Builder().url(url).header("Accept", "application/json").header("User-Agent", "Mozilla/5.0").get().build();
-        try (Response resp = okHttpClient.newCall(req).execute()) {
+        Call call = okHttpClient.newCall(req);
+        MusicRequestBudget.constrainToRemaining(call);
+        try (Response resp = call.execute()) {
             String raw = resp.body() == null ? "" : resp.body().string();
             if (!resp.isSuccessful()) throw new MusicBusinessException(MusicErrorCode.UPSTREAM_SEARCH_FAILED, "kuwo upstream returned " + resp.code());
             Map<String, Object> json = parseSearchPayload(raw);
@@ -279,7 +283,9 @@ public class KuwoMusicClient {
                 .build();
 
         String raw;
-        try (Response resp = okHttpClient.newCall(req).execute()) {
+        Call call = okHttpClient.newCall(req);
+        MusicRequestBudget.constrainToRemaining(call);
+        try (Response resp = call.execute()) {
             ResponseBody rb = resp.body();
             raw = rb == null ? "" : rb.string();
             if (!resp.isSuccessful()) {
@@ -654,7 +660,9 @@ public class KuwoMusicClient {
 
     private Map<String, Object> callJson(Request req, MusicErrorCode onFail) {
         String raw;
-        try (Response resp = okHttpClient.newCall(req).execute()) {
+        Call call = okHttpClient.newCall(req);
+        MusicRequestBudget.constrainToRemaining(call);
+        try (Response resp = call.execute()) {
             ResponseBody rb = resp.body();
             raw = rb == null ? "" : rb.string();
             if (!resp.isSuccessful()) {
@@ -1027,7 +1035,9 @@ public class KuwoMusicClient {
                 .header("User-Agent", "Mozilla/5.0")
                 .get()
                 .build();
-        try (Response response = okHttpClient.newCall(request).execute()) {
+        Call call = okHttpClient.newCall(request);
+        MusicRequestBudget.constrainToRemaining(call);
+        try (Response response = call.execute()) {
             String raw = response.body() == null ? "" : response.body().string();
             if (!response.isSuccessful()) return;
             Map<String, Object> json = parseSearchPayload(raw);

@@ -155,22 +155,3 @@ public class KbDocumentController {
         return ResponseEntity.ok(documentService.getStatistics(userId, spaceId));
     }
 }
-
-/**
- * 公开访问的文档分享Controller
- */
-@RestController
-@RequestMapping("/api/public/kb")
-@RequiredArgsConstructor
-class KbDocumentPublicController {
-
-    private final KbDocumentService documentService;
-
-    /**
-     * 通过分享token访问文档
-     */
-    @GetMapping("/share/{shareToken}")
-    public ResponseEntity<Map<String, Object>> getSharedDocument(@PathVariable String shareToken) {
-        return ResponseEntity.ok(documentService.getDocumentByShareToken(shareToken));
-    }
-}

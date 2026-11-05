@@ -1,5 +1,7 @@
 # 知识库和内容工厂系统 - 生产级实现
 
+> 本文中的 `deploy-kb-content.sh` 已停用。生产发布与凭据管理请以 `docs/production-release.md` 为准。
+
 ## 🎯 项目概述
 
 本次更新为系统添加了**完整的知识库管理**和**内容工厂自动化**功能，达到生产级别标准。
@@ -169,10 +171,10 @@ scp target/website-*.jar root@8.156.95.93:/opt/website/backend/website.jar
 scp db/migrations/0011_kb_content_enhancements.sql root@8.156.95.93:/tmp/
 
 # 3. 备份数据库
-ssh root@8.156.95.93 'mysqldump -u root -p"wangweijie1314." website > /backup/website_$(date +%Y%m%d_%H%M%S).sql'
+ssh root@8.156.95.93 'mysqldump --defaults-extra-file=/root/.config/website/mysql.cnf website > /backup/website_$(date +%Y%m%d_%H%M%S).sql'
 
 # 4. 执行迁移
-ssh root@8.156.95.93 'mysql -u root -p"wangweijie1314." website < /tmp/0011_kb_content_enhancements.sql'
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website < /tmp/0011_kb_content_enhancements.sql'
 
 # 5. 重启服务
 ssh root@8.156.95.93 'systemctl restart website-api'
@@ -374,7 +376,7 @@ journalctl -u website-api -n 100 --no-pager
 
 **数据库问题:**
 ```bash
-mysql -u root -p'wangweijie1314.' website
+mysql --defaults-extra-file=/root/.config/website/mysql.cnf website
 > SHOW TABLES;
 > SELECT * FROM kb_document LIMIT 1;
 ```

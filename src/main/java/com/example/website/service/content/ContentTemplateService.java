@@ -5,8 +5,6 @@ import com.example.website.repository.ContentTemplateRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.cache.annotation.CacheEvict;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
@@ -28,7 +26,6 @@ public class ContentTemplateService {
      * 创建模板
      */
     @Transactional
-    @CacheEvict(value = "content-templates", allEntries = true)
     public Map<String, Object> createTemplate(Long userId, Map<String, Object> request) {
         ContentTemplate template = new ContentTemplate();
         template.setUserId(userId);
@@ -66,7 +63,6 @@ public class ContentTemplateService {
      * 更新模板
      */
     @Transactional
-    @CacheEvict(value = {"content-templates", "content-template"}, allEntries = true)
     public Map<String, Object> updateTemplate(Long userId, Long templateId, Map<String, Object> request) {
         ContentTemplate template = templateRepository.findByIdAndUserId(templateId, userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "模板不存在"));
@@ -128,7 +124,6 @@ public class ContentTemplateService {
      * 删除模板
      */
     @Transactional
-    @CacheEvict(value = {"content-templates", "content-template"}, allEntries = true)
     public void deleteTemplate(Long userId, Long templateId) {
         ContentTemplate template = templateRepository.findByIdAndUserId(templateId, userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "模板不存在"));
@@ -140,7 +135,6 @@ public class ContentTemplateService {
     /**
      * 获取模板详情
      */
-    @Cacheable(value = "content-template", key = "#userId + ':' + #templateId")
     public Map<String, Object> getTemplate(Long userId, Long templateId) {
         ContentTemplate template = templateRepository.findByIdAndUserId(templateId, userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "模板不存在"));
@@ -151,7 +145,6 @@ public class ContentTemplateService {
     /**
      * 获取用户的模板列表
      */
-    @Cacheable(value = "content-templates", key = "#userId + ':' + #onlyActive + ':' + #pageable.pageNumber")
     public Page<Map<String, Object>> getTemplates(Long userId, Boolean onlyActive, Pageable pageable) {
         Page<ContentTemplate> templates;
         if (onlyActive != null && onlyActive) {
@@ -205,7 +198,6 @@ public class ContentTemplateService {
      * 复制模板
      */
     @Transactional
-    @CacheEvict(value = "content-templates", allEntries = true)
     public Map<String, Object> duplicateTemplate(Long userId, Long templateId) {
         ContentTemplate source = templateRepository.findByIdAndUserId(templateId, userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "模板不存在"));

@@ -3,38 +3,50 @@ package com.example.website.service.music;
 import org.springframework.stereotype.Component;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.example.website.config.PerformanceMetrics;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 
 /**
  * In-memory TTL cache for music endpoints. Keys are opaque strings built by
  * callers (e.g. "play:qq:12345:flac"); values are whatever the caller wants.
  *
- * <p>No eviction thread — entries are only removed on read-after-expiry.
- * Acceptable at this project's traffic level; swap to Caffeine later if the
- * map grows unbounded in practice.
+ * <p>Entries carry their own TTL while Caffeine bounds the number of retained
+ * keys. Expired entries are also removed lazily when read.
  */
 @Component
 public class MusicCache {
 
-    private final Map<String, Entry> store = new ConcurrentHashMap<>();
+    private static final int MAX_ENTRIES = 10_000;
+
+    private final Cache<String, Entry> store = Caffeine.newBuilder()
+            .maximumSize(MAX_ENTRIES)
+            .expireAfterAccess(24, TimeUnit.HOURS)
+            .build();
     private final PerformanceMetrics metrics;
+    private final LongSupplier clock;
 
     public MusicCache() {
-        this(new PerformanceMetrics());
+        this(new PerformanceMetrics(), System::currentTimeMillis);
     }
 
     @Autowired
     public MusicCache(PerformanceMetrics metrics) {
+        this(metrics, System::currentTimeMillis);
+    }
+
+    MusicCache(PerformanceMetrics metrics, LongSupplier clock) {
         this.metrics = metrics;
+        this.clock = clock;
     }
 
     public <T> T get(String key, Class<T> type) {
-        Entry e = store.get(key);
+        Entry e = store.getIfPresent(key);
         if (e == null) { metrics.recordCacheMiss("music"); return null; }
-        if (e.expiresAtMs < System.currentTimeMillis()) {
-            store.remove(key, e);
+        if (e.expiresAtMs < clock.getAsLong()) {
+            store.asMap().remove(key, e);
             metrics.recordCacheMiss("music");
             return null;
         }
@@ -46,15 +58,15 @@ public class MusicCache {
 
     public void put(String key, Object value, long ttlSeconds) {
         if (value == null || ttlSeconds <= 0) return;
-        store.put(key, new Entry(value, System.currentTimeMillis() + ttlSeconds * 1000L));
+        store.put(key, new Entry(value, clock.getAsLong() + ttlSeconds * 1000L));
     }
 
     public void invalidate(String key) {
-        store.remove(key);
+        store.invalidate(key);
     }
 
     public int size() {
-        return store.size();
+        return Math.toIntExact(store.estimatedSize());
     }
 
     private static final class Entry {

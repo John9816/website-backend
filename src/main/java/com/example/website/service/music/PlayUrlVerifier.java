@@ -1,5 +1,7 @@
 package com.example.website.service.music;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.HttpUrl;
 import okhttp3.Call;
@@ -15,7 +17,11 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class PlayUrlVerifier {
 
+    private static final long VERDICT_TTL_SECONDS = 15L;
+    private static final int MAX_VERDICTS = 10_000;
+
     private final OkHttpClient probeClient;
+    private final Cache<String, Boolean> verdicts;
 
     public PlayUrlVerifier(OkHttpClient okHttpClient) {
         this.probeClient = okHttpClient.newBuilder()
@@ -23,16 +29,34 @@ public class PlayUrlVerifier {
                 .readTimeout(10, TimeUnit.SECONDS)
                 .writeTimeout(10, TimeUnit.SECONDS)
                 .build();
+        this.verdicts = Caffeine.newBuilder()
+                .maximumSize(MAX_VERDICTS)
+                .expireAfterWrite(VERDICT_TTL_SECONDS, TimeUnit.SECONDS)
+                .build();
     }
 
     public boolean isPlayable(String rawUrl) {
         if (rawUrl == null || rawUrl.trim().isEmpty()) return false;
 
-        HttpUrl url = HttpUrl.parse(rawUrl.trim());
+        String normalized = rawUrl.trim();
+        HttpUrl url = HttpUrl.parse(normalized);
         if (url == null) {
             log.info("Play URL probe skipped invalid url");
             return false;
         }
+
+        Boolean cached = verdicts.getIfPresent(normalized);
+        if (cached != null) {
+            log.debug("Play URL probe verdict cache hit target={} playable={}", describe(url), cached);
+            return cached;
+        }
+
+        boolean playable = probe(url);
+        verdicts.put(normalized, playable);
+        return playable;
+    }
+
+    private boolean probe(HttpUrl url) {
 
         Request req = new Request.Builder()
                 .url(url)

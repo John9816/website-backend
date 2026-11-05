@@ -21,8 +21,16 @@ public class AppProperties {
     private final Registration registration = new Registration();
     private final BookSources bookSources = new BookSources();
     private final Music music = new Music();
+    private final Membership membership = new Membership();
     private final VideoSources videoSources = new VideoSources();
     private final Playlist playlist = new Playlist();
+
+    @Getter
+    @Setter
+    public static class Membership {
+        /** Give every registered account lifetime access without changing historical records. */
+        private boolean freeLifetimeEnabled = true;
+    }
 
     @Getter
     @Setter

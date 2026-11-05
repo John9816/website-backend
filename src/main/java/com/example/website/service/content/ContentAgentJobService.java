@@ -1,5 +1,6 @@
 package com.example.website.service.content;
 
+import com.example.website.common.BusinessException;
 import com.example.website.dto.content.ContentAgentRunJobView;
 import com.example.website.dto.content.ContentAgentRunRequest;
 import com.example.website.dto.content.ContentAgentRunResult;
@@ -15,9 +16,13 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 @RequiredArgsConstructor
@@ -27,16 +32,18 @@ public class ContentAgentJobService {
 
     private final ContentArticleService contentArticleService;
     private final Map<String, ContentAgentRunJobView> jobs = new ConcurrentHashMap<>();
-    private final ExecutorService executor = Executors.newFixedThreadPool(2, new ThreadFactory() {
-        private int index = 1;
+    private final Map<String, Long> jobOwners = new ConcurrentHashMap<>();
+    private final ExecutorService executor = new ThreadPoolExecutor(
+            2, 2, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(100), new ThreadFactory() {
+        private final AtomicInteger index = new AtomicInteger(1);
 
         @Override
         public Thread newThread(Runnable runnable) {
-            Thread thread = new Thread(runnable, "content-agent-job-" + index++);
+            Thread thread = new Thread(runnable, "content-agent-job-" + index.getAndIncrement());
             thread.setDaemon(true);
             return thread;
         }
-    });
+    }, new ThreadPoolExecutor.AbortPolicy());
 
     public ContentAgentRunJobView start(Long userId, ContentAgentRunRequest request) {
         return startAgent(userId, request);
@@ -46,12 +53,8 @@ public class ContentAgentJobService {
         final String jobId = newJobId("content-agent-");
         ContentAgentRunJobView job = createPendingJob(jobId);
         jobs.put(jobId, job);
-        executor.submit(new Runnable() {
-            @Override
-            public void run() {
-                runAgentJob(userId, request, jobId);
-            }
-        });
+        jobOwners.put(jobId, userId);
+        submit(jobId, () -> runAgentJob(userId, request, jobId));
         return copy(job);
     }
 
@@ -59,16 +62,15 @@ public class ContentAgentJobService {
         final String jobId = newJobId("content-generate-");
         ContentAgentRunJobView job = createPendingJob(jobId);
         jobs.put(jobId, job);
-        executor.submit(new Runnable() {
-            @Override
-            public void run() {
-                runGenerateJob(userId, request, jobId);
-            }
-        });
+        jobOwners.put(jobId, userId);
+        submit(jobId, () -> runGenerateJob(userId, request, jobId));
         return copy(job);
     }
 
-    public ContentAgentRunJobView get(String jobId) {
+    public ContentAgentRunJobView get(Long userId, String jobId) {
+        if (userId == null || jobId == null || !userId.equals(jobOwners.get(jobId))) {
+            return null;
+        }
         ContentAgentRunJobView job = jobs.get(jobId);
         return job == null ? null : copy(job);
     }
@@ -86,6 +88,7 @@ public class ContentAgentJobService {
             job.setAutomation(result.getAutomation());
             job.setTopic(result.getTopic());
             job.setDraft(result.getDraft());
+            requireSuccessfulArticle(result.getArticle());
             job.setStatus(ContentAgentRunJobView.STATUS_SUCCESS);
             job.setStage(ContentAgentRunJobView.STAGE_DONE);
             job.setStageLabel("草稿已就绪");
@@ -117,6 +120,7 @@ public class ContentAgentJobService {
             job.setAutomation(automation);
             job.setTopic(topic);
             job.setDraft(null);
+            requireSuccessfulArticle(article);
             job.setStatus(ContentAgentRunJobView.STATUS_SUCCESS);
             job.setStage(ContentAgentRunJobView.STAGE_DONE);
             job.setStageLabel(article.getErrorMessage() == null ? "草稿已就绪" : "草稿已生成，待改稿后推微信");
@@ -164,6 +168,29 @@ public class ContentAgentJobService {
         );
     }
 
+    private void submit(String jobId, Runnable work) {
+        try {
+            executor.submit(work);
+        } catch (RejectedExecutionException error) {
+            jobs.remove(jobId);
+            jobOwners.remove(jobId);
+            throw new BusinessException(429, "Content automation queue is full; retry later");
+        }
+    }
+
+    private void requireSuccessfulArticle(ContentArticleView article) {
+        if (article == null) {
+            throw new BusinessException(502, "Content pipeline returned no article");
+        }
+        boolean localDraft = article.getWechatMediaId() != null
+                && article.getWechatMediaId().startsWith("local-");
+        if (localDraft || (article.getErrorMessage() != null && !article.getErrorMessage().trim().isEmpty())) {
+            throw new BusinessException(502, article.getErrorMessage() == null
+                    ? "WeChat delivery fell back to a local draft"
+                    : article.getErrorMessage());
+        }
+    }
+
     private String newJobId(String prefix) {
         evictOldJobsIfNeeded();
         return prefix + UUID.randomUUID().toString().replace("-", "");
@@ -193,6 +220,7 @@ public class ContentAgentJobService {
         }
         if (oldestKey != null) {
             jobs.remove(oldestKey);
+            jobOwners.remove(oldestKey);
         }
     }
 

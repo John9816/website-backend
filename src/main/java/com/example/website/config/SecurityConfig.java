@@ -75,14 +75,22 @@ public class SecurityConfig {
                 .antMatchers(HttpMethod.GET, "/api/v1/kb/assets/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/v1/content/assets/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/public/**").permitAll()
-                .antMatchers(HttpMethod.GET, "/api/nav/**").permitAll()
-                .antMatchers("/actuator/**").permitAll()
+                .antMatchers(HttpMethod.GET, "/nav/**").permitAll()
+                .antMatchers(HttpMethod.GET, "/actuator/health", "/actuator/health/**").permitAll()
+                .antMatchers("/actuator/**").hasRole(ROLE_ADMIN)
                 // Authenticated endpoints
+                .antMatchers("/music/**").authenticated()
                 .antMatchers("/api/v1/music/**").authenticated()
+                .antMatchers("/videos/**").authenticated()
                 .antMatchers("/api/v1/videos/**").authenticated()
+                .antMatchers("/books/**").authenticated()
                 .antMatchers("/api/v1/books/**").authenticated()
                 .antMatchers(HttpMethod.GET, "/api/v1/image/list").authenticated()
                 .antMatchers(HttpMethod.GET, "/api/v1/kb/**").authenticated()
+                // Automation can write to the one globally configured official account.
+                .antMatchers("/api/content/automation/**").hasRole(ROLE_ADMIN)
+                // User-scoped content template endpoints.
+                .antMatchers("/api/content/**").authenticated()
                 // Admin endpoints
                 .antMatchers("/api/admin/**").hasRole(ROLE_ADMIN)
                 // User endpoints

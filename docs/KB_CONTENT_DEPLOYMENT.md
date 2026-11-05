@@ -1,5 +1,7 @@
 # 知识库和内容工厂部署指南
 
+> 历史文档。旧的 `deploy-kb-content.sh` 已停用；生产发布请以 `docs/production-release.md` 为准。
+
 ## 📋 部署前准备
 
 ### 1. 检查完成的功能
@@ -58,21 +60,18 @@ website-backend/
 
 ---
 
-## 🚀 部署步骤（方式一：自动脚本）
+## 🚀 部署步骤（方式一：标准发布）
 
 ### 前提条件
-确保已安装 `sshpass`：
+配置 SSH 私钥并在服务器上创建权限为 600 的 MySQL option file，详见 `docs/production-release.md`。
 ```bash
-# macOS
-brew install hudochenkov/sshpass/sshpass
-
-# 或者使用手动方式（方式二）
+chmod 600 ~/.ssh/id_ed25519
 ```
 
 ### 执行部署
 ```bash
 cd /Users/wangweijie/projects/idea/website-backend
-./deploy-kb-content.sh
+./deploy/production/deploy.sh --host <ECS_IP> --identity ~/.ssh/id_ed25519
 ```
 
 脚本会自动完成：
@@ -115,7 +114,7 @@ ssh root@8.156.95.93
 
 # 在ECS上执行
 mkdir -p /backup
-mysqldump -u root -p'wangweijie1314.' website > /backup/website_before_kb_$(date +%Y%m%d_%H%M%S).sql
+mysqldump --defaults-extra-file=/root/.config/website/mysql.cnf website > /backup/website_before_kb_$(date +%Y%m%d_%H%M%S).sql
 
 # 确认备份成功
 ls -lh /backup/website_before_kb_*.sql
@@ -143,10 +142,10 @@ scp db/migrations/0011_kb_content_enhancements.sql root@8.156.95.93:/tmp/
 ssh root@8.156.95.93
 
 # 执行迁移
-mysql -u root -p'wangweijie1314.' website < /tmp/0011_kb_content_enhancements.sql
+mysql --defaults-extra-file=/root/.config/website/mysql.cnf website < /tmp/0011_kb_content_enhancements.sql
 
 # 验证表是否创建成功
-mysql -u root -p'wangweijie1314.' website -e "SHOW TABLES LIKE 'kb_%'; SHOW TABLES LIKE 'content_template%';"
+mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "SHOW TABLES LIKE 'kb_%'; SHOW TABLES LIKE 'content_template%';"
 ```
 
 **预期输出:**
@@ -168,7 +167,7 @@ mysql -u root -p'wangweijie1314.' website -e "SHOW TABLES LIKE 'kb_%'; SHOW TABL
 
 验证默认模板：
 ```bash
-mysql -u root -p'wangweijie1314.' website -e "SELECT id, name, template_type FROM content_template WHERE template_type='SYSTEM';"
+mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "SELECT id, name, template_type FROM content_template WHERE template_type='SYSTEM';"
 ```
 
 **预期输出:**
@@ -345,10 +344,10 @@ journalctl -u website-api -n 200 --no-pager
 
 ```bash
 # 回滚到备份
-mysql -u root -p'wangweijie1314.' website < /backup/website_before_kb_XXXXXX.sql
+mysql --defaults-extra-file=/root/.config/website/mysql.cnf website < /backup/website_before_kb_XXXXXX.sql
 
 # 检查SQL语法
-mysql -u root -p'wangweijie1314.' website < /tmp/0011_kb_content_enhancements.sql
+mysql --defaults-extra-file=/root/.config/website/mysql.cnf website < /tmp/0011_kb_content_enhancements.sql
 ```
 
 ### 问题4: API返回404

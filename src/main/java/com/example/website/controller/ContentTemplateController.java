@@ -1,15 +1,15 @@
 package com.example.website.controller;
 
 import com.example.website.service.content.ContentTemplateService;
+import com.example.website.service.UserScopeService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletRequest;
 import java.util.List;
 import java.util.Map;
 
@@ -19,16 +19,16 @@ import java.util.Map;
 public class ContentTemplateController {
 
     private final ContentTemplateService templateService;
+    private final UserScopeService userScopeService;
 
     /**
      * 创建模板
      */
     @PostMapping
     public ResponseEntity<Map<String, Object>> createTemplate(
-            @AuthenticationPrincipal UserDetails userDetails,
-            @RequestBody Map<String, Object> request) {
-        Long userId = Long.parseLong(userDetails.getUsername());
-        return ResponseEntity.ok(templateService.createTemplate(userId, request));
+            HttpServletRequest request,
+            @RequestBody Map<String, Object> body) {
+        return ResponseEntity.ok(templateService.createTemplate(currentUserId(request), body));
     }
 
     /**
@@ -36,11 +36,10 @@ public class ContentTemplateController {
      */
     @PutMapping("/{templateId}")
     public ResponseEntity<Map<String, Object>> updateTemplate(
-            @AuthenticationPrincipal UserDetails userDetails,
+            HttpServletRequest request,
             @PathVariable Long templateId,
-            @RequestBody Map<String, Object> request) {
-        Long userId = Long.parseLong(userDetails.getUsername());
-        return ResponseEntity.ok(templateService.updateTemplate(userId, templateId, request));
+            @RequestBody Map<String, Object> body) {
+        return ResponseEntity.ok(templateService.updateTemplate(currentUserId(request), templateId, body));
     }
 
     /**
@@ -48,9 +47,9 @@ public class ContentTemplateController {
      */
     @DeleteMapping("/{templateId}")
     public ResponseEntity<Void> deleteTemplate(
-            @AuthenticationPrincipal UserDetails userDetails,
+            HttpServletRequest request,
             @PathVariable Long templateId) {
-        Long userId = Long.parseLong(userDetails.getUsername());
+        Long userId = currentUserId(request);
         templateService.deleteTemplate(userId, templateId);
         return ResponseEntity.noContent().build();
     }
@@ -60,9 +59,9 @@ public class ContentTemplateController {
      */
     @GetMapping("/{templateId}")
     public ResponseEntity<Map<String, Object>> getTemplate(
-            @AuthenticationPrincipal UserDetails userDetails,
+            HttpServletRequest request,
             @PathVariable Long templateId) {
-        Long userId = Long.parseLong(userDetails.getUsername());
+        Long userId = currentUserId(request);
         return ResponseEntity.ok(templateService.getTemplate(userId, templateId));
     }
 
@@ -71,12 +70,12 @@ public class ContentTemplateController {
      */
     @GetMapping
     public ResponseEntity<Page<Map<String, Object>>> getTemplates(
-            @AuthenticationPrincipal UserDetails userDetails,
+            HttpServletRequest request,
             @RequestParam(required = false) Boolean onlyActive,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        Long userId = Long.parseLong(userDetails.getUsername());
-        Pageable pageable = PageRequest.of(page, size);
+        Long userId = currentUserId(request);
+        Pageable pageable = PageRequest.of(Math.max(0, page), boundedSize(size));
         return ResponseEntity.ok(templateService.getTemplates(userId, onlyActive, pageable));
     }
 
@@ -85,9 +84,9 @@ public class ContentTemplateController {
      */
     @GetMapping("/by-category")
     public ResponseEntity<List<Map<String, Object>>> getTemplatesByCategory(
-            @AuthenticationPrincipal UserDetails userDetails,
+            HttpServletRequest request,
             @RequestParam String category) {
-        Long userId = Long.parseLong(userDetails.getUsername());
+        Long userId = currentUserId(request);
         return ResponseEntity.ok(templateService.getTemplatesByCategory(userId, category));
     }
 
@@ -96,12 +95,12 @@ public class ContentTemplateController {
      */
     @GetMapping("/search")
     public ResponseEntity<Page<Map<String, Object>>> searchTemplates(
-            @AuthenticationPrincipal UserDetails userDetails,
+            HttpServletRequest request,
             @RequestParam String keyword,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        Long userId = Long.parseLong(userDetails.getUsername());
-        Pageable pageable = PageRequest.of(page, size);
+        Long userId = currentUserId(request);
+        Pageable pageable = PageRequest.of(Math.max(0, page), boundedSize(size));
         return ResponseEntity.ok(templateService.searchTemplates(userId, keyword, pageable));
     }
 
@@ -110,8 +109,8 @@ public class ContentTemplateController {
      */
     @GetMapping("/categories")
     public ResponseEntity<List<String>> getCategories(
-            @AuthenticationPrincipal UserDetails userDetails) {
-        Long userId = Long.parseLong(userDetails.getUsername());
+            HttpServletRequest request) {
+        Long userId = currentUserId(request);
         return ResponseEntity.ok(templateService.getCategories(userId));
     }
 
@@ -120,9 +119,9 @@ public class ContentTemplateController {
      */
     @PostMapping("/{templateId}/duplicate")
     public ResponseEntity<Map<String, Object>> duplicateTemplate(
-            @AuthenticationPrincipal UserDetails userDetails,
+            HttpServletRequest request,
             @PathVariable Long templateId) {
-        Long userId = Long.parseLong(userDetails.getUsername());
+        Long userId = currentUserId(request);
         return ResponseEntity.ok(templateService.duplicateTemplate(userId, templateId));
     }
 
@@ -131,8 +130,16 @@ public class ContentTemplateController {
      */
     @GetMapping("/statistics")
     public ResponseEntity<Map<String, Object>> getStatistics(
-            @AuthenticationPrincipal UserDetails userDetails) {
-        Long userId = Long.parseLong(userDetails.getUsername());
+            HttpServletRequest request) {
+        Long userId = currentUserId(request);
         return ResponseEntity.ok(templateService.getStatistics(userId));
+    }
+
+    private Long currentUserId(HttpServletRequest request) {
+        return userScopeService.requireAuthenticatedUserId(request);
+    }
+
+    private int boundedSize(int size) {
+        return Math.min(Math.max(size, 1), 100);
     }
 }

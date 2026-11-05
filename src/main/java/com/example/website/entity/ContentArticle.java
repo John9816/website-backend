@@ -31,6 +31,8 @@ public class ContentArticle {
 
     public static final String STATUS_DRAFT = "DRAFT";
     public static final String STATUS_WECHAT_DRAFT = "WECHAT_DRAFT";
+    public static final String STATUS_PUBLISH_SUBMITTED = "PUBLISH_SUBMITTED";
+    public static final String STATUS_PUBLISH_FAILED = "PUBLISH_FAILED";
     public static final String STATUS_PUBLISHED = "PUBLISHED";
 
     @Id

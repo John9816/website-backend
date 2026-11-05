@@ -8,11 +8,11 @@ import com.example.website.dto.music.MusicQuality;
 import com.example.website.dto.music.MusicSource;
 import com.example.website.dto.music.PlayInfo;
 import com.example.website.dto.music.SongSearchItem;
+import com.example.website.service.SysConfigService;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.HttpUrl;
 import okhttp3.Call;
@@ -35,23 +35,31 @@ import static com.example.website.service.music.MusicValueUtils.truncate;
 
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class QqTextFallbackClient {
 
+    public static final String CFG_API_KEY = "music.qqText.apiKey";
     private static final String API_URL = "https://cyapi.top/API/qq_music.php";
-    private static final String API_KEY = "62ccfd8be755cc5850046044c6348d6cac5ef31bd5874c1352287facc06f94c4";
     private static final String REFERER = "https://cyapi.top/";
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<Map<String, Object>>() {};
 
     @Qualifier(OkHttpConfig.CLIENT_MUSIC_THIRD_PARTY)
     private final OkHttpClient okHttpClient;
     private final ObjectMapper objectMapper;
+    private final SysConfigService configService;
     private final ThirdPartyCircuitBreaker circuitBreaker =
             new ThirdPartyCircuitBreaker("cyapi");
     private final Cache<String, Boolean> recentFailures = Caffeine.newBuilder()
             .maximumSize(10_000)
             .expireAfterWrite(30, TimeUnit.SECONDS)
             .build();
+
+    public QqTextFallbackClient(@Qualifier(OkHttpConfig.CLIENT_MUSIC_THIRD_PARTY) OkHttpClient okHttpClient,
+                                ObjectMapper objectMapper,
+                                SysConfigService configService) {
+        this.okHttpClient = okHttpClient;
+        this.objectMapper = objectMapper;
+        this.configService = configService;
+    }
 
     public PlayInfo fetchSongUrl(String requestedId, MusicQuality requestedQuality, SongSearchItem metadata) {
         ResolvedTrack track = resolve(metadata);
@@ -88,12 +96,17 @@ public class QqTextFallbackClient {
 
     private ResolvedTrack resolve(SongSearchItem metadata) {
         String keyword = buildKeyword(metadata);
+        String apiKey = configService.getValue(CFG_API_KEY)
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .orElseThrow(() -> new MusicBusinessException(MusicErrorCode.MISSING_UPSTREAM_TOKEN,
+                        CFG_API_KEY + " is not configured"));
         if (recentFailures.getIfPresent(keyword) != null) {
             throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
                     "qq text fallback recently failed for keyword=" + keyword);
         }
         HttpUrl url = HttpUrl.parse(API_URL).newBuilder()
-                .addQueryParameter("apikey", API_KEY)
+                .addQueryParameter("apikey", apiKey)
                 .addQueryParameter("type", "json")
                 .addQueryParameter("n", "1")
                 .addQueryParameter("msg", keyword)

@@ -1,6 +1,7 @@
 package com.example.website.service;
 
 import com.example.website.common.BusinessException;
+import com.example.website.config.AppProperties;
 import com.example.website.dto.PageView;
 import com.example.website.dto.membership.MembershipView;
 import com.example.website.dto.membership.RedeemCodeAdminView;
@@ -50,10 +51,20 @@ public class MembershipService {
     private final UserMembershipRepository membershipRepository;
     private final RedeemCodeRepository redeemCodeRepository;
     private final MembershipRedemptionRepository redemptionRepository;
+    private final AppProperties props;
     private final SecureRandom secureRandom = new SecureRandom();
 
     @Transactional(readOnly = true)
     public MembershipView getMembership(Long userId) {
+        if (userId == null) {
+            throw new BusinessException(401, "Unauthorized");
+        }
+        if (props.getMembership().isFreeLifetimeEnabled()) {
+            UserMembership freeMembership = new UserMembership();
+            freeMembership.setUserId(userId);
+            freeMembership.setMembershipType(MembershipType.LIFETIME);
+            return MembershipView.from(freeMembership, LocalDateTime.now());
+        }
         return MembershipView.from(membershipRepository.findByUserId(userId).orElse(null), LocalDateTime.now());
     }
 
@@ -83,6 +94,9 @@ public class MembershipService {
 
     @Transactional
     public RedeemResultView redeem(Long userId, String rawCode) {
+        if (props.getMembership().isFreeLifetimeEnabled()) {
+            throw new BusinessException(409, "当前账号已享有永久会员，无需兑换");
+        }
         String code = normalizeCode(rawCode);
         if (!StringUtils.hasText(code)) {
             throw new BusinessException(400, "兑换码不能为空");

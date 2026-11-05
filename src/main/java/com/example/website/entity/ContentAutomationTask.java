@@ -54,6 +54,9 @@ public class ContentAutomationTask {
     @Column(name = "last_run_at")
     private LocalDateTime lastRunAt;
 
+    @Column(name = "run_started_at")
+    private LocalDateTime runStartedAt;
+
     @Column(name = "next_run_at")
     private LocalDateTime nextRunAt;
 

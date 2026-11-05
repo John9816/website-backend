@@ -3,6 +3,7 @@ package com.example.website.service.music;
 import com.example.website.dto.music.MusicQuality;
 import com.example.website.dto.music.PlayInfo;
 import com.example.website.dto.music.SongSearchItem;
+import com.example.website.service.SysConfigService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.Call;
 import okhttp3.MediaType;
@@ -19,6 +20,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.io.IOException;
+import java.util.Optional;
 
 import okio.Timeout;
 
@@ -26,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.never;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -40,14 +43,19 @@ class QqTextFallbackClientTests {
     @Mock
     private Call call;
 
+    @Mock
+    private SysConfigService configService;
+
     @BeforeEach
     void setUp() {
-        when(call.timeout()).thenReturn(new Timeout());
+        org.mockito.Mockito.lenient().when(call.timeout()).thenReturn(new Timeout());
+        org.mockito.Mockito.lenient().when(configService.getValue(QqTextFallbackClient.CFG_API_KEY))
+                .thenReturn(Optional.of("test-api-key-never-log"));
     }
 
     @Test
     void fetchSongUrlBuildsKeywordAndParsesTopLevelUrlAndLyric() throws IOException {
-        QqTextFallbackClient client = new QqTextFallbackClient(okHttpClient, new ObjectMapper());
+        QqTextFallbackClient client = new QqTextFallbackClient(okHttpClient, new ObjectMapper(), configService);
         SongSearchItem meta = song("track-one", "artist-one");
 
         when(okHttpClient.newCall(any(Request.class))).thenReturn(call);
@@ -81,7 +89,7 @@ class QqTextFallbackClientTests {
 
     @Test
     void fetchSongUrlSupportsNestedDataMusicUrlAndLrcFallback() throws IOException {
-        QqTextFallbackClient client = new QqTextFallbackClient(okHttpClient, new ObjectMapper());
+        QqTextFallbackClient client = new QqTextFallbackClient(okHttpClient, new ObjectMapper(), configService);
         SongSearchItem meta = song("track-two", "artist-two");
         meta.setAlbum("album-two");
 
@@ -105,7 +113,7 @@ class QqTextFallbackClientTests {
 
     @Test
     void networkFailureIsNegativeCached() throws IOException {
-        QqTextFallbackClient client = new QqTextFallbackClient(okHttpClient, new ObjectMapper());
+        QqTextFallbackClient client = new QqTextFallbackClient(okHttpClient, new ObjectMapper(), configService);
         SongSearchItem meta = song("track-three", "artist-three");
 
         when(okHttpClient.newCall(any(Request.class))).thenReturn(call);
@@ -117,6 +125,19 @@ class QqTextFallbackClientTests {
                 () -> client.fetchSongUrl("song-mid", MusicQuality.K128, meta));
 
         verify(okHttpClient, times(1)).newCall(any(Request.class));
+    }
+
+    @Test
+    void missingConfiguredKeyDisablesOnlyThisResolverWithoutNetworkCall() {
+        when(configService.getValue(QqTextFallbackClient.CFG_API_KEY)).thenReturn(Optional.empty());
+        QqTextFallbackClient client = new QqTextFallbackClient(okHttpClient, new ObjectMapper(), configService);
+
+        com.example.website.common.MusicBusinessException error = assertThrows(
+                com.example.website.common.MusicBusinessException.class,
+                () -> client.fetchSongUrl("song-mid", MusicQuality.K128, song("track", "artist")));
+
+        assertEquals(com.example.website.common.MusicErrorCode.MISSING_UPSTREAM_TOKEN, error.getErrorCode());
+        verify(okHttpClient, never()).newCall(any(Request.class));
     }
 
     private SongSearchItem song(String name, String artist) {

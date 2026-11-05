@@ -22,6 +22,26 @@ final class MusicRequestBudget {
         return new Scope(previous);
     }
 
+    static long deadlineNanos() {
+        Long deadline = DEADLINE_NANOS.get();
+        if (deadline == null) {
+            throw new IllegalStateException("music request budget has not been started");
+        }
+        return deadline;
+    }
+
+    static Scope useDeadline(long deadlineNanos) {
+        Long previous = DEADLINE_NANOS.get();
+        long deadline = previous == null ? deadlineNanos : Math.min(previous, deadlineNanos);
+        DEADLINE_NANOS.set(deadline);
+        return new Scope(previous);
+    }
+
+    static long remainingNanos() {
+        Long deadline = DEADLINE_NANOS.get();
+        return deadline == null ? Long.MAX_VALUE : Math.max(0L, deadline - System.nanoTime());
+    }
+
     static void ensureRemaining() {
         Long deadline = DEADLINE_NANOS.get();
         if (deadline != null && deadline - System.nanoTime() <= 0L) {
@@ -36,6 +56,17 @@ final class MusicRequestBudget {
         if (deadline != null) {
             allowed = Math.min(allowed, deadline - System.nanoTime());
         }
+        if (allowed <= 0L) {
+            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_TIMEOUT,
+                    "music play resolution exceeded its time budget");
+        }
+        call.timeout().timeout(allowed, TimeUnit.NANOSECONDS);
+    }
+
+    static void constrainToRemaining(Call call) {
+        Long deadline = DEADLINE_NANOS.get();
+        if (deadline == null) return;
+        long allowed = deadline - System.nanoTime();
         if (allowed <= 0L) {
             throw new MusicBusinessException(MusicErrorCode.UPSTREAM_TIMEOUT,
                     "music play resolution exceeded its time budget");

@@ -23,6 +23,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -33,6 +34,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -107,7 +109,7 @@ public class ContentArticleService {
         configs.add(new ContentStatusConfigView("ai.chat.baseUrl", "文章模型地址", hasText(aiBase)));
         configs.add(new ContentStatusConfigView("ai.chat.apiKey", "文章模型密钥", hasText(aiKey)));
         configs.add(new ContentStatusConfigView("image.api.baseUrl", "封面图片地址", hasText(imageBase)));
-        configs.add(new ContentStatusConfigView("image.api.key", "封面图片密钥", hasText(imageKey)));
+        configs.add(new ContentStatusConfigView("image.api.key", "封面图片密钥", usableImageKey(imageKey)));
         configs.add(new ContentStatusConfigView("wechat.appId", "公众号 AppID", hasText(appId)));
         configs.add(new ContentStatusConfigView("wechat.appSecret", "公众号 AppSecret", hasText(appSecret)));
         configs.add(new ContentStatusConfigView("wechat.coverMediaId", "默认微信封面素材", hasText(coverMediaId)));
@@ -121,7 +123,7 @@ public class ContentArticleService {
 
         return new ContentFactoryStatusView(
                 hasText(aiBase) && hasText(aiKey),
-                hasText(imageBase) && hasText(imageKey),
+                hasText(imageBase) && usableImageKey(imageKey),
                 hasText(appId) && hasText(appSecret),
                 configs
         );
@@ -190,7 +192,7 @@ public class ContentArticleService {
         Map<String, Object> draft = new LinkedHashMap<>();
         draft.put("mediaId", article.getWechatMediaId());
         draft.put("url", article.getWechatUrl());
-        draft.put("mode", article.getWechatMediaId() != null && article.getWechatMediaId().startsWith("local-") ? "local" : "wechat");
+        draft.put("mode", isLocalDraft(article) ? "local" : "wechat");
         return new ContentAgentRunResult(view(article), automation, selectedTopic, draft);
     }
 
@@ -202,8 +204,25 @@ public class ContentArticleService {
         return PageView.from(result, this::summaryView);
     }
 
+    /**
+     * Site-wide article listing for the admin content console.  This is kept
+     * separate from {@link #list(Long, int, int)} so ordinary user callers
+     * always retain the owner predicate.
+     */
+    public PageView<ContentArticleView> listForAdmin(int page, int size) {
+        Page<ContentArticleRepository.ContentArticleSummary> result = articleRepository.findAllSummariesForAdmin(
+                PageRequest.of(Math.max(0, page), Math.min(Math.max(1, size), MAX_PAGE_SIZE))
+        );
+        return PageView.from(result, this::summaryView);
+    }
+
     public ContentArticleView get(Long userId, Long id) {
         return view(requireArticle(userId, id));
+    }
+
+    /** Read any article from the site-wide admin console. */
+    public ContentArticleView getForAdmin(Long id) {
+        return view(requireArticleForAdmin(id));
     }
 
     @Transactional
@@ -370,7 +389,17 @@ public class ContentArticleService {
      */
     @Transactional
     public ContentArticleView revise(Long userId, Long id) {
-        ContentArticle article = requireArticle(userId, id);
+        return reviseArticle(requireArticle(userId, id));
+    }
+
+    /** Directed rewrite of any draft from the site-wide admin console. */
+    @Transactional
+    public ContentArticleView reviseForAdmin(Long id) {
+        return reviseArticle(requireArticleForAdminUpdate(id));
+    }
+
+    private ContentArticleView reviseArticle(ContentArticle article) {
+        prepareEditable(article);
         String markdown = trimToNull(article.getContentMarkdown());
         if (markdown == null) {
             throw new BusinessException(400, "当前草稿没有 Markdown 正文，无法定向改写");
@@ -442,7 +471,17 @@ public class ContentArticleService {
      */
     @Transactional
     public ContentArticleView refreshVisuals(Long userId, Long id) {
-        ContentArticle article = requireArticle(userId, id);
+        return refreshVisualsArticle(requireArticle(userId, id));
+    }
+
+    /** Re-run visuals for any editable article from the admin console. */
+    @Transactional
+    public ContentArticleView refreshVisualsForAdmin(Long id) {
+        return refreshVisualsArticle(requireArticleForAdminUpdate(id));
+    }
+
+    private ContentArticleView refreshVisualsArticle(ContentArticle article) {
+        prepareEditable(article);
         String markdown = defaultText(article.getContentMarkdown(), "");
         if (!hasText(markdown) && !hasText(article.getContentHtml())) {
             throw new BusinessException(400, "当前草稿没有正文，无法重配图");
@@ -534,7 +573,20 @@ public class ContentArticleService {
 
     @Transactional
     public ContentArticleView update(Long userId, Long id, ContentArticleUpdateRequest req) {
-        ContentArticle article = requireArticle(userId, id);
+        return updateArticle(requireArticle(userId, id), req);
+    }
+
+    /** Update any editable article from the site-wide admin console. */
+    @Transactional
+    public ContentArticleView updateForAdmin(Long id, ContentArticleUpdateRequest req) {
+        return updateArticle(requireArticleForAdminUpdate(id), req);
+    }
+
+    private ContentArticleView updateArticle(ContentArticle article, ContentArticleUpdateRequest req) {
+        if (req == null) {
+            throw new BusinessException(400, "Article update body is required");
+        }
+        prepareEditable(article);
         if (hasText(req.getTitle())) {
             article.setTitle(req.getTitle().trim());
         }
@@ -571,31 +623,62 @@ public class ContentArticleService {
 
     @Transactional
     public void delete(Long userId, Long id) {
-        ContentArticle article = requireArticle(userId, id);
+        deleteArticle(requireArticle(userId, id));
+    }
+
+    /** Delete any article from the site-wide admin console. */
+    @Transactional
+    public void deleteForAdmin(Long id) {
+        deleteArticle(requireArticleForAdminUpdate(id));
+    }
+
+    private void deleteArticle(ContentArticle article) {
         articleRepository.delete(article);
     }
 
+    @Transactional
     public Map<String, Object> createWechatDraft(Long userId, Long id) {
-        ContentArticle article = createWechatDraftArticle(requireArticle(userId, id));
+        return createWechatDraftResult(requireArticleForUpdate(userId, id));
+    }
+
+    /** Create a WeChat draft for any article from the site-wide admin console. */
+    @Transactional
+    public Map<String, Object> createWechatDraftForAdmin(Long id) {
+        return createWechatDraftResult(requireArticleForAdminUpdate(id));
+    }
+
+    private Map<String, Object> createWechatDraftResult(ContentArticle source) {
+        ContentArticle article = createWechatDraftArticle(source);
         Map<String, Object> draft = new LinkedHashMap<>();
         draft.put("mediaId", article.getWechatMediaId());
         draft.put("url", article.getWechatUrl());
-        draft.put("mode", article.getWechatMediaId() != null && article.getWechatMediaId().startsWith("local-") ? "local" : "wechat");
+        draft.put("mode", isLocalDraft(article) ? "local" : "wechat");
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("article", view(article));
         result.put("draft", draft);
         return result;
     }
 
+    @Transactional(noRollbackFor = BusinessException.class)
     public Map<String, Object> publishWechat(Long userId, Long id) {
+        return publishWechatArticleResult(requireArticleForUpdate(userId, id));
+    }
+
+    /** Publish any eligible article from the site-wide admin console. */
+    @Transactional(noRollbackFor = BusinessException.class)
+    public Map<String, Object> publishWechatForAdmin(Long id) {
+        return publishWechatArticleResult(requireArticleForAdminUpdate(id));
+    }
+
+    private Map<String, Object> publishWechatArticleResult(ContentArticle source) {
         if (!freePublishEnabled()) {
             throw new BusinessException(403, "当前公众号是订阅号，未启用 freepublish 权限，请先创建微信草稿后在公众平台人工发布");
         }
-        ContentArticle article = publishWechatArticle(requireArticle(userId, id));
+        ContentArticle article = publishWechatArticle(source);
         Map<String, Object> draft = new LinkedHashMap<>();
         draft.put("mediaId", article.getWechatMediaId());
         draft.put("url", article.getWechatUrl());
-        draft.put("mode", article.getWechatMediaId() != null && article.getWechatMediaId().startsWith("local-") ? "local" : "wechat");
+        draft.put("mode", isLocalDraft(article) ? "local" : "wechat");
         Map<String, Object> publish = new LinkedHashMap<>();
         publish.put("publishId", article.getWechatPublishId());
         publish.put("url", article.getWechatUrl());
@@ -607,10 +690,18 @@ public class ContentArticleService {
     }
 
     public ContentAutomationView automation(Long userId, Long articleId) {
-        if (articleId == null) {
+        return automationForArticle(articleId == null ? null : requireArticle(userId, articleId));
+    }
+
+    /** Read automation history for any article from the site-wide admin console. */
+    public ContentAutomationView automationForAdmin(Long articleId) {
+        return automationForArticle(articleId == null ? null : requireArticleForAdmin(articleId));
+    }
+
+    private ContentAutomationView automationForArticle(ContentArticle article) {
+        if (article == null) {
             return ContentAutomationView.empty();
         }
-        ContentArticle article = requireArticle(userId, articleId);
         Object automation = readObject(article.getAutomationJson());
         if (automation instanceof Map) {
             Map<?, ?> map = (Map<?, ?>) automation;
@@ -627,8 +718,76 @@ public class ContentArticleService {
         return automationBuilder.buildAutomation(article, article.getErrorMessage() == null ? null : article.getErrorMessage());
     }
 
+    @Transactional(noRollbackFor = BusinessException.class)
     public ContentAutomationView retryAutomationJob(Long userId, String jobId) {
-        return ContentAutomationView.empty();
+        return retryAutomationJob(requireArticleForUpdate(userId, retryArticleIdOrThrow(jobId)), jobId);
+    }
+
+    /** Retry WeChat delivery for any article from the site-wide admin console. */
+    @Transactional(noRollbackFor = BusinessException.class)
+    public ContentAutomationView retryAutomationJobForAdmin(String jobId) {
+        return retryAutomationJob(requireArticleForAdminUpdate(retryArticleIdOrThrow(jobId)), jobId);
+    }
+
+    private ContentAutomationView retryAutomationJob(ContentArticle article, String jobId) {
+        if (!hasText(jobId)) {
+            throw new BusinessException(400, "jobId is required");
+        }
+        String token = jobId.trim();
+        if (!hasText(article.getErrorMessage())
+                && !ContentArticle.STATUS_PUBLISH_SUBMITTED.equals(article.getStatus())) {
+            throw new BusinessException(400, "Article has no failed delivery to retry");
+        }
+        String retryStage = retryStage(token, article);
+        if ("publish".equals(retryStage)) {
+            article = publishWechatArticle(article);
+        } else {
+            article = createWechatDraftArticle(article);
+        }
+        return automationBuilder.buildAutomation(article, article.getErrorMessage(), retryStage);
+    }
+
+    private Long retryArticleIdOrThrow(String jobId) {
+        if (!hasText(jobId)) {
+            throw new BusinessException(400, "jobId is required");
+        }
+        Long articleId = retryArticleId(jobId.trim());
+        if (articleId == null) {
+            throw new BusinessException(400, "jobId must contain a valid article id");
+        }
+        return articleId;
+    }
+
+    private Long retryArticleId(String jobId) {
+        String candidate = jobId;
+        int separator = candidate.indexOf('-');
+        if (separator > 0) {
+            candidate = candidate.substring(0, separator);
+        }
+        try {
+            long value = Long.parseLong(candidate);
+            return value > 0 ? value : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private String retryStage(String jobId, ContentArticle article) {
+        String normalized = jobId.toLowerCase();
+        if (normalized.contains("publish") && !normalized.contains("wechat-draft")) {
+            return "publish";
+        }
+        if (normalized.contains("wechat") || normalized.contains("draft")) {
+            return "wechat_draft";
+        }
+        Object automation = readObject(article.getAutomationJson());
+        if (automation instanceof Map) {
+            String currentStage = asString(((Map<?, ?>) automation).get("currentStage"));
+            if ("publish".equalsIgnoreCase(currentStage)) {
+                return "publish";
+            }
+        }
+        return "wechat_draft";
     }
 
     private ContentArticle markQualityGateBlocked(ContentArticle article) {
@@ -644,6 +803,14 @@ public class ContentArticleService {
     }
 
     private ContentArticle createWechatDraftArticle(ContentArticle article) {
+        if (hasText(article.getWechatMediaId())
+                && !article.getWechatMediaId().startsWith("local-")
+                && (ContentArticle.STATUS_WECHAT_DRAFT.equals(article.getStatus())
+                || ContentArticle.STATUS_PUBLISH_SUBMITTED.equals(article.getStatus())
+                || ContentArticle.STATUS_PUBLISHED.equals(article.getStatus()))
+                && !hasText(article.getErrorMessage())) {
+            return article;
+        }
         if (pipelineService.blocksWechatDraft(article)) {
             throw new BusinessException(400, hasText(article.getErrorMessage())
                     ? article.getErrorMessage()
@@ -733,6 +900,13 @@ public class ContentArticleService {
     }
 
     private ContentArticle publishWechatArticle(ContentArticle article) {
+        if (ContentArticle.STATUS_PUBLISHED.equals(article.getStatus())) {
+            return article;
+        }
+        if (ContentArticle.STATUS_PUBLISH_SUBMITTED.equals(article.getStatus())
+                && hasText(article.getWechatPublishId())) {
+            return refreshPublishStatus(article);
+        }
         if (pipelineService.blocksWechatDraft(article)) {
             throw new BusinessException(400, "质量门阻断：评分低于 80，未执行自动发布，请先人工修订");
         }
@@ -746,12 +920,18 @@ public class ContentArticleService {
         String appSecret = config(WechatOfficialAccountClient.CFG_APP_SECRET);
         try {
             WechatOfficialAccountClient.PublishResult publish = wechatClient.submitPublish(appId, appSecret, article.getWechatMediaId());
-            article.setStatus(ContentArticle.STATUS_PUBLISHED);
+            article.setStatus(ContentArticle.STATUS_PUBLISH_SUBMITTED);
             article.setWechatPublishId(publish.getPublishId());
             article.setWechatUrl(null);
             article.setErrorMessage(null);
-            article.setAutomationJson(writeJson(automationBuilder.buildAutomation(article, null)));
-            return articleRepository.save(article);
+            article.setAutomationJson(writeJson(automationBuilder.buildAutomation(article, null, "publish")));
+            ContentArticle submitted = articleRepository.save(article);
+            try {
+                return refreshPublishStatus(submitted);
+            } catch (BusinessException statusError) {
+                // Submission was accepted. Leave it pending and let the reconciler retry status.
+                return submitted;
+            }
         } catch (BusinessException e) {
             markWechatFailure(article, e.getMessage(), "publish");
             throw e;
@@ -759,15 +939,54 @@ public class ContentArticleService {
     }
 
     private ContentArticle markLocalDraft(ContentArticle article, String message) {
-        article.setStatus(ContentArticle.STATUS_WECHAT_DRAFT);
-        if (!hasText(article.getWechatMediaId())) {
-            article.setWechatMediaId("local-draft-" + article.getId());
+        article.setStatus(ContentArticle.STATUS_DRAFT);
+        if (article.getWechatMediaId() != null && article.getWechatMediaId().startsWith("local-")) {
+            article.setWechatMediaId(null);
         }
         if (!hasText(article.getWechatUrl())) {
             article.setWechatUrl("/admin/content?articleId=" + article.getId());
         }
         article.setErrorMessage(message);
-        article.setAutomationJson(writeJson(automationBuilder.buildAutomation(article, message)));
+        article.setAutomationJson(writeJson(automationBuilder.buildAutomation(article, message, "wechat_draft")));
+        return articleRepository.save(article);
+    }
+
+    @Scheduled(fixedDelayString = "${content.wechat.publish-reconcile-ms:60000}", initialDelay = 45000)
+    public void reconcileSubmittedWechatPublishes() {
+        List<ContentArticle> pending = articleRepository
+                .findTop50ByStatusAndWechatPublishIdIsNotNullOrderByUpdatedAtAsc(
+                        ContentArticle.STATUS_PUBLISH_SUBMITTED);
+        for (ContentArticle article : pending) {
+            try {
+                refreshPublishStatus(article);
+            } catch (Exception ignored) {
+                // A later tick will retry transient token/network failures.
+            }
+        }
+    }
+
+    private ContentArticle refreshPublishStatus(ContentArticle article) {
+        WechatOfficialAccountClient.PublishStatusResult result = wechatClient.getPublishStatus(
+                config(WechatOfficialAccountClient.CFG_APP_ID),
+                config(WechatOfficialAccountClient.CFG_APP_SECRET),
+                article.getWechatPublishId());
+        if (result.published()) {
+            article.setStatus(ContentArticle.STATUS_PUBLISHED);
+            article.setWechatUrl(trimToNull(result.getArticleUrl()));
+            article.setErrorMessage(null);
+            article.setAutomationJson(writeJson(automationBuilder.buildAutomation(article, null, "publish")));
+        } else if (result.pending()) {
+            article.setStatus(ContentArticle.STATUS_PUBLISH_SUBMITTED);
+            article.setErrorMessage(null);
+            article.setAutomationJson(writeJson(automationBuilder.buildAutomation(article, null, "publish")));
+        } else {
+            article.setStatus(ContentArticle.STATUS_PUBLISH_FAILED);
+            String detail = hasText(result.getFailErrorCode())
+                    ? " (" + result.getFailErrorCode() + ")" : "";
+            article.setErrorMessage("WeChat publish failed with status " + result.getStatus() + detail);
+            article.setAutomationJson(writeJson(automationBuilder.buildAutomation(
+                    article, article.getErrorMessage(), "publish")));
+        }
         return articleRepository.save(article);
     }
 
@@ -1003,6 +1222,40 @@ public class ContentArticleService {
     private ContentArticle requireArticle(Long userId, Long id) {
         return articleRepository.findByIdAndUserId(id, userId)
                 .orElseThrow(() -> new BusinessException(404, "Article not found"));
+    }
+
+    private ContentArticle requireArticleForAdmin(Long id) {
+        return articleRepository.findByIdForAdmin(id)
+                .orElseThrow(() -> new BusinessException(404, "Article not found"));
+    }
+
+    private ContentArticle requireArticleForUpdate(Long userId, Long id) {
+        return articleRepository.findLockedByIdAndUserId(id, userId)
+                .orElseThrow(() -> new BusinessException(404, "Article not found"));
+    }
+
+    private ContentArticle requireArticleForAdminUpdate(Long id) {
+        return articleRepository.findLockedByIdForAdmin(id)
+                .orElseThrow(() -> new BusinessException(404, "Article not found"));
+    }
+
+    private boolean isLocalDraft(ContentArticle article) {
+        return article == null || !ContentArticle.STATUS_WECHAT_DRAFT.equals(article.getStatus())
+                && !ContentArticle.STATUS_PUBLISH_SUBMITTED.equals(article.getStatus())
+                && !ContentArticle.STATUS_PUBLISHED.equals(article.getStatus());
+    }
+
+    private void prepareEditable(ContentArticle article) {
+        if (ContentArticle.STATUS_PUBLISHED.equals(article.getStatus())
+                || ContentArticle.STATUS_PUBLISH_SUBMITTED.equals(article.getStatus())) {
+            throw new BusinessException(409, "Submitted or published articles cannot be edited");
+        }
+        if (ContentArticle.STATUS_WECHAT_DRAFT.equals(article.getStatus())) {
+            article.setStatus(ContentArticle.STATUS_DRAFT);
+            article.setWechatMediaId(null);
+            article.setWechatPublishId(null);
+            article.setWechatUrl(null);
+        }
     }
 
     private ContentArticleView view(ContentArticle article) {
@@ -2143,6 +2396,11 @@ public class ContentArticleService {
 
     private String config(String key) {
         return configService.getValue(key).orElse("");
+    }
+
+    private boolean usableImageKey(String value) {
+        return hasText(value) && !"sk-xxx".equalsIgnoreCase(value.trim())
+                && !value.trim().toLowerCase(Locale.ROOT).startsWith("replace-with-");
     }
 
     private boolean freePublishEnabled() {

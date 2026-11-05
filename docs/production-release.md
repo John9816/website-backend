@@ -32,6 +32,8 @@
   updates/                     # Android 更新包等持久文件
 ```
 
+MySQL 运维账号凭据单独保存在 ECS 的 `/root/.config/website/mysql.cnf`，不进入发布目录或 Git。
+
 ## 二、首次部署准备
 
 服务器至少需要：Linux、Java 8+、Node.js 20+、MySQL 8、Nginx、`curl`、`systemd`。安全组只开放 SSH、80、443；不要开放 3000、8090、3306。
@@ -117,6 +119,19 @@ chmod 600 /opt/website/backend/.env /opt/website/.env.ecs
 
 必须替换数据库密码、`JWT_SECRET`、默认管理员密码和 Cloud Mail 密码。已有生产环境应沿用原 `JWT_SECRET`，否则所有现有登录态会失效。
 
+运维命令需要连接数据库时，在 ECS 上创建仅 root 可读的 MySQL 配置文件，不在命令行传密码：
+
+```bash
+install -d -m 700 /root/.config/website
+umask 077
+vi /root/.config/website/mysql.cnf
+chmod 600 /root/.config/website/mysql.cnf
+```
+
+文件内容为 `[client]` 段中的 `user=website`、`password=<实际数据库密码>`、`host=127.0.0.1`。`mysql` 和 `mysqldump` 调用时把 `--defaults-extra-file=/root/.config/website/mysql.cnf` 放在所有其他参数之前。若某次维护需要额外的全库权限，请单独创建受控的运维账号并更新该文件；不要把 root 或数据库密码写回脚本。
+
+历史文档和部署脚本曾暴露 ECS 登录及数据库密码，并复用固定 JWT 密钥。正式上线前应在云控制台或服务器上轮换 SSH/root 与数据库凭据，签发独立的 JWT 密钥，并清理旧会话；旧值即使从当前文件删除，也仍可能保留在 Git 历史中。
+
 把 `/opt/website/config-examples/nginx.conf` 合并到服务器 Nginx 配置，检查后 reload：
 
 ```bash
@@ -137,8 +152,8 @@ systemctl reload nginx
 数据库备份示例：
 
 ```bash
-mysqldump --single-transaction --routines --triggers \
-  -h 127.0.0.1 -u website -p website \
+mysqldump --defaults-extra-file=/root/.config/website/mysql.cnf \
+  --single-transaction --routines --triggers website \
   | gzip > "/opt/backups/website-$(date +%Y%m%d-%H%M%S).sql.gz"
 ```
 
@@ -176,6 +191,10 @@ mysqldump --single-transaction --routines --triggers \
 只有紧急发布才使用 `--allow-dirty` 或 `--skip-tests`；发布元数据会记录脏工作区状态。`--skip-install` 可复用现有 `node_modules`，但标准发布应保留 `npm ci`。
 
 ## 五、上线后验证
+
+注册账号目前默认享有永久会员（`APP_MEMBERSHIP_FREE_LIFETIME_ENABLED=true`）：会员查询直接返回有效的 `LIFETIME` 权益，新注册及已有用户无需兑换即可播放，也不会消耗兑换码。历史会员与兑换记录不变；登录校验、账号权限及各功能的独立用量限制仍生效。恢复原有会员规则时设置后端 `APP_MEMBERSHIP_FREE_LIFETIME_ENABLED=false`；恢复网页会员入口时设置前端构建变量 `VITE_MEMBERSHIP_ENABLED=true`，重新发布对应服务。
+
+免费会员模式下验收普通账号和已过期账号的 `/api/v1/music/play`、旧版 `/music/play` 及预加载；应取得播放地址，实际播放写入历史，预加载不写入历史。网页个人菜单不展示会员状态或兑换入口，后台不展示兑换码菜单，直接打开 `/admin/redeem-codes` 应返回后台首页。
 
 ```bash
 curl -fsS https://api.751152.xyz/health

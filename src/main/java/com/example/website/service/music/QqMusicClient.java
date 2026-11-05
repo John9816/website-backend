@@ -1043,7 +1043,9 @@ public class QqMusicClient {
     }
 
     private Map<String, Object> callJsonp(Request req, MusicErrorCode onFail) {
-        try (Response resp = okHttpClient.newCall(req).execute()) {
+        Call call = okHttpClient.newCall(req);
+        MusicRequestBudget.constrainToRemaining(call);
+        try (Response resp = call.execute()) {
             ResponseBody rb = resp.body();
             String raw = rb == null ? "" : rb.string();
             if (!resp.isSuccessful()) {

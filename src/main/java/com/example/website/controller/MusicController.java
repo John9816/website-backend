@@ -47,11 +47,12 @@ public class MusicController {
     public ApiResponse<PlayInfo> play(HttpServletRequest request,
                                       @RequestParam String source,
                                       @RequestParam String id,
-                                      @RequestParam(required = false) String quality) {
+                                      @RequestParam(required = false) String quality,
+                                      @RequestParam(defaultValue = "false") boolean prefetch) {
         Long userId = request == null ? null : (Long) request.getAttribute("userId");
         membershipService.requireActiveMembership(userId);
         PlayInfo info = musicService.play(source, id, quality);
-        if (userId != null) {
+        if (userId != null && !prefetch) {
             try {
                 musicLibraryService.recordPlay(userId, info);
             } catch (Exception e) {

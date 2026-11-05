@@ -12,6 +12,7 @@ import com.example.website.dto.content.ContentFactoryStatusView;
 import com.example.website.dto.content.ContentHotTopicsView;
 import com.example.website.service.content.ContentAgentJobService;
 import com.example.website.service.content.ContentArticleService;
+import com.example.website.service.content.ContentAutopilotService;
 import com.example.website.service.UserScopeService;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -35,11 +36,28 @@ public class AdminContentController {
 
     private final ContentArticleService contentArticleService;
     private final ContentAgentJobService contentAgentJobService;
+    private final ContentAutopilotService contentAutopilotService;
     private final UserScopeService userScopeService;
 
     @GetMapping("/status")
     public ApiResponse<ContentFactoryStatusView> status() {
         return ApiResponse.ok(contentArticleService.status());
+    }
+
+    @GetMapping("/autopilot")
+    public ApiResponse<Map<String, Object>> autopilot(HttpServletRequest request) {
+        return ApiResponse.ok(contentAutopilotService.settings(currentUserId(request)));
+    }
+
+    @PutMapping("/autopilot")
+    public ApiResponse<Map<String, Object>> updateAutopilot(HttpServletRequest request,
+                                                             @RequestBody Map<String, Object> body) {
+        return ApiResponse.ok(contentAutopilotService.updateSettings(currentUserId(request), body));
+    }
+
+    @PostMapping("/autopilot/run")
+    public ApiResponse<ContentAgentRunJobView> runAutopilot(HttpServletRequest request) {
+        return ApiResponse.ok(contentAutopilotService.runNow(currentUserId(request)));
     }
 
     @GetMapping("/hot")
@@ -52,7 +70,7 @@ public class AdminContentController {
     public ApiResponse<PageView<ContentArticleView>> articles(HttpServletRequest request,
                                                               @RequestParam(defaultValue = "0") int page,
                                                               @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.ok(contentArticleService.list(currentUserId(request), page, size));
+        return ApiResponse.ok(contentArticleService.listForAdmin(page, size));
     }
 
     @PostMapping("/articles/generate")
@@ -74,14 +92,14 @@ public class AdminContentController {
 
     @GetMapping("/articles/{id}")
     public ApiResponse<ContentArticleView> article(HttpServletRequest request, @PathVariable Long id) {
-        return ApiResponse.ok(contentArticleService.get(currentUserId(request), id));
+        return ApiResponse.ok(contentArticleService.getForAdmin(id));
     }
 
     @PutMapping("/articles/{id}")
     public ApiResponse<ContentArticleView> update(HttpServletRequest request,
                                                   @PathVariable Long id,
                                                   @RequestBody ContentArticleUpdateRequest body) {
-        return ApiResponse.ok(contentArticleService.update(currentUserId(request), id, body));
+        return ApiResponse.ok(contentArticleService.updateForAdmin(id, body));
     }
 
     /**
@@ -89,7 +107,7 @@ public class AdminContentController {
      */
     @PostMapping("/articles/{id}/revise")
     public ApiResponse<ContentArticleView> revise(HttpServletRequest request, @PathVariable Long id) {
-        return ApiResponse.ok(contentArticleService.revise(currentUserId(request), id));
+        return ApiResponse.ok(contentArticleService.reviseForAdmin(id));
     }
 
     /**
@@ -97,29 +115,29 @@ public class AdminContentController {
      */
     @PostMapping("/articles/{id}/visuals")
     public ApiResponse<ContentArticleView> refreshVisuals(HttpServletRequest request, @PathVariable Long id) {
-        return ApiResponse.ok(contentArticleService.refreshVisuals(currentUserId(request), id));
+        return ApiResponse.ok(contentArticleService.refreshVisualsForAdmin(id));
     }
 
     @DeleteMapping("/articles/{id}")
     public ApiResponse<Void> delete(HttpServletRequest request, @PathVariable Long id) {
-        contentArticleService.delete(currentUserId(request), id);
+        contentArticleService.deleteForAdmin(id);
         return ApiResponse.ok();
     }
 
     @PostMapping("/articles/{id}/wechat-draft")
     public ApiResponse<Map<String, Object>> createWechatDraft(HttpServletRequest request, @PathVariable Long id) {
-        return ApiResponse.ok(contentArticleService.createWechatDraft(currentUserId(request), id));
+        return ApiResponse.ok(contentArticleService.createWechatDraftForAdmin(id));
     }
 
     @PostMapping("/articles/{id}/publish")
     public ApiResponse<Map<String, Object>> publish(HttpServletRequest request, @PathVariable Long id) {
-        return ApiResponse.ok(contentArticleService.publishWechat(currentUserId(request), id));
+        return ApiResponse.ok(contentArticleService.publishWechatForAdmin(id));
     }
 
     @GetMapping("/automation")
     public ApiResponse<ContentAutomationView> automation(HttpServletRequest request,
                                                          @RequestParam(required = false) Long articleId) {
-        return ApiResponse.ok(contentArticleService.automation(currentUserId(request), articleId));
+        return ApiResponse.ok(contentArticleService.automationForAdmin(articleId));
     }
 
     @PostMapping("/automation/run")
@@ -129,15 +147,16 @@ public class AdminContentController {
     }
 
     @GetMapping("/automation/run/{jobId}")
-    public ApiResponse<ContentAgentRunJobView> automationAgentJob(@PathVariable String jobId) {
-        ContentAgentRunJobView job = contentAgentJobService.get(jobId);
+    public ApiResponse<ContentAgentRunJobView> automationAgentJob(HttpServletRequest request,
+                                                                  @PathVariable String jobId) {
+        ContentAgentRunJobView job = contentAgentJobService.get(currentUserId(request), jobId);
         return job == null ? ApiResponse.error(404, "Content agent job not found") : ApiResponse.ok(job);
     }
 
     @PostMapping("/automation/jobs/retry")
     public ApiResponse<ContentAutomationView> retryAutomationJob(HttpServletRequest request,
                                                                  @RequestBody RetryJobRequest body) {
-        return ApiResponse.ok(contentArticleService.retryAutomationJob(currentUserId(request), body == null ? null : body.getJobId()));
+        return ApiResponse.ok(contentArticleService.retryAutomationJobForAdmin(body == null ? null : body.getJobId()));
     }
 
     private Long currentUserId(HttpServletRequest request) {

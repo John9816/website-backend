@@ -19,26 +19,40 @@ import com.example.website.dto.music.SongSearchItem;
 import com.example.website.dto.music.ToplistDetailView;
 import com.example.website.dto.music.ToplistItem;
 import com.example.website.dto.music.ToplistListView;
+import com.example.website.config.OkHttpConfig;
+import com.example.website.service.PerformanceSingleFlight;
 import com.example.website.service.SysConfigService;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.HttpUrl;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class MusicService {
 
     private static final long SEARCH_TTL_SEC = 60L;
     private static final long PLAY_TTL_SEC = 1200L;
+    private static final long PLAY_EXPIRY_SAFETY_SEC = 30L;
+    private static final long PLAY_REQUEST_BUDGET_SEC = 8L;
+    private static final long DEFAULT_HEDGE_DELAY_MILLIS = 1200L;
+    private static final long NETEASE_HEDGE_DELAY_MILLIS = 650L;
     private static final long LYRIC_TTL_SEC = 6L * 60L * 60L;
     private static final long LYRIC_FALLBACK_TTL_SEC = 10L * 60L;
     private static final long TOPLIST_LIST_TTL_SEC = 30L * 60L;
@@ -73,8 +87,62 @@ public class MusicService {
     private final TuneFreePayClient tfPay;
     private final QqTextFallbackClient qqTextFallback;
     private final PlayUrlVerifier playUrlVerifier;
+    private final Executor musicResolverExecutor;
+    private final long hedgeDelayMillis;
     private final com.example.website.service.PerformanceSingleFlight singleFlight =
             new com.example.website.service.PerformanceSingleFlight();
+
+    @Autowired
+    public MusicService(MusicCache cache,
+                        SysConfigService configService,
+                        QqMusicClient qq,
+                        NeteaseMusicClient netease,
+                        KuwoMusicClient kuwo,
+                        ChkszNeteaseMusicClient chkszNetease,
+                        TuneFreePayClient tfPay,
+                        QqTextFallbackClient qqTextFallback,
+                        PlayUrlVerifier playUrlVerifier,
+                        @Qualifier(OkHttpConfig.EXECUTOR_MUSIC_RESOLVER) Executor musicResolverExecutor) {
+        this(cache, configService, qq, netease, kuwo, chkszNetease, tfPay, qqTextFallback,
+                playUrlVerifier, musicResolverExecutor, DEFAULT_HEDGE_DELAY_MILLIS);
+    }
+
+    MusicService(MusicCache cache,
+                 SysConfigService configService,
+                 QqMusicClient qq,
+                 NeteaseMusicClient netease,
+                 KuwoMusicClient kuwo,
+                 ChkszNeteaseMusicClient chkszNetease,
+                 TuneFreePayClient tfPay,
+                 QqTextFallbackClient qqTextFallback,
+                 PlayUrlVerifier playUrlVerifier) {
+        this(cache, configService, qq, netease, kuwo, chkszNetease, tfPay, qqTextFallback,
+                playUrlVerifier, Runnable::run, 0L);
+    }
+
+    MusicService(MusicCache cache,
+                 SysConfigService configService,
+                 QqMusicClient qq,
+                 NeteaseMusicClient netease,
+                 KuwoMusicClient kuwo,
+                 ChkszNeteaseMusicClient chkszNetease,
+                 TuneFreePayClient tfPay,
+                 QqTextFallbackClient qqTextFallback,
+                 PlayUrlVerifier playUrlVerifier,
+                 Executor musicResolverExecutor,
+                 long hedgeDelayMillis) {
+        this.cache = cache;
+        this.configService = configService;
+        this.qq = qq;
+        this.netease = netease;
+        this.kuwo = kuwo;
+        this.chkszNetease = chkszNetease;
+        this.tfPay = tfPay;
+        this.qqTextFallback = qqTextFallback;
+        this.playUrlVerifier = playUrlVerifier;
+        this.musicResolverExecutor = musicResolverExecutor;
+        this.hedgeDelayMillis = Math.max(0L, hedgeDelayMillis);
+    }
 
     public SearchResultView search(String rawSource, String keyword, int page, int pageSize) {
         return search(rawSource, keyword, null, page, pageSize);
@@ -383,22 +451,36 @@ public class MusicService {
     }
 
     public PlayInfo play(String rawSource, String id, String rawQuality) {
+        long startedNanos = System.nanoTime();
         MusicSource source = MusicSource.of(rawSource);
         PlaybackQualityRequest quality = PlaybackQualityRequest.parse(source, rawQuality);
         String sid = requireId(id);
-
         String key = "music:play:" + source.getValue() + ":" + sid + ":" + quality.getCacheValue();
-        PlayInfo cached = cache.get(key, PlayInfo.class);
-        if (cached != null) {
-            if (acceptCachedPlayInfo(key, source, sid, cached)) {
+
+        try (MusicRequestBudget.Scope ignored = MusicRequestBudget.start(PLAY_REQUEST_BUDGET_SEC, TimeUnit.SECONDS)) {
+            PlayInfo cached = cache.get(key, PlayInfo.class);
+            if (cached != null && acceptCachedPlayInfo(key, source, sid, cached)) {
                 PlayInfo response = copyWithFromCache(cached);
                 response.setRequestedQuality(quality.getRequestedValue());
+                logPlayResolution(source, quality, "cache", startedNanos, true, null);
                 return response;
             }
-        }
 
-        try (MusicRequestBudget.Scope ignored = MusicRequestBudget.start(8, TimeUnit.SECONDS)) {
-            return singleFlight.execute(key, () -> resolvePlay(source, quality, sid, key));
+            try {
+                PlayInfo resolved = singleFlight.execute(key,
+                        () -> resolvePlay(source, quality, sid, key),
+                        MusicRequestBudget.remainingNanos(), TimeUnit.NANOSECONDS);
+                logPlayResolution(source, quality, "upstream", startedNanos, false, null);
+                return resolved;
+            } catch (PerformanceSingleFlight.WaitTimeoutException ex) {
+                MusicBusinessException timeout = new MusicBusinessException(MusicErrorCode.UPSTREAM_TIMEOUT,
+                        "music play resolution exceeded its time budget", ex);
+                logPlayResolution(source, quality, "failed", startedNanos, false, timeout);
+                throw timeout;
+            } catch (RuntimeException ex) {
+                logPlayResolution(source, quality, "failed", startedNanos, false, ex);
+                throw ex;
+            }
         }
     }
 
@@ -406,61 +488,224 @@ public class MusicService {
                                  PlaybackQualityRequest quality,
                                  String sid,
                                  String key) {
-        PlayInfo info;
-        MusicBusinessException originalError = null;
-        SongSearchItem meta = null;
-
-        for (PlayResolver resolver : resolvePlayResolverOrder()) {
-            MusicRequestBudget.ensureRemaining();
-            switch (resolver) {
-                case PRIMARY:
-                    try {
-                        info = verifyPlayableOrThrow(source, sid, playWithPreferredResolver(source, sid, quality),
-                                "primary resolver");
-                        info.setRequestedQuality(quality.getRequestedValue());
-                        cache.put(key, info, PLAY_TTL_SEC);
-                        return info;
-                    } catch (MusicBusinessException ex) {
-                        originalError = ex;
-                    }
-                    break;
-                case QQ_TEXT:
-                    if (source != MusicSource.QQ) {
-                        break;
-                    }
-                    meta = ensureMeta(source, sid, meta);
-                    info = verifyPlayableOrNull(source, sid,
-                            tryQqTextFallback(source, sid, quality.getLegacyQuality(), meta),
-                            "qq text fallback");
-                    if (info != null) {
-                        info.setRequestedQuality(quality.getRequestedValue());
-                        cache.put(key, info, PLAY_TTL_SEC);
-                        return info;
-                    }
-                    break;
-                case CROSS_SOURCE:
-                    meta = ensureMeta(source, sid, meta);
-                    try {
-                        info = tryFallback(source, sid, quality.getLegacyQuality(), meta, originalError);
-                        info.setRequestedQuality(quality.getRequestedValue());
-                        cache.put(key, info, PLAY_TTL_SEC);
-                        return info;
-                    } catch (MusicBusinessException ex) {
-                        if (originalError == null) {
-                            originalError = ex;
-                        }
-                    }
-                    break;
-                default:
-                    break;
-            }
+        List<PlayResolver> resolvers = applicableResolvers(source, resolvePlayResolverOrder());
+        if (resolvers.isEmpty()) {
+            throw new MusicBusinessException(MusicErrorCode.NO_PLAYABLE_URL,
+                    "no playback resolver configured for " + source.getValue());
         }
 
-        if (originalError != null) {
-            throw originalError;
+        long deadlineNanos = MusicRequestBudget.deadlineNanos();
+        SongMetaLookup meta = new SongMetaLookup(source, sid);
+        ExecutorCompletionService<PlayInfo> completions = new ExecutorCompletionService<>(musicResolverExecutor);
+        Map<Future<PlayInfo>, PlayResolver> active = new HashMap<>();
+        Map<PlayResolver, MusicBusinessException> errors = new EnumMap<>(PlayResolver.class);
+        int nextResolver = 0;
+        long resolverHedgeDelayMillis = hedgeDelayMillisFor(source);
+
+        submitResolver(completions, active, resolvers.get(nextResolver++), source, quality, sid, meta,
+                deadlineNanos);
+        long nextHedgeNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(resolverHedgeDelayMillis);
+
+        try {
+            while (!active.isEmpty() || nextResolver < resolvers.size()) {
+                MusicRequestBudget.ensureRemaining();
+                if (active.isEmpty()) {
+                    submitResolver(completions, active, resolvers.get(nextResolver++), source, quality, sid, meta,
+                            deadlineNanos);
+                    nextHedgeNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(resolverHedgeDelayMillis);
+                    continue;
+                }
+
+                long remainingNanos = MusicRequestBudget.remainingNanos();
+                long waitNanos = remainingNanos;
+                if (nextResolver < resolvers.size()) {
+                    waitNanos = Math.min(waitNanos, Math.max(0L, nextHedgeNanos - System.nanoTime()));
+                }
+
+                Future<PlayInfo> completed;
+                try {
+                    completed = completions.poll(waitNanos, TimeUnit.NANOSECONDS);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    throw new MusicBusinessException(MusicErrorCode.UPSTREAM_TIMEOUT,
+                            "music play resolution was interrupted", ex);
+                }
+
+                if (completed == null) {
+                    if (nextResolver < resolvers.size()) {
+                        submitResolver(completions, active, resolvers.get(nextResolver++), source, quality, sid, meta,
+                                deadlineNanos);
+                        nextHedgeNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(resolverHedgeDelayMillis);
+                        continue;
+                    }
+                    MusicRequestBudget.ensureRemaining();
+                    continue;
+                }
+
+                PlayResolver resolver = active.remove(completed);
+                try {
+                    PlayInfo info = completed.get();
+                    if (info == null) continue;
+                    info.setRequestedQuality(quality.getRequestedValue());
+                    cachePlayInfo(key, info);
+                    log.debug("Music play resolver winner source={} resolver={}", source.getValue(), resolver.value);
+                    return info;
+                } catch (CancellationException ignored) {
+                    // A cancelled loser cannot become the selected result.
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    throw new MusicBusinessException(MusicErrorCode.UPSTREAM_TIMEOUT,
+                            "music play resolution was interrupted", ex);
+                } catch (ExecutionException ex) {
+                    MusicBusinessException error = asMusicError(ex.getCause());
+                    if (resolver != null) errors.put(resolver, error);
+                }
+            }
+        } finally {
+            cancelAll(active);
+        }
+
+        for (PlayResolver resolver : resolvers) {
+            MusicBusinessException error = errors.get(resolver);
+            if (error != null) throw error;
         }
         throw new MusicBusinessException(MusicErrorCode.NO_PLAYABLE_URL,
                 "no playable url for " + source.getValue() + ":" + sid);
+    }
+
+    private long hedgeDelayMillisFor(MusicSource source) {
+        if (source == MusicSource.NETEASE) {
+            return Math.min(hedgeDelayMillis, NETEASE_HEDGE_DELAY_MILLIS);
+        }
+        return hedgeDelayMillis;
+    }
+
+    private void submitResolver(ExecutorCompletionService<PlayInfo> completions,
+                                Map<Future<PlayInfo>, PlayResolver> active,
+                                PlayResolver resolver,
+                                MusicSource source,
+                                PlaybackQualityRequest quality,
+                                String sid,
+                                SongMetaLookup meta,
+                                long deadlineNanos) {
+        Future<PlayInfo> future = completions.submit(() -> {
+            try (MusicRequestBudget.Scope ignored = MusicRequestBudget.useDeadline(deadlineNanos)) {
+                return attemptResolver(resolver, source, quality, sid, meta);
+            }
+        });
+        active.put(future, resolver);
+    }
+
+    private PlayInfo attemptResolver(PlayResolver resolver,
+                                     MusicSource source,
+                                     PlaybackQualityRequest quality,
+                                     String sid,
+                                     SongMetaLookup meta) {
+        long startedNanos = System.nanoTime();
+        try {
+            MusicRequestBudget.ensureRemaining();
+            PlayInfo info;
+            switch (resolver) {
+                case PRIMARY:
+                    info = verifyPlayableOrThrow(source, sid,
+                            playWithPreferredResolver(source, sid, quality), "primary resolver");
+                    break;
+                case QQ_TEXT:
+                    info = verifyPlayableOrNull(source, sid,
+                            tryQqTextFallback(source, sid, quality.getLegacyQuality(), meta.get()),
+                            "qq text fallback");
+                    break;
+                case CROSS_SOURCE:
+                    info = tryFallback(source, sid, quality.getLegacyQuality(), meta.get(), null);
+                    break;
+                default:
+                    info = null;
+            }
+            logResolverAttempt(source, resolver, startedNanos, info == null ? "empty" : "success", null);
+            return info;
+        } catch (RuntimeException ex) {
+            logResolverAttempt(source, resolver, startedNanos, "failed", ex);
+            throw ex;
+        }
+    }
+
+    private static List<PlayResolver> applicableResolvers(MusicSource source, List<PlayResolver> configured) {
+        if (source == MusicSource.QQ) return configured;
+        List<PlayResolver> filtered = new ArrayList<>();
+        for (PlayResolver resolver : configured) {
+            if (resolver != PlayResolver.QQ_TEXT) filtered.add(resolver);
+        }
+        return filtered;
+    }
+
+    private static void cancelAll(Map<Future<PlayInfo>, PlayResolver> active) {
+        for (Future<PlayInfo> future : active.keySet()) {
+            future.cancel(true);
+        }
+        active.clear();
+    }
+
+    private static MusicBusinessException asMusicError(Throwable error) {
+        if (error instanceof MusicBusinessException) return (MusicBusinessException) error;
+        return new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
+                "music resolver failed: " + (error == null ? "unknown error" : error.getMessage()), error);
+    }
+
+    private void cachePlayInfo(String key, PlayInfo info) {
+        long ttlSeconds = PLAY_TTL_SEC;
+        Integer upstreamExpiry = info == null ? null : info.getExpireSec();
+        if (upstreamExpiry != null && upstreamExpiry > 0) {
+            long safeTtl = upstreamExpiry.longValue() - PLAY_EXPIRY_SAFETY_SEC;
+            if (safeTtl <= 0L) {
+                log.debug("Skipping play URL cache because upstream expiry is too close: expireSec={}", upstreamExpiry);
+                return;
+            }
+            ttlSeconds = Math.min(ttlSeconds, safeTtl);
+        }
+        cache.put(key, info, ttlSeconds);
+    }
+
+    private void logResolverAttempt(MusicSource source,
+                                    PlayResolver resolver,
+                                    long startedNanos,
+                                    String outcome,
+                                    Throwable error) {
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
+        String errorType = error == null ? "none" : error.getClass().getSimpleName();
+        log.info("Music resolver stage source={} resolver={} outcome={} elapsedMs={} errorType={}",
+                source.getValue(), resolver.value, outcome, elapsedMillis, errorType);
+    }
+
+    private void logPlayResolution(MusicSource source,
+                                   PlaybackQualityRequest quality,
+                                   String outcome,
+                                   long startedNanos,
+                                   boolean cacheHit,
+                                   Throwable error) {
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
+        String errorType = error == null ? "none" : error.getClass().getSimpleName();
+        log.info("Music play resolution source={} quality={} outcome={} cacheHit={} elapsedMs={} errorType={}",
+                source.getValue(), quality.getCacheValue(), outcome, cacheHit, elapsedMillis, errorType);
+    }
+
+    private final class SongMetaLookup {
+        private final MusicSource source;
+        private final String id;
+        private boolean loaded;
+        private SongSearchItem value;
+
+        private SongMetaLookup(MusicSource source, String id) {
+            this.source = source;
+            this.id = id;
+        }
+
+        private synchronized SongSearchItem get() {
+            if (!loaded) {
+                value = fetchSongInfoOn(source, id);
+                loaded = true;
+            }
+            return value;
+        }
     }
 
     private PlayInfo playWithPreferredResolver(MusicSource source,
@@ -501,6 +746,10 @@ public class MusicService {
             MusicRequestBudget.ensureRemaining();
             try {
                 PlayInfo info = tfPay.play(source, id, q);
+                if (info == null) {
+                    throw new MusicBusinessException(MusicErrorCode.NO_PLAYABLE_URL,
+                            "no playable url for " + source.getValue() + ":" + id);
+                }
                 if (isEmpty(info.getActualQuality())) {
                     info.setActualQuality(q.getValue());
                 }
@@ -563,6 +812,10 @@ public class MusicService {
                 if (pick == null) continue;
 
                 PlayInfo alt = tfPay.play(other, pick.getId(), quality);
+                if (alt == null) {
+                    throw new MusicBusinessException(MusicErrorCode.NO_PLAYABLE_URL,
+                            "no playable url for " + other.getValue() + ":" + pick.getId());
+                }
                 alt.setSource(requested);
                 alt.setId(requestedId);
                 alt.setActualSource(other);
@@ -662,10 +915,14 @@ public class MusicService {
     private SongSearchItem pickMatch(List<SongSearchItem> hits, SongSearchItem target) {
         if (hits == null || hits.isEmpty()) return null;
         String targetName = normalise(target.getName());
+        String targetArtist = normaliseArtist(target.getArtist());
         for (SongSearchItem h : hits) {
-            if (normalise(h.getName()).equals(targetName)) return h;
+            if (!normalise(h.getName()).equals(targetName)) continue;
+            if (targetArtist.isEmpty() || targetArtist.equals(normaliseArtist(h.getArtist()))) {
+                return h;
+            }
         }
-        return hits.get(0);
+        return null;
     }
 
     private static String normalise(String s) {
@@ -809,6 +1066,8 @@ public class MusicService {
         if (s == null) return "";
         return s.toLowerCase()
                 .replace("\uFF0F", "/")
+                .replace("、", "/")
+                .replace("&", "/")
                 .replaceAll("\\s*/\\s*", "/")
                 .replaceAll("\\s+", " ")
                 .trim();
@@ -821,7 +1080,7 @@ public class MusicService {
     }
 
     private List<PlayResolver> resolvePlayResolverOrder() {
-        String configured = DEFAULT_PLAY_RESOLVER_ORDER;
+        String configured = configuredValue(CFG_PLAY_RESOLVER_ORDER, DEFAULT_PLAY_RESOLVER_ORDER);
         List<PlayResolver> parsed = new ArrayList<>();
         for (String token : configured.split("[,\\r\\n]+")) {
             PlayResolver resolver = PlayResolver.of(token);
@@ -837,7 +1096,7 @@ public class MusicService {
     }
 
     private List<MusicSource> resolveCrossSourceOrder() {
-        String configured = DEFAULT_CROSS_SOURCE_ORDER;
+        String configured = configuredValue(CFG_CROSS_SOURCE_ORDER, DEFAULT_CROSS_SOURCE_ORDER);
         List<MusicSource> parsed = new ArrayList<>();
         for (String token : configured.split("[,\\r\\n]+")) {
             try {
@@ -854,6 +1113,18 @@ public class MusicService {
             return FALLBACK_ORDER;
         }
         return parsed;
+    }
+
+    private String configuredValue(String key, String fallback) {
+        try {
+            return configService.getValue(key)
+                    .map(String::trim)
+                    .filter(value -> !value.isEmpty())
+                    .orElse(fallback);
+        } catch (RuntimeException ex) {
+            log.warn("Failed to read {}, using default: {}", key, fallback);
+            return fallback;
+        }
     }
 
     private PlayInfo copyWithFromCache(PlayInfo src) {

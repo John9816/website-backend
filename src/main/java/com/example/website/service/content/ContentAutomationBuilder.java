@@ -28,7 +28,8 @@ public class ContentAutomationBuilder {
     private final PublishableArticleContract publishableArticleContract;
 
     public ContentAutomationView buildAutomation(ContentArticle article, String errorMessage) {
-        String stage = ContentArticle.STATUS_PUBLISHED.equals(article.getStatus()) ? "publish"
+        String stage = (ContentArticle.STATUS_PUBLISHED.equals(article.getStatus())
+                || ContentArticle.STATUS_PUBLISH_SUBMITTED.equals(article.getStatus())) ? "publish"
                 : ContentArticle.STATUS_WECHAT_DRAFT.equals(article.getStatus()) ? "wechat_draft"
                 : hasText(errorMessage) ? "quality_gate" : "draft_ready";
         return buildAutomation(article, errorMessage, stage);
@@ -42,25 +43,36 @@ public class ContentAutomationBuilder {
             logs.add(logItem(article.getId() + "-wechat-draft", "wechat_draft", errorMessage == null ? "SUCCESS" : "FAILED",
                     errorMessage == null ? "微信草稿已创建" : "微信草稿创建失败", errorMessage, now));
         }
-        if (ContentArticle.STATUS_PUBLISHED.equals(article.getStatus()) || "publish".equals(currentStage)) {
-            logs.add(logItem(article.getId() + "-publish", "publish", errorMessage == null ? "SUCCESS" : "FAILED",
-                    errorMessage == null ? "微信发布已提交" : "微信发布提交失败", errorMessage, now));
+        if (ContentArticle.STATUS_PUBLISHED.equals(article.getStatus())
+                || ContentArticle.STATUS_PUBLISH_SUBMITTED.equals(article.getStatus())
+                || "publish".equals(currentStage)) {
+            String publishStatus = errorMessage != null ? "FAILED"
+                    : ContentArticle.STATUS_PUBLISHED.equals(article.getStatus()) ? "SUCCESS" : "PENDING";
+            logs.add(logItem(article.getId() + "-publish", "publish", publishStatus,
+                    "SUCCESS".equals(publishStatus) ? "微信文章已发布"
+                            : "PENDING".equals(publishStatus) ? "微信发布已提交，等待结果" : "微信发布提交失败",
+                    errorMessage, now));
         }
 
         List<Object> jobs = new ArrayList<>();
         jobs.add(jobItem(article.getId() + "-wechat-draft-job", "wechat_draft",
                 errorMessage != null && "wechat_draft".equals(currentStage) ? "FAILED" : "SUCCESS", errorMessage, now));
-        if (ContentArticle.STATUS_PUBLISHED.equals(article.getStatus()) || "publish".equals(currentStage)) {
+        if (ContentArticle.STATUS_PUBLISHED.equals(article.getStatus())
+                || ContentArticle.STATUS_PUBLISH_SUBMITTED.equals(article.getStatus())
+                || "publish".equals(currentStage)) {
+            String publishStatus = errorMessage != null ? "FAILED"
+                    : ContentArticle.STATUS_PUBLISHED.equals(article.getStatus()) ? "SUCCESS" : "PENDING";
             jobs.add(jobItem(article.getId() + "-publish-job", "publish",
-                    errorMessage != null && "publish".equals(currentStage) ? "FAILED" : "SUCCESS", errorMessage, now));
+                    publishStatus, errorMessage, now));
         }
 
         List<Object> records = new ArrayList<>();
         if (hasText(article.getWechatMediaId()) || hasText(article.getWechatPublishId())) {
             Map<String, Object> record = new LinkedHashMap<>();
             record.put("id", article.getId() + "-wechat");
-            record.put("action", ContentArticle.STATUS_PUBLISHED.equals(article.getStatus()) ? "publish" : "draft");
-            record.put("status", errorMessage == null ? "SUCCESS" : "FAILED");
+            record.put("action", isPublishRecord(article, currentStage) ? "publish" : "draft");
+            record.put("status", errorMessage != null ? "FAILED"
+                    : ContentArticle.STATUS_PUBLISH_SUBMITTED.equals(article.getStatus()) ? "PENDING" : "SUCCESS");
             record.put("mediaId", article.getWechatMediaId());
             record.put("publishId", article.getWechatPublishId());
             record.put("url", article.getWechatUrl());
@@ -74,7 +86,7 @@ public class ContentAutomationBuilder {
     public ContentAutomationView buildAgentAutomation(ContentArticle article, Map<String, Object> topic) {
         String now = LocalDateTime.now().toString();
         String error = article.getErrorMessage();
-        boolean localDraft = article.getWechatMediaId() != null && article.getWechatMediaId().startsWith("local-");
+        boolean localDraft = ContentArticle.STATUS_DRAFT.equals(article.getStatus()) && hasText(error);
         boolean draftOk = hasText(article.getWechatMediaId()) && !localDraft && !hasText(error);
         String currentStage = resolveAgentStage(article, error, draftOk, localDraft);
 
@@ -109,7 +121,7 @@ public class ContentAutomationBuilder {
         if (hasText(article.getWechatMediaId())) {
             Map<String, Object> record = new LinkedHashMap<>();
             record.put("id", article.getId() + "-agent-wechat");
-            record.put("action", "draft");
+            record.put("action", isPublishRecord(article, currentStage) ? "publish" : "draft");
             record.put("status", draftOk ? "SUCCESS" : "FAILED");
             record.put("mediaId", article.getWechatMediaId());
             record.put("publishId", article.getWechatPublishId());
@@ -121,8 +133,17 @@ public class ContentAutomationBuilder {
         return new ContentAutomationView(currentStage, logs, jobs, records, buildArtifacts(article), buildQualityGate(article));
     }
 
+    private boolean isPublishRecord(ContentArticle article, String currentStage) {
+        return "publish".equals(currentStage)
+                || hasText(article.getWechatPublishId())
+                || ContentArticle.STATUS_PUBLISH_SUBMITTED.equals(article.getStatus())
+                || ContentArticle.STATUS_PUBLISH_FAILED.equals(article.getStatus())
+                || ContentArticle.STATUS_PUBLISHED.equals(article.getStatus());
+    }
+
     private String resolveAgentStage(ContentArticle article, String error, boolean draftOk, boolean localDraft) {
-        if (ContentArticle.STATUS_PUBLISHED.equals(article.getStatus())) {
+        if (ContentArticle.STATUS_PUBLISHED.equals(article.getStatus())
+                || ContentArticle.STATUS_PUBLISH_SUBMITTED.equals(article.getStatus())) {
             return "publish";
         }
         if (hasText(error)) {

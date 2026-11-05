@@ -154,6 +154,44 @@ public class WechatOfficialAccountClient {
         return new PublishResult(publishId);
     }
 
+    public PublishStatusResult getPublishStatus(String appId, String appSecret, String publishId) {
+        if (!hasText(publishId)) {
+            throw new BusinessException(400, "Missing WeChat publish_id");
+        }
+        String token = accessToken(appId, appSecret);
+        HttpUrl url = HttpUrl.parse(API_BASE + "/cgi-bin/freepublish/get")
+                .newBuilder()
+                .addQueryParameter("access_token", token)
+                .build();
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("publish_id", publishId);
+        Map<String, Object> json = postJson(url.toString(), payload);
+        assertWechatOk(json, "查询微信发布状态失败");
+
+        int status = asInt(json.get("publish_status"), -1);
+        if (status < 0) {
+            throw new BusinessException(502, "查询微信发布状态失败：未返回 publish_status");
+        }
+        String articleUrl = null;
+        Object detailValue = json.get("article_detail");
+        if (detailValue instanceof Map) {
+            Object itemsValue = ((Map<?, ?>) detailValue).get("item");
+            if (itemsValue instanceof java.util.List && !((java.util.List<?>) itemsValue).isEmpty()) {
+                Object first = ((java.util.List<?>) itemsValue).get(0);
+                if (first instanceof Map) {
+                    articleUrl = asString(((Map<?, ?>) first).get("article_url"));
+                }
+            }
+        }
+        return new PublishStatusResult(
+                status,
+                asString(json.get("article_id")),
+                articleUrl,
+                asString(json.get("fail_idx")),
+                asString(json.get("fail_errcode"))
+        );
+    }
+
     private String accessToken(String appId, String appSecret) {
         if (!configured(appId, appSecret)) {
             throw new BusinessException(500, "System config missing: wechat.appId / wechat.appSecret");
@@ -307,5 +345,23 @@ public class WechatOfficialAccountClient {
     @AllArgsConstructor
     public static class PublishResult {
         private String publishId;
+    }
+
+    @Data
+    @AllArgsConstructor
+    public static class PublishStatusResult {
+        private int status;
+        private String articleId;
+        private String articleUrl;
+        private String failIndex;
+        private String failErrorCode;
+
+        public boolean published() {
+            return status == 0;
+        }
+
+        public boolean pending() {
+            return status == 1;
+        }
     }
 }

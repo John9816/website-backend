@@ -49,10 +49,10 @@
 
 ```bash
 # 备份数据库
-ssh root@8.156.95.93 'mysqldump -u root -pwangweijie1314. website > /backup/website_$(date +%Y%m%d_%H%M%S).sql'
+ssh root@8.156.95.93 'mysqldump --defaults-extra-file=/root/.config/website/mysql.cnf website > /backup/website_$(date +%Y%m%d_%H%M%S).sql'
 
 # 创建索引（约需5-10分钟）
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website < /opt/website/current/backend/db/migrations/0010_performance_indexes.sql'
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website < /opt/website/current/backend/db/migrations/0010_performance_indexes.sql'
 ```
 
 **预期收益**:
@@ -121,13 +121,13 @@ ssh root@8.156.95.93 'sudo reboot'  # 需要重启生效
 
 ```bash
 # 1. 备份数据库
-ssh root@8.156.95.93 'mysqldump -u root -pwangweijie1314. website > /backup/website_$(date +%Y%m%d_%H%M%S).sql'
+ssh root@8.156.95.93 'mysqldump --defaults-extra-file=/root/.config/website/mysql.cnf website > /backup/website_$(date +%Y%m%d_%H%M%S).sql'
 
 # 2. 创建索引 (5-10分钟)
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website < /opt/website/current/backend/db/migrations/0010_performance_indexes.sql'
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website < /opt/website/current/backend/db/migrations/0010_performance_indexes.sql'
 
 # 3. 验证索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 SELECT TABLE_NAME, INDEX_NAME 
 FROM information_schema.STATISTICS 
 WHERE TABLE_SCHEMA = \"website\" AND INDEX_NAME LIKE \"idx_%\" 

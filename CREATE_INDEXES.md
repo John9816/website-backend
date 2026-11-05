@@ -1,5 +1,7 @@
 # 📊 数据库索引创建指南
 
+> 仅在确认迁移尚未执行时使用。ECS 的 `/root/.config/website/mysql.cnf` 必须由 root 持有且权限为 600，使用 SSH 私钥连接。
+
 **目标**: 为website数据库创建40+个性能索引  
 **预计耗时**: 5-10分钟  
 **建议执行时间**: 凌晨2:00-5:00（业务低峰期）
@@ -22,7 +24,7 @@
 ssh root@8.156.95.93 'df -h /var/lib/mysql'
 
 # 2. 检查数据库大小
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf -e "
 SELECT 
     table_schema AS Database_Name,
     ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS Size_MB
@@ -31,7 +33,7 @@ WHERE table_schema = \"website\"
 GROUP BY table_schema;"'
 
 # 3. 检查当前索引数量
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 SELECT COUNT(*) as current_indexes 
 FROM information_schema.STATISTICS 
 WHERE TABLE_SCHEMA = \"website\";"'
@@ -46,7 +48,7 @@ WHERE TABLE_SCHEMA = \"website\";"'
 ssh root@8.156.95.93 'mkdir -p /backup'
 
 # 完整备份（推荐）
-ssh root@8.156.95.93 'mysqldump -u root -pwangweijie1314. \
+ssh root@8.156.95.93 'mysqldump --defaults-extra-file=/root/.config/website/mysql.cnf \
     --single-transaction \
     --routines \
     --triggers \
@@ -68,7 +70,7 @@ ssh root@8.156.95.93 'tail -20 /backup/website_$(ls -t /backup/ | grep website |
 
 ```bash
 # 执行索引创建脚本
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website < /opt/website/current/backend/db/migrations/0010_performance_indexes.sql'
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website < /opt/website/current/backend/db/migrations/0010_performance_indexes.sql'
 
 # 查看执行结果
 echo $?  # 0表示成功
@@ -78,40 +80,40 @@ echo $?  # 0表示成功
 
 ```bash
 # 1. 用户相关索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 CREATE INDEX IF NOT EXISTS idx_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_created_at ON users(created_at);
 CREATE INDEX IF NOT EXISTS idx_last_check_in ON users(last_check_in_date);
 "'
 
 # 2. 导航相关索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 CREATE INDEX IF NOT EXISTS idx_category_order ON nav_links(category_id, display_order);
 CREATE INDEX IF NOT EXISTS idx_url ON nav_links(url);
 CREATE INDEX IF NOT EXISTS idx_parent_order ON nav_categories(parent_id, display_order);
 "'
 
 # 3. 音乐相关索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 CREATE INDEX IF NOT EXISTS idx_provider_id_order ON music_songs(provider, source_id, display_order);
 CREATE INDEX IF NOT EXISTS idx_name_artist ON music_songs(name, artist);
 CREATE INDEX IF NOT EXISTS idx_provider_type ON music_playlists(provider, playlist_type);
 "'
 
 # 4. 图片相关索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 CREATE INDEX IF NOT EXISTS idx_user_status_created ON image_generation_tasks(user_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_status_created ON image_generation_tasks(status, created_at);
 "'
 
 # 5. 知识库相关索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 CREATE INDEX IF NOT EXISTS idx_user_created ON kb_entries(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_user_category ON kb_entries(user_id, category);
 "'
 
 # 6. 播放记录索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 CREATE INDEX IF NOT EXISTS idx_user_song ON user_music_play_records(user_id, song_id);
 CREATE INDEX IF NOT EXISTS idx_user_created ON user_music_play_records(user_id, created_at);
 "'
@@ -123,7 +125,7 @@ CREATE INDEX IF NOT EXISTS idx_user_created ON user_music_play_records(user_id, 
 
 ```bash
 # 1. 统计新增索引数量
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 SELECT 
     TABLE_NAME,
     COUNT(*) as index_count
@@ -133,7 +135,7 @@ GROUP BY TABLE_NAME
 ORDER BY TABLE_NAME;"'
 
 # 2. 查看所有新增的性能索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 SELECT 
     TABLE_NAME,
     INDEX_NAME,
@@ -145,7 +147,7 @@ GROUP BY TABLE_NAME, INDEX_NAME
 ORDER BY TABLE_NAME, INDEX_NAME;"'
 
 # 3. 验证关键索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 SHOW INDEX FROM nav_links WHERE Key_name = \"idx_category_order\";
 SHOW INDEX FROM music_songs WHERE Key_name = \"idx_provider_id_order\";
 SHOW INDEX FROM user_music_play_records WHERE Key_name = \"idx_user_song\";"'
@@ -157,11 +159,11 @@ SHOW INDEX FROM user_music_play_records WHERE Key_name = \"idx_user_song\";"'
 
 ```bash
 # 1. 测试导航查询性能
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 EXPLAIN SELECT * FROM nav_links WHERE category_id = 1 ORDER BY display_order LIMIT 20;"'
 
 # 2. 测试音乐查询性能
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 EXPLAIN SELECT * FROM music_songs WHERE provider = \"netease\" AND source_id LIKE \"123%\" LIMIT 20;"'
 
 # 3. API响应时间对比
@@ -179,13 +181,13 @@ done
 
 ```bash
 # 方式1: 删除所有新增索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website < /opt/website/current/backend/db/migrations/rollback_0010.sql'
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website < /opt/website/current/backend/db/migrations/rollback_0010.sql'
 
 # 方式2: 从备份恢复
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website < /backup/website_YYYYMMDD_HHMMSS.sql'
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website < /backup/website_YYYYMMDD_HHMMSS.sql'
 
 # 方式3: 手动删除特定索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 DROP INDEX idx_category_order ON nav_links;
 DROP INDEX idx_provider_id_order ON music_songs;"'
 ```
@@ -210,10 +212,10 @@ DROP INDEX idx_provider_id_order ON music_songs;"'
 
 ```bash
 # 检查MySQL进程
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. -e "SHOW PROCESSLIST;"'
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf -e "SHOW PROCESSLIST;"'
 
 # 调整超时时间
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 SET SESSION lock_wait_timeout = 300;
 SET SESSION innodb_lock_wait_timeout = 300;"'
 ```
@@ -225,17 +227,17 @@ SET SESSION innodb_lock_wait_timeout = 300;"'
 ssh root@8.156.95.93 'journalctl --vacuum-time=7d'
 
 # 清理MySQL binlog
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. -e "PURGE BINARY LOGS BEFORE NOW() - INTERVAL 7 DAY;"'
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf -e "PURGE BINARY LOGS BEFORE NOW() - INTERVAL 7 DAY;"'
 ```
 
 ### 问题3: 表锁定
 
 ```bash
 # 查看锁定状态
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. -e "SHOW OPEN TABLES WHERE In_use > 0;"'
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf -e "SHOW OPEN TABLES WHERE In_use > 0;"'
 
 # 终止阻塞进程（谨慎使用）
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. -e "KILL <process_id>;"'
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf -e "KILL <process_id>;"'
 ```
 
 ---
@@ -253,16 +255,16 @@ ssh root@8.156.95.93 'df -h /var/lib/mysql'
 
 echo -e "\n=== 步骤2: 备份数据库 ==="
 ssh root@8.156.95.93 'mkdir -p /backup && \
-mysqldump -u root -pwangweijie1314. --single-transaction website > /backup/website_$(date +%Y%m%d_%H%M%S).sql'
+mysqldump --defaults-extra-file=/root/.config/website/mysql.cnf --single-transaction website > /backup/website_$(date +%Y%m%d_%H%M%S).sql'
 
 echo -e "\n=== 步骤3: 验证备份 ==="
 ssh root@8.156.95.93 'ls -lh /backup/website_*.sql | tail -1'
 
 echo -e "\n=== 步骤4: 创建索引 ==="
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website < /opt/website/current/backend/db/migrations/0010_performance_indexes.sql'
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website < /opt/website/current/backend/db/migrations/0010_performance_indexes.sql'
 
 echo -e "\n=== 步骤5: 验证索引 ==="
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 SELECT COUNT(*) as new_indexes 
 FROM information_schema.STATISTICS 
 WHERE TABLE_SCHEMA = \"website\" AND INDEX_NAME LIKE \"idx_%\";"'

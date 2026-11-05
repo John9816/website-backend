@@ -5,7 +5,10 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.repository.query.Param;
+
+import javax.persistence.LockModeType;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -51,7 +54,49 @@ public interface ContentArticleRepository extends JpaRepository<ContentArticle, 
             countQuery = "select count(a.id) from ContentArticle a where a.userId = :userId")
     Page<ContentArticleSummary> findSummariesByUserId(@Param("userId") Long userId, Pageable pageable);
 
+    /**
+     * Site-wide projection used only by the admin content console.  Keep this
+     * separate from the user-scoped query above so a caller cannot accidentally
+     * broaden an ordinary user's article listing.
+     */
+    @Query(value = "select a.id as id, " +
+            "a.title as title, " +
+            "a.digest as digest, " +
+            "a.coverPrompt as coverPrompt, " +
+            "a.coverImageUrl as coverImageUrl, " +
+            "a.model as model, " +
+            "a.category as category, " +
+            "a.layoutTheme as layoutTheme, " +
+            "a.imageMode as imageMode, " +
+            "a.qualityScore as qualityScore, " +
+            "a.status as status, " +
+            "a.wechatMediaId as wechatMediaId, " +
+            "a.wechatPublishId as wechatPublishId, " +
+            "a.wechatUrl as wechatUrl, " +
+            "a.errorMessage as errorMessage, " +
+            "a.createdAt as createdAt, " +
+            "a.updatedAt as updatedAt " +
+            "from ContentArticle a " +
+            "order by a.updatedAt desc, a.id desc",
+            countQuery = "select count(a.id) from ContentArticle a")
+    Page<ContentArticleSummary> findAllSummariesForAdmin(Pageable pageable);
+
     Optional<ContentArticle> findByIdAndUserId(Long id, Long userId);
+
+    /** Explicit unscoped read for the admin content console. */
+    @Query("select a from ContentArticle a where a.id = :id")
+    Optional<ContentArticle> findByIdForAdmin(@Param("id") Long id);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select a from ContentArticle a where a.id = :id and a.userId = :userId")
+    Optional<ContentArticle> findLockedByIdAndUserId(@Param("id") Long id, @Param("userId") Long userId);
+
+    /** Explicit site-wide lock for admin mutations and WeChat delivery retries. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select a from ContentArticle a where a.id = :id")
+    Optional<ContentArticle> findLockedByIdForAdmin(@Param("id") Long id);
+
+    List<ContentArticle> findTop50ByStatusAndWechatPublishIdIsNotNullOrderByUpdatedAtAsc(String status);
 
     interface ContentArticleSummary {
         Long getId();

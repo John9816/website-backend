@@ -1,5 +1,7 @@
 # 🎉 ECS部署完成总结
 
+> 这是 2026-09-12 的历史记录，不能当作当前生产状态或可直接执行的发布方案。请先查看 `docs/production-release.md`。
+
 **部署时间**: 2026-09-12 21:30  
 **服务器**: 8.156.95.93 (阿里云ECS 1核2GB)  
 **状态**: ✅ 应用已部署，服务运行正常
@@ -53,13 +55,13 @@
 #### 手动执行
 ```bash
 # 1. 备份数据库
-ssh root@8.156.95.93 'mysqldump -u root -pwangweijie1314. website > /backup/website_$(date +%Y%m%d_%H%M%S).sql'
+ssh root@8.156.95.93 'mysqldump --defaults-extra-file=/root/.config/website/mysql.cnf website > /backup/website_$(date +%Y%m%d_%H%M%S).sql'
 
 # 2. 创建索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website < /opt/website/current/backend/db/migrations/0010_performance_indexes.sql'
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website < /opt/website/current/backend/db/migrations/0010_performance_indexes.sql'
 
 # 3. 验证索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 SELECT COUNT(*) FROM information_schema.STATISTICS 
 WHERE TABLE_SCHEMA = \"website\" AND INDEX_NAME LIKE \"idx_%\";"'
 ```
@@ -136,14 +138,14 @@ ssh root@8.156.95.93 'bash /opt/website/current/ops/remote-rollback.sh previous'
 ./create-indexes.sh
 
 # 验证索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website -e "
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "
 SELECT TABLE_NAME, COUNT(*) as idx_count 
 FROM information_schema.STATISTICS 
 WHERE TABLE_SCHEMA = \"website\" AND INDEX_NAME LIKE \"idx_%\" 
 GROUP BY TABLE_NAME;"'
 
 # 回滚索引
-ssh root@8.156.95.93 'mysql -u root -pwangweijie1314. website < /opt/website/current/backend/db/migrations/rollback_0010.sql'
+ssh root@8.156.95.93 'mysql --defaults-extra-file=/root/.config/website/mysql.cnf website < /opt/website/current/backend/db/migrations/rollback_0010.sql'
 ```
 
 ### 监控相关
@@ -238,7 +240,7 @@ ssh root@8.156.95.93 'tail -f /opt/website/current/logs/application.log'
 **ECS信息**:
 - IP: 8.156.95.93
 - 用户: root
-- 密码: wangweijie1314.
+- 连接方式: 使用已授权的 SSH 私钥，参见 `docs/production-release.md`。
 
 **应用路径**:
 - 当前版本: `/opt/website/current`

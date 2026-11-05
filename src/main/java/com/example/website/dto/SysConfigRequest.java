@@ -12,9 +12,11 @@ public class SysConfigRequest {
     @Size(max = 100)
     private String configKey;
 
-    @NotBlank(message = "configValue is required")
     @Size(max = 2000)
     private String configValue;
+
+    /** Keep the current secret while editing its key or description. */
+    private Boolean preserveValue;
 
     @Size(max = 500)
     private String description;

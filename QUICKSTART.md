@@ -214,7 +214,7 @@ EOF
 **ECS服务器**:
 - IP: 8.156.95.93
 - 账号: root
-- 密码: wangweijie1314.
+- 连接方式: 使用已授权的 SSH 私钥，参见 `docs/production-release.md`。
 
 **项目路径**:
 - 部署目录: `/opt/website/current/`

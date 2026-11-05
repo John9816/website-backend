@@ -20,6 +20,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import okhttp3.Call;
 import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -761,7 +762,9 @@ public class NeteaseMusicClient {
     }
 
     private Map<String, Object> callJson(Request req, MusicErrorCode onFail) {
-        try (Response resp = okHttpClient.newCall(req).execute()) {
+        Call call = okHttpClient.newCall(req);
+        MusicRequestBudget.constrainToRemaining(call);
+        try (Response resp = call.execute()) {
             ResponseBody rb = resp.body();
             String raw = rb == null ? "" : rb.string();
             if (!resp.isSuccessful()) {

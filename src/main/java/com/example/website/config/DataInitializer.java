@@ -37,8 +37,6 @@ public class DataInitializer implements CommandLineRunner {
             "image.upload.dir",
             "image.persist.remote-url-mode",
             "music.tunefree.udid",
-            "music.play.resolverOrder",
-            "music.play.crossSourceOrder",
             "content.autopilot.dedupDays",
             "content.evidence.maxQueries",
             "content.evidence.perQuery",
@@ -123,7 +121,7 @@ public class DataInitializer implements CommandLineRunner {
                 "https://wisart.kuaileshifu.com/v1/images/generations",
                 "Upstream image generation API endpoint."));
         all.add(new SeedEntry(ImageService.CFG_API_KEY,
-                "sk-xxx",
+                "",
                 "Bearer API key for image generation; replace via admin config API."));
         all.add(new SeedEntry(ImageService.CFG_MODEL,
                 "gpt-image-2",
@@ -179,6 +177,14 @@ public class DataInitializer implements CommandLineRunner {
                 "TuneFreeNext account."));
         all.add(new SeedEntry(TuneFreeAuthService.CFG_PASSWORD, "",
                 "TuneFreeNext password."));
+        all.add(new SeedEntry(com.example.website.service.music.MusicService.CFG_PLAY_RESOLVER_ORDER,
+                com.example.website.service.music.MusicService.DEFAULT_PLAY_RESOLVER_ORDER,
+                "Ordered playback resolvers: primary, qq_text, cross_source."));
+        all.add(new SeedEntry(com.example.website.service.music.MusicService.CFG_CROSS_SOURCE_ORDER,
+                com.example.website.service.music.MusicService.DEFAULT_CROSS_SOURCE_ORDER,
+                "Ordered sources used when matching a playable copy on another platform."));
+        all.add(new SeedEntry(com.example.website.service.music.QqTextFallbackClient.CFG_API_KEY, "",
+                "API key for QQ text playback fallback. Empty disables only that resolver."));
 
         // Content factory autopilot: unattended topic -> write -> WeChat draft pipeline.
         all.add(new SeedEntry("content.autopilot.enabled", "false",

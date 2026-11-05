@@ -1,17 +1,24 @@
 package com.example.website.service.content;
 
+import com.example.website.common.BusinessException;
 import com.example.website.dto.content.ContentAgentRunRequest;
-import com.example.website.repository.ContentArticleRepository;
+import com.example.website.dto.content.ContentAgentRunResult;
+import com.example.website.dto.content.ContentAgentRunJobView;
+import com.example.website.dto.content.ContentArticleView;
 import com.example.website.service.SysConfigService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static com.example.website.service.content.ContentTextUtils.hasText;
 import static com.example.website.service.content.ContentTextUtils.trimToNull;
@@ -33,8 +40,7 @@ import static com.example.website.service.content.ContentTextUtils.trimToNull;
  *   <li>{@code content.autopilot.generateCover} — generate a cover image; default true</li>
  * </ul>
  *
- * <p>Slot de-duplication is done against the article table (no extra state table), so a restart
- * mid-day never re-fires an already-served slot. Only the latest due slot is considered on each
+ * <p>Slot de-duplication uses a durable keyed record independent of manual articles. Only the latest due slot is considered on each
  * tick, so starting the app in the evening does not backfill the whole day.
  */
 @Service
@@ -47,7 +53,71 @@ public class ContentAutopilotService {
 
     private final SysConfigService configService;
     private final ContentArticleService contentArticleService;
-    private final ContentArticleRepository articleRepository;
+    private final ContentAgentJobService agentJobService;
+    private final ContentAutopilotSlotService slotService;
+
+    public Map<String, Object> settings(Long userId) {
+        boolean enabled = "true".equalsIgnoreCase(config("content.autopilot.enabled"))
+                && userId != null && userId.equals(parseLong(config("content.autopilot.userId")));
+        String times = config("content.autopilot.times");
+        String categories = config("content.autopilot.categories");
+        boolean autoPublish = "true".equalsIgnoreCase(config("content.autopilot.autoPublish"));
+        boolean generateCover = !"false".equalsIgnoreCase(config("content.autopilot.generateCover"));
+        List<String> blockers = blockers(autoPublish, generateCover);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("enabled", enabled);
+        result.put("times", timeStrings(parseTimes(times)));
+        result.put("categories", parseCategories(categories));
+        result.put("autoPublish", autoPublish);
+        result.put("generateCover", generateCover);
+        result.put("nextRunAt", enabled ? nextRunAt(parseTimes(times), LocalDateTime.now()) : null);
+        result.put("blockers", blockers);
+        return result;
+    }
+
+    @Transactional
+    public Map<String, Object> updateSettings(Long userId, Map<String, Object> body) {
+        if (userId == null) throw new BusinessException(401, "Unauthorized");
+        if (body == null) throw new BusinessException(400, "Request body is required");
+        boolean enabled = flag(body.get("enabled"),
+                "true".equalsIgnoreCase(config("content.autopilot.enabled")));
+        boolean autoPublish = flag(body.get("autoPublish"),
+                "true".equalsIgnoreCase(config("content.autopilot.autoPublish")));
+        boolean generateCover = flag(body.get("generateCover"),
+                !"false".equalsIgnoreCase(config("content.autopilot.generateCover")));
+        List<LocalTime> times = body.containsKey("times")
+                ? requiredTimes(body.get("times")) : parseTimes(config("content.autopilot.times"));
+        List<String> categories = body.containsKey("categories")
+                ? requiredCategories(body.get("categories")) : parseCategories(config("content.autopilot.categories"));
+        List<String> blockers = blockers(autoPublish, generateCover);
+        if (enabled && !blockers.isEmpty()) {
+            throw new BusinessException(400, "Cannot enable autopilot: " + String.join("; ", blockers));
+        }
+
+        configService.upsertByKey("content.autopilot.times", joinTimes(times), null);
+        configService.upsertByKey("content.autopilot.categories", String.join(",", categories), null);
+        configService.upsertByKey("content.autopilot.autoPublish", String.valueOf(autoPublish), null);
+        configService.upsertByKey("content.autopilot.generateCover", String.valueOf(generateCover), null);
+        configService.upsertByKey("content.autopilot.userId", String.valueOf(userId), null);
+        configService.upsertByKey("content.autopilot.enabled", String.valueOf(enabled), null);
+        return settings(userId);
+    }
+
+    public ContentAgentRunJobView runNow(Long userId) {
+        if (userId == null) throw new BusinessException(401, "Unauthorized");
+        boolean autoPublish = "true".equalsIgnoreCase(config("content.autopilot.autoPublish"));
+        boolean generateCover = !"false".equalsIgnoreCase(config("content.autopilot.generateCover"));
+        List<String> blockers = blockers(autoPublish, generateCover);
+        if (!blockers.isEmpty()) {
+            throw new BusinessException(400, "Cannot run autopilot: " + String.join("; ", blockers));
+        }
+        ContentAgentRunRequest request = new ContentAgentRunRequest();
+        request.setCategory(categoryForSlot(config("content.autopilot.categories"), 0));
+        request.setAutoWechatDraft(true);
+        request.setAutoPublish(autoPublish);
+        request.setGenerateCover(generateCover);
+        return agentJobService.startAgent(userId, request);
+    }
 
     /** Checked once a minute; cheap no-op unless a slot is both due and unserved. */
     @Scheduled(fixedDelayString = "${content.autopilot.tick-ms:60000}", initialDelay = 30000)
@@ -72,14 +142,22 @@ public class ContentAutopilotService {
         if (userId == null) {
             return;
         }
+        boolean autoPublish = "true".equalsIgnoreCase(config("content.autopilot.autoPublish"));
+        boolean generateCover = !"false".equalsIgnoreCase(config("content.autopilot.generateCover"));
+        List<String> dependencyBlockers = blockers(autoPublish, generateCover);
+        if (!dependencyBlockers.isEmpty()) {
+            log.warn("[autopilot] skipped because dependencies are unavailable: {}",
+                    String.join("; ", dependencyBlockers));
+            return;
+        }
         List<LocalTime> slots = parseTimes(config("content.autopilot.times"));
         int slotIndex = dueSlotIndex(slots, now.toLocalTime());
         if (slotIndex < 0) {
             return;
         }
         LocalDateTime slotStart = now.toLocalDate().atTime(slots.get(slotIndex));
-        // Already produced something at/after this slot today -> slot is served, skip.
-        if (articleRepository.countByUserIdAndCreatedAtAfter(userId, slotStart) > 0) {
+        String claimToken = slotService.claim(userId, slotStart, now);
+        if (claimToken == null) {
             return;
         }
 
@@ -87,19 +165,146 @@ public class ContentAutopilotService {
         ContentAgentRunRequest req = new ContentAgentRunRequest();
         req.setCategory(category);
         req.setAutoWechatDraft(true);
-        req.setAutoPublish("true".equalsIgnoreCase(config("content.autopilot.autoPublish")));
-        req.setGenerateCover(!"false".equalsIgnoreCase(config("content.autopilot.generateCover")));
+        req.setAutoPublish(autoPublish);
+        req.setGenerateCover(generateCover);
 
         log.info("[autopilot] running slot {} ({}) for user {} · category={}",
                 slotIndex, slots.get(slotIndex), userId, category);
+        Long articleId = slotService.articleId(userId, slotStart);
         try {
-            contentArticleService.runAgent(userId, req);
+            ContentArticleView article;
+            if (articleId == null) {
+                ContentAgentRunResult run = contentArticleService.runAgent(userId, req);
+                article = run == null ? null : run.getArticle();
+                articleId = article == null ? null : article.getId();
+            } else {
+                article = contentArticleService.get(userId, articleId);
+                boolean alreadyDelivered = article != null && !hasText(article.getErrorMessage())
+                        && (Boolean.TRUE.equals(req.getAutoPublish())
+                        ? "PUBLISHED".equals(article.getStatus())
+                        : article.getWechatMediaId() != null
+                        && !article.getWechatMediaId().startsWith("local-"));
+                if (!alreadyDelivered) {
+                    contentArticleService.retryAutomationJob(userId, String.valueOf(articleId));
+                    article = contentArticleService.get(userId, articleId);
+                }
+            }
+            if (article == null) {
+                throw new BusinessException(502, "Content pipeline returned no article");
+            }
+            String error = article.getErrorMessage();
+            if (hasText(error)) {
+                throw new BusinessException(502, error);
+            }
+            if (article.getWechatMediaId() == null
+                    || article.getWechatMediaId().startsWith("local-")) {
+                throw new BusinessException(502, "WeChat draft was not created");
+            }
+            if (Boolean.TRUE.equals(req.getAutoPublish())
+                    && !"PUBLISHED".equals(article.getStatus())) {
+                throw new BusinessException(503, "WeChat publish has not completed");
+            }
+            slotService.complete(userId, slotStart, claimToken, articleId);
             log.info("[autopilot] slot {} done", slotIndex);
         } catch (Exception e) {
-            // Leave the slot unserved; the next tick will retry until something lands or the
-            // slot window is effectively over for the day (superseded by a later slot).
+            slotService.fail(userId, slotStart, claimToken, articleId, e.getMessage());
             log.warn("[autopilot] slot {} failed: {}", slotIndex, e.getMessage());
         }
+    }
+
+    private List<String> blockers(boolean autoPublish, boolean generateCover) {
+        List<String> problems = new ArrayList<>();
+        if (!hasText(config("ai.chat.baseUrl")) || !hasText(config("ai.chat.apiKey"))) {
+            problems.add("Configure AI model endpoint and key");
+        }
+        if (generateCover && (!hasText(config("image.api.baseUrl"))
+                || !hasText(config("image.api.key"))
+                || isPlaceholder(config("image.api.key")))) {
+            problems.add("Configure image generation endpoint and key");
+        }
+        if (!hasText(config("wechat.appId")) || !hasText(config("wechat.appSecret"))) {
+            problems.add("Configure WeChat AppID and AppSecret");
+        }
+        if (autoPublish && !"true".equalsIgnoreCase(config("wechat.freePublishEnabled"))) {
+            problems.add("The official account has no freepublish permission");
+        }
+        return problems;
+    }
+
+    private boolean flag(Object raw, boolean fallback) {
+        if (raw == null) return fallback;
+        if (raw instanceof Boolean) return (Boolean) raw;
+        if ("true".equalsIgnoreCase(String.valueOf(raw))) return true;
+        if ("false".equalsIgnoreCase(String.valueOf(raw))) return false;
+        throw new BusinessException(400, "Flags must be true or false");
+    }
+
+    private List<LocalTime> requiredTimes(Object raw) {
+        List<String> values = splitValues(raw);
+        if (values.isEmpty() || values.size() > 12) {
+            throw new BusinessException(400, "times must contain 1-12 HH:mm slots");
+        }
+        List<LocalTime> times = new ArrayList<>();
+        for (String value : values) {
+            try {
+                LocalTime time = LocalTime.parse(value);
+                if (!times.contains(time)) times.add(time);
+            } catch (Exception error) {
+                throw new BusinessException(400, "Invalid time slot: " + value);
+            }
+        }
+        times.sort(LocalTime::compareTo);
+        return times;
+    }
+
+    private List<String> requiredCategories(Object raw) {
+        List<String> values = splitValues(raw);
+        if (values.isEmpty() || values.size() > 12) {
+            throw new BusinessException(400, "categories must contain 1-12 values");
+        }
+        for (String value : values) {
+            if (value.length() > 80) throw new BusinessException(400, "Category is too long");
+        }
+        return values;
+    }
+
+    private List<String> parseCategories(String raw) {
+        List<String> values = splitValues(raw);
+        return values.isEmpty() ? Collections.singletonList(DEFAULT_CATEGORY) : values;
+    }
+
+    private List<String> splitValues(Object raw) {
+        List<String> values = new ArrayList<>();
+        if (raw instanceof List) {
+            for (Object item : (List<?>) raw) {
+                String value = trimToNull(item == null ? null : String.valueOf(item));
+                if (value != null) values.add(value);
+            }
+        } else if (raw != null) {
+            for (String part : String.valueOf(raw).split(",")) {
+                String value = trimToNull(part);
+                if (value != null) values.add(value);
+            }
+        }
+        return values;
+    }
+
+    private String joinTimes(List<LocalTime> times) {
+        return String.join(",", timeStrings(times));
+    }
+
+    private List<String> timeStrings(List<LocalTime> times) {
+        List<String> values = new ArrayList<>();
+        for (LocalTime time : times) values.add(time.toString());
+        return values;
+    }
+
+    static LocalDateTime nextRunAt(List<LocalTime> times, LocalDateTime now) {
+        for (LocalTime time : times) {
+            LocalDateTime candidate = now.toLocalDate().atTime(time);
+            if (candidate.isAfter(now)) return candidate;
+        }
+        return now.toLocalDate().plusDays(1).atTime(times.get(0));
     }
 
     // ---- pure helpers (unit-tested) --------------------------------------------------------
@@ -176,5 +381,10 @@ public class ContentAutopilotService {
 
     private String config(String key) {
         return configService.getValue(key).orElse("");
+    }
+
+    private boolean isPlaceholder(String value) {
+        String normalized = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+        return "sk-xxx".equals(normalized) || normalized.startsWith("replace-with-");
     }
 }

@@ -1,5 +1,7 @@
 # 🎉 知识库和内容工厂系统 - 部署完成指南
 
+> 历史文档。旧的直接覆盖 JAR、自动执行迁移和密码登录步骤已停用；生产发布请以 `docs/production-release.md` 为准。
+
 ## ✅ 已完成的工作
 
 我已经为你完成了**知识库和内容工厂**的完整生产级实现！
@@ -90,14 +92,10 @@ mvn clean package -DskipTests
 
 ### 步骤3: 部署到ECS
 
-**选项A: 自动部署（推荐）**
+**选项A: 标准发布**
 
 ```bash
-# 确保sshpass已安装
-brew install hudochenkov/sshpass/sshpass
-
-# 执行一键部署
-./deploy-kb-content.sh
+./deploy/production/deploy.sh --host <ECS_IP> --identity ~/.ssh/id_ed25519
 ```
 
 **选项B: 手动部署**
@@ -113,13 +111,13 @@ scp db/migrations/0011_kb_content_enhancements.sql root@8.156.95.93:/tmp/
 ssh root@8.156.95.93
 
 # 4. 备份数据库
-mysqldump -u root -p'wangweijie1314.' website > /backup/website_$(date +%Y%m%d_%H%M%S).sql
+mysqldump --defaults-extra-file=/root/.config/website/mysql.cnf website > /backup/website_$(date +%Y%m%d_%H%M%S).sql
 
 # 5. 执行迁移
-mysql -u root -p'wangweijie1314.' website < /tmp/0011_kb_content_enhancements.sql
+mysql --defaults-extra-file=/root/.config/website/mysql.cnf website < /tmp/0011_kb_content_enhancements.sql
 
 # 6. 验证表创建
-mysql -u root -p'wangweijie1314.' website -e "SHOW TABLES LIKE 'kb_%'; SHOW TABLES LIKE 'content_%';"
+mysql --defaults-extra-file=/root/.config/website/mysql.cnf website -e "SHOW TABLES LIKE 'kb_%'; SHOW TABLES LIKE 'content_%';"
 
 # 7. 重启服务
 systemctl restart website-api

@@ -20,17 +20,26 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Optional;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -331,6 +340,176 @@ class MusicServiceTests {
     }
 
     @Test
+    void configuredResolverOrderIsReadFromSysConfig() {
+        when(configService.getValue(MusicService.CFG_PLAY_RESOLVER_ORDER))
+                .thenReturn(Optional.of("qq_text"));
+        SongSearchItem meta = song("song-mid", "configured", "resolver");
+        when(qq.fetchSongInfo("song-mid")).thenReturn(meta);
+        PlayInfo fallback = playInfo(MusicSource.QQ, "song-mid", "https://cdn.example.com/configured.m4a");
+        when(qqTextFallback.fetchSongUrl("song-mid", MusicQuality.K128, meta)).thenReturn(fallback);
+
+        PlayInfo result = musicService.play("qq", "song-mid", "128k");
+
+        assertEquals(fallback.getPlayUrl(), result.getPlayUrl());
+        verify(qq, never()).resolvePlay(anyString(), any(MusicQuality.class));
+    }
+
+    @Test
+    void nullTuneFreeResultIsReportedAsNoPlayableUrl() {
+        when(configService.getValue(MusicService.CFG_PLAY_RESOLVER_ORDER))
+                .thenReturn(Optional.of("primary"));
+        doReturn(null).when(tfPay).play(MusicSource.QQ, "song-mid", MusicQuality.K128);
+
+        MusicBusinessException error = org.junit.jupiter.api.Assertions.assertThrows(
+                MusicBusinessException.class,
+                () -> musicService.play("qq", "song-mid", "128k"));
+
+        assertEquals(MusicErrorCode.NO_PLAYABLE_URL, error.getErrorCode());
+    }
+
+    @Test
+    void configuredCrossSourceOrderSelectsFirstConfiguredMatch() {
+        when(configService.getValue(MusicService.CFG_PLAY_RESOLVER_ORDER))
+                .thenReturn(Optional.of("cross_source"));
+        when(configService.getValue(MusicService.CFG_CROSS_SOURCE_ORDER))
+                .thenReturn(Optional.of("kuwo,qq,netease"));
+        SongSearchItem meta = song("netease-id", "same song", "same artist");
+        when(netease.fetchSongInfo("netease-id")).thenReturn(meta);
+        SongSearchItem wrongArtist = song("wrong-id", "same song", "different artist");
+        SongSearchItem hit = song("kuwo-id", "same song", "same artist");
+        when(kuwo.search("same song same artist", 1, 3)).thenReturn(Arrays.asList(wrongArtist, hit));
+        PlayInfo fallback = playInfo(MusicSource.KUWO, "kuwo-id", "https://cdn.example.com/kuwo.flac");
+        when(tfPay.play(MusicSource.KUWO, "kuwo-id", MusicQuality.FLAC)).thenReturn(fallback);
+
+        PlayInfo result = musicService.play("netease", "netease-id", "lossless");
+
+        assertEquals(MusicSource.KUWO, result.getActualSource());
+        assertEquals("netease-id", result.getId());
+        verify(qq, never()).search(anyString(), anyInt(), anyInt());
+    }
+
+    @Test
+    void crossSourceDoesNotAcceptTitleOnlyOrFirstResultMatch() {
+        when(configService.getValue(MusicService.CFG_PLAY_RESOLVER_ORDER))
+                .thenReturn(Optional.of("cross_source"));
+        when(configService.getValue(MusicService.CFG_CROSS_SOURCE_ORDER))
+                .thenReturn(Optional.of("kuwo"));
+        SongSearchItem meta = song("netease-id", "same song", "right artist");
+        when(netease.fetchSongInfo("netease-id")).thenReturn(meta);
+        when(kuwo.search("same song right artist", 1, 3)).thenReturn(Arrays.asList(
+                song("wrong-artist", "same song", "different artist"),
+                song("wrong-title", "another song", "right artist")));
+
+        org.junit.jupiter.api.Assertions.assertThrows(MusicBusinessException.class,
+                () -> musicService.play("netease", "netease-id", "lossless"));
+
+        verify(tfPay, never()).play(any(MusicSource.class), anyString(), any(MusicQuality.class));
+    }
+
+    @Test
+    void hedgesSlowPrimaryAndCancelsItAfterFallbackWins() throws Exception {
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+        CountDownLatch primaryStarted = new CountDownLatch(1);
+        CountDownLatch primaryInterrupted = new CountDownLatch(1);
+        try {
+            doAnswer(invocation -> {
+                primaryStarted.countDown();
+                try {
+                    Thread.sleep(5_000L);
+                } catch (InterruptedException ex) {
+                    primaryInterrupted.countDown();
+                    Thread.currentThread().interrupt();
+                    throw new MusicBusinessException(MusicErrorCode.UPSTREAM_TIMEOUT, "cancelled loser", ex);
+                }
+                return playInfo(MusicSource.QQ, "song-mid", "https://cdn.example.com/slow.m4a");
+            }).when(qq).resolvePlay("song-mid", MusicQuality.K128);
+            SongSearchItem meta = song("song-mid", "hedged", "fallback");
+            when(qq.fetchSongInfo("song-mid")).thenReturn(meta);
+            PlayInfo fallback = playInfo(MusicSource.QQ, "song-mid", "https://cdn.example.com/fast.m4a");
+            when(qqTextFallback.fetchSongUrl("song-mid", MusicQuality.K128, meta)).thenReturn(fallback);
+            musicService = new MusicService(new MusicCache(), configService, qq, netease, kuwo,
+                    chkszNetease, tfPay, qqTextFallback, playUrlVerifier, executor, 50L);
+
+            long started = System.nanoTime();
+            PlayInfo result = musicService.play("qq", "song-mid", "128k");
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+            assertTrue(primaryStarted.await(1, TimeUnit.SECONDS));
+            assertEquals(fallback.getPlayUrl(), result.getPlayUrl());
+            assertTrue(elapsedMillis < 1_000L, "hedged fallback should not wait for the slow primary");
+            assertTrue(primaryInterrupted.await(1, TimeUnit.SECONDS), "losing resolver should be interrupted");
+        } finally {
+            executor.shutdownNow();
+            executor.awaitTermination(2, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void neteaseUsesShorterHedgeBeforeSlowPrimaryFinishes() throws Exception {
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+        CountDownLatch primaryStarted = new CountDownLatch(1);
+        CountDownLatch primaryInterrupted = new CountDownLatch(1);
+        try {
+            when(configService.getValue(MusicService.CFG_CROSS_SOURCE_ORDER))
+                    .thenReturn(Optional.of("kuwo"));
+            doAnswer(invocation -> {
+                primaryStarted.countDown();
+                try {
+                    Thread.sleep(5_000L);
+                } catch (InterruptedException ex) {
+                    primaryInterrupted.countDown();
+                    Thread.currentThread().interrupt();
+                    throw new MusicBusinessException(MusicErrorCode.UPSTREAM_TIMEOUT, "cancelled loser", ex);
+                }
+                return playInfo(MusicSource.NETEASE, "netease-id", "https://cdn.example.com/slow.mp3");
+            }).when(chkszNetease).resolve("netease-id", NeteasePlaybackQuality.EXHIGH);
+
+            SongSearchItem meta = song("netease-id", "hedged song", "hedged artist");
+            SongSearchItem match = song("kuwo-id", "hedged song", "hedged artist");
+            when(netease.fetchSongInfo("netease-id")).thenReturn(meta);
+            when(kuwo.search("hedged song hedged artist", 1, 3))
+                    .thenReturn(Collections.singletonList(match));
+            PlayInfo fallback = playInfo(MusicSource.KUWO, "kuwo-id", "https://cdn.example.com/fast.mp3");
+            when(tfPay.play(MusicSource.KUWO, "kuwo-id", MusicQuality.K320)).thenReturn(fallback);
+
+            musicService = new MusicService(new MusicCache(), configService, qq, netease, kuwo,
+                    chkszNetease, tfPay, qqTextFallback, playUrlVerifier, executor, 1_200L);
+
+            long started = System.nanoTime();
+            PlayInfo result = musicService.play("netease", "netease-id", "320k");
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+            assertTrue(primaryStarted.await(1, TimeUnit.SECONDS));
+            assertEquals(fallback.getPlayUrl(), result.getPlayUrl());
+            assertTrue(elapsedMillis < 1_100L,
+                    "netease fallback should start before the global 1200ms hedge delay");
+            assertTrue(primaryInterrupted.await(1, TimeUnit.SECONDS), "losing primary should be interrupted");
+        } finally {
+            executor.shutdownNow();
+            executor.awaitTermination(2, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void playCacheExpiresBeforeUpstreamUrl() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        MusicCache cache = new MusicCache(new com.example.website.config.PerformanceMetrics(), clock::get);
+        musicService = new MusicService(cache, configService, qq, netease, kuwo,
+                chkszNetease, tfPay, qqTextFallback, playUrlVerifier);
+        PlayInfo expiring = playInfo(MusicSource.QQ, "song-mid", "https://cdn.example.com/expiring.m4a");
+        expiring.setExpireSec(90);
+        doReturn(expiring).when(qq).resolvePlay("song-mid", MusicQuality.K128);
+
+        musicService.play("qq", "song-mid", "128k");
+        clock.addAndGet(TimeUnit.SECONDS.toMillis(59));
+        assertTrue(Boolean.TRUE.equals(musicService.play("qq", "song-mid", "128k").getFromCache()));
+        clock.addAndGet(TimeUnit.SECONDS.toMillis(2));
+        musicService.play("qq", "song-mid", "128k");
+
+        verify(qq, times(2)).resolvePlay("song-mid", MusicQuality.K128);
+    }
+
+    @Test
     void albumDetailRoutesToSourceAndCachesPage() {
         AlbumDetailView expected = new AlbumDetailView("album-mid", MusicSource.QQ, "Album", null,
                 null, "Artist", "2026-08-05", 1, 20, 1, Collections.emptyList());
@@ -340,6 +519,16 @@ class MusicServiceTests {
         assertEquals(expected, musicService.albumDetail("qq", "album-mid", 1, 20));
 
         verify(qq).fetchAlbumDetail("album-mid", 1, 20);
+    }
+
+    private PlayInfo playInfo(MusicSource source, String id, String url) {
+        PlayInfo info = new PlayInfo();
+        info.setSource(source);
+        info.setActualSource(source);
+        info.setId(id);
+        info.setPlayUrl(url);
+        info.setActualQuality(MusicQuality.K128.getValue());
+        return info;
     }
 
     @Test

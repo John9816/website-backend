@@ -18,6 +18,7 @@ public class OkHttpConfig {
     public static final String CLIENT_IMAGE_UPSTREAM = "imageUpstreamHttpClient";
     public static final String CLIENT_MUSIC = "musicHttpClient";
     public static final String CLIENT_MUSIC_THIRD_PARTY = "musicThirdPartyHttpClient";
+    public static final String EXECUTOR_MUSIC_RESOLVER = "musicResolverExecutor";
     public static final String CLIENT_QUICK = "quickHttpClient";
     public static final String CLIENT_BOOKS = "booksHttpClient";
 
@@ -81,7 +82,7 @@ public class OkHttpConfig {
     }
 
     @Bean(name = CLIENT_MUSIC_THIRD_PARTY)
-    public OkHttpClient musicThirdPartyHttpClient() {
+    public OkHttpClient musicThirdPartyHttpClient(UpstreamMetricsInterceptor upstreamMetricsInterceptor) {
         Dispatcher dispatcher = new Dispatcher();
         dispatcher.setMaxRequests(16);
         dispatcher.setMaxRequestsPerHost(8);
@@ -92,6 +93,7 @@ public class OkHttpConfig {
                 .callTimeout(5, TimeUnit.SECONDS)
                 .connectionPool(new ConnectionPool(10, 2, TimeUnit.MINUTES))
                 .dispatcher(dispatcher)
+                .addInterceptor(upstreamMetricsInterceptor)
                 .retryOnConnectionFailure(false)
                 .build();
     }
@@ -164,6 +166,21 @@ public class OkHttpConfig {
         executor.setMaxPoolSize(16);
         executor.setQueueCapacity(500);
         executor.setThreadNamePrefix("image-persist-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.setWaitForTasksToCompleteOnShutdown(false);
+        executor.initialize();
+        return executor;
+    }
+
+    @Bean(name = EXECUTOR_MUSIC_RESOLVER, destroyMethod = "shutdown")
+    public ThreadPoolTaskExecutor musicResolverExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(8);
+        executor.setQueueCapacity(64);
+        executor.setKeepAliveSeconds(30);
+        executor.setAllowCoreThreadTimeOut(true);
+        executor.setThreadNamePrefix("music-resolver-");
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         executor.setWaitForTasksToCompleteOnShutdown(false);
         executor.initialize();

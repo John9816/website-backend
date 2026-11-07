@@ -36,7 +36,9 @@ MySQL 运维账号凭据单独保存在 ECS 的 `/root/.config/website/mysql.cnf
 
 ## 二、首次部署准备
 
-服务器至少需要：Linux、Java 8+、Node.js 20+、MySQL 8、Nginx、`curl`、`systemd`。安全组只开放 SSH、80、443；不要开放 3000、8090、3306。
+服务器至少需要：Linux、Java 17+、Node.js 20+、MySQL 8、Nginx、`curl`、`systemd`。标准服务使用 Java 17 支持的 G1 空闲回收参数；应用源码仍保持 Java 8 编译兼容。安全组只开放 SSH、80、443；不要开放 3000、8090、3306。
+
+当前 2 核、约 1.6 GiB 内存主机的 JVM 参数、验证和回滚方法见 [`deploy/production/jvm-tuning.md`](../deploy/production/jvm-tuning.md)。堆大小统一配置在 `website-api.service`，不要在 `JAVA_TOOL_OPTIONS` 中重复设置 `-Xms` / `-Xmx`。
 
 ### 1. 连接 ECS
 

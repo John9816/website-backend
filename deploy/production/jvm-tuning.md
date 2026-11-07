@@ -1,119 +1,35 @@
-# JVM调优说明
+# 生产 JVM 资源配置
 
-## 当前配置（针对2核4GB ECS）
+当前主机为 2 核、1,676 MiB 内存，网站后端与 MariaDB、Node 前端及其他业务共用服务器。配置来源为 [website-api.service](website-api.service)，生产运行时要求 Java 17+。
 
-### 堆内存配置
-- `-Xms1536m -Xmx2048m`: 初始堆1.5GB，最大堆2GB
-- 为操作系统和其他进程预留约2GB内存
-- 避免堆动态扩容带来的性能抖动
+## 堆和回收
 
-### Metaspace配置
-- `-XX:MetaspaceSize=256m -XX:MaxMetaspaceSize=512m`
-- 类元数据空间，Spring Boot应用通常需要200-400MB
+- `-Xms128m -Xmx768m`：降低启动和空闲时的堆下限，保留原有峰值上限。JVM 总内存还包括元空间、线程栈和堆外分配，不能用 Xmx 代替进程内存预算。
+- `-XX:+UseG1GC -XX:MaxGCPauseMillis=250`：沿用 G1 和原有暂停目标；该值不是暂停时长保证。
+- `-XX:G1PeriodicGCInterval=300000`：持续空闲时约每 5 分钟检查周期回收，让 G1 有机会缩小已提交堆。正常 GC 会重置该间隔，周期回收不保证每 5 分钟一定发生。
+- `-XX:G1PeriodicGCSystemLoadThreshold=1.0`：系统一分钟负载超过 1.0 时跳过周期回收。Java 17 默认使用并发周期回收。
+- `-XX:MetaspaceSize=96m -XX:MaxMetaspaceSize=256m -Xss512k`：保留原有元空间和线程栈设置。
+- `-XX:+ExitOnOutOfMemoryError` 与 systemd 自动重启：沿用现有异常恢复策略，不能替代内存监测。
 
-### G1 GC配置
-- `-XX:+UseG1GC`: 使用G1垃圾回收器，适合堆内存>2GB的应用
-- `-XX:MaxGCPauseMillis=200`: 目标最大暂停时间200ms
-- `-XX:G1HeapRegionSize=8m`: Region大小8MB
-- `-XX:InitiatingHeapOccupancyPercent=45`: 堆占用45%时触发并发标记
-- `-XX:G1NewSizePercent=30`: 新生代最小占比30%
-- `-XX:G1MaxNewSizePercent=40`: 新生代最大占比40%
+堆大小只在 systemd 的 ExecStart 中设置。清理环境文件中重复的 `JAVA_TOOL_OPTIONS=-Xms... -Xmx...` 时，只移除堆参数，保留其他用途的 JVM 参数和密钥。
 
-### 性能优化参数
-- `-XX:+ParallelRefProcEnabled`: 并行处理Reference对象
-- `-XX:+UseStringDeduplication`: 字符串去重，节省内存
-- `-XX:+ExplicitGCInvokesConcurrent`: System.gc()触发并发GC
-- `-XX:+AlwaysPreTouch`: 启动时预分配物理内存，减少运行时缺页
+Tomcat 最大线程数 96、最小空闲线程数 8；Hikari 最大连接数 10、最小空闲连接数 2。没有连接池等待或请求饱和的证据时，先保持这些配置。
 
-### 调试和诊断
-- `-XX:-OmitStackTraceInFastThrow`: 保留完整异常堆栈
+生产 Spring Security 日志级别为 INFO，避免为每个请求写入 DEBUG 跟踪。临时排查鉴权问题时可以通过 `LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY=DEBUG` 开启，结束后恢复 INFO。
 
-## 不同规格ECS建议
+## 修改、验证和回滚
 
-### 1核2GB（入门级）
-```bash
--Xms768m -Xmx1024m
--XX:MetaspaceSize=128m -XX:MaxMetaspaceSize=256m
--XX:+UseSerialGC  # 小堆使用Serial GC更高效
-```
+1. 记录 `free -m`、`vmstat 1 5`、服务 RSS/cgroup 内存、JVM 已用/已提交堆、GC 次数及 NRestarts，并备份服务文件和环境文件。备份含密钥时目录权限用 700、文件权限用 600。
+2. 使用服务器实际 Java 版本验证新 JVM 参数，再用 `systemd-analyze verify` 检查服务文件。
+3. 安装配置后执行 `systemctl daemon-reload` 和 `systemctl restart website-api`。检查 8090/health、3000/healthz、前端代理和公开 HTTPS 入口。
+4. 用相同的少量并发只读请求检查导航、会员和音乐历史接口，记录错误和延迟；避免调用收费或耗时的外部生成接口。
+5. 至少观察一个空闲回收间隔，再比较内存、GC、swap 读写和重启次数。重启后的低内存值不能单独证明长期收益；低负载验证不能证明峰值容量。
+6. 启动或健康检查失败时恢复备份的服务文件和环境文件，重新加载 systemd 并重启后端；再次验证健康状态。
 
-### 2核4GB（当前配置）
-参见systemd service文件
+安装 JDK 诊断工具的机器可使用 `jcmd <pid> GC.heap_info`、`jstat -gc <pid>`。仅安装 JRE 时可用已授权的 Actuator 指标或 HotSpot perfdata，避免为单次诊断额外启动常驻服务。
 
-### 4核8GB（推荐生产）
-```bash
--Xms4g -Xmx6g
--XX:MetaspaceSize=256m -XX:MaxMetaspaceSize=512m
--XX:+UseG1GC
--XX:MaxGCPauseMillis=100
--XX:G1HeapRegionSize=16m
--XX:ParallelGCThreads=4
--XX:ConcGCThreads=2
-```
+## 主机资源
 
-### 8核16GB（高负载）
-```bash
--Xms8g -Xmx12g
--XX:MetaspaceSize=512m -XX:MaxMetaspaceSize=1g
--XX:+UseG1GC
--XX:MaxGCPauseMillis=100
--XX:G1HeapRegionSize=32m
--XX:ParallelGCThreads=8
--XX:ConcGCThreads=4
-```
+停用 Docker/containerd 前，确认容器、镜像、卷和任务为空，且没有业务服务依赖它们。还需停止和禁用 docker.socket，否则 socket 可能再次启动 Docker。保留软件包，恢复时按修改前记录的启用和运行状态恢复。
 
-## 监控命令
-
-### 查看GC日志（需要添加GC日志参数）
-```bash
--Xlog:gc*:file=/opt/website/logs/gc.log:time,uptime,level,tags:filecount=5,filesize=50m
-```
-
-### 实时监控
-```bash
-# JVM内存使用
-jstat -gcutil <pid> 1000
-
-# 线程状态
-jstack <pid> | grep "java.lang.Thread.State" | sort | uniq -c
-
-# 堆内存分析
-jmap -heap <pid>
-
-# 查看G1 GC统计
-jcmd <pid> GC.heap_info
-```
-
-## 性能基准
-
-### 启动时间
-- 冷启动：15-25秒
-- 热启动（缓存有效）：10-15秒
-
-### 内存占用
-- 空闲状态：1.2-1.5GB
-- 中等负载：1.6-1.8GB
-- 高负载峰值：<2.0GB
-
-### GC表现（目标）
-- Minor GC频率：<10次/小时
-- Minor GC耗时：<50ms
-- Mixed GC耗时：<100ms
-- Full GC：避免发生
-
-## 故障排查
-
-### OOM问题
-1. 检查堆转储：`-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/opt/website/logs/`
-2. 分析MAT或VisualVM
-3. 检查是否有内存泄漏（MusicCache等）
-
-### GC暂停过长
-1. 降低`MaxGCPauseMillis`目标值
-2. 增加堆内存
-3. 检查大对象分配（图片上传等）
-
-### CPU占用过高
-1. 检查是否频繁Full GC
-2. jstack查看线程状态
-3. 检查是否有死循环或热点方法
+已有 swap 使用量不等于正在交换内存。以 vmstat 的 si / so 和可用内存判断压力；不要为了清空数字执行 swapoff。本机已设置 vm.swappiness=10。

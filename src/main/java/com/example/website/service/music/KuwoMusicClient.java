@@ -913,14 +913,28 @@ public class KuwoMusicClient {
     }
 
     private static String kuwoCoverUrl(Map<String, Object> s) {
-        return firstNonEmpty(
+        // Search includes both album artwork and a small landscape MV frame.
+        // Prefer the album; cropping the MV frame into a player cover magnifies it.
+        String cover = firstNonEmpty(
                 asString(s.get("albumpic")),
                 asString(s.get("pic")),
+                absoluteKuwoImage(asString(s.get("web_albumpic_short")), "star/albumcover"),
                 asString(s.get("hts_MVPIC")),
                 absoluteKuwoImage(asString(s.get("MVPIC")), "wmvpic"),
-                absoluteKuwoImage(asString(s.get("web_albumpic_short")), "star/albumcover"),
                 absoluteKuwoImage(asString(s.get("web_artistpic_short")), "star/starheads"),
                 absoluteKuwoImage(asString(s.get("PICPATH")), "star/starheads"));
+        if (cover == null) return null;
+        HttpUrl url = HttpUrl.parse(cover);
+        if (url == null || !(url.host().equals("kuwo.cn") || url.host().endsWith(".kuwo.cn"))) {
+            return cover;
+        }
+        // Only replace the verified album thumbnail size. MV/artist paths and
+        // artwork that is already larger keep their original URL.
+        String thumbnailPrefix = "/star/albumcover/120/";
+        if (!url.encodedPath().startsWith(thumbnailPrefix)) return cover;
+        return url.newBuilder()
+                .encodedPath("/star/albumcover/500/" + url.encodedPath().substring(thumbnailPrefix.length()))
+                .build().toString();
     }
 
     private static String kuwoAlbumCoverUrl(Map<String, Object> album) {

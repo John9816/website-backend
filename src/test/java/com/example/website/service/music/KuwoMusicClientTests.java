@@ -16,11 +16,16 @@ import okhttp3.Protocol;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.util.Collections;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -45,8 +50,67 @@ class KuwoMusicClientTests {
         assertEquals("5678", song.getArtistId());
         assertEquals(Collections.singletonList("5678"), song.getArtistIds());
         assertEquals("Ye Hui Mei", song.getAlbum());
-        assertEquals("https://img4.kuwo.cn/wmvpic/324/s4s75/52/1458871193.jpg", song.getCoverUrl());
+        assertEquals("https://img1.kuwo.cn/star/albumcover/500/s3s94/93/211513640.jpg", song.getCoverUrl());
         assertEquals(269, song.getDurationSec());
+    }
+
+    @ParameterizedTest
+    @MethodSource("songArtworkCases")
+    void songArtworkUsesAlbumResolutionWithoutExtraRequests(String fields, String expected) {
+        AtomicInteger requests = new AtomicInteger();
+        OkHttpClient client = new OkHttpClient.Builder().addInterceptor(chain -> {
+            requests.incrementAndGet();
+            return response(chain, "{\"abslist\":[{\"DC_TARGETID\":\"228908\","
+                    + "\"NAME\":\"Song\"," + fields + "}]}");
+        }).build();
+
+        List<SongSearchItem> songs = new KuwoMusicClient(client, new ObjectMapper()).search("song", 1, 10);
+
+        assertEquals(expected, songs.get(0).getCoverUrl());
+        assertEquals(1, requests.get(), "Selecting album artwork must not add per-song network requests");
+    }
+
+    private static Stream<Arguments> songArtworkCases() {
+        return Stream.of(
+                Arguments.of("\"web_albumpic_short\":\"120/album.jpg\",\"MVPIC\":\"324/video.jpg\"",
+                        "https://img1.kuwo.cn/star/albumcover/500/album.jpg"),
+                Arguments.of("\"web_albumpic_short\":\"120/album.jpg\"",
+                        "https://img1.kuwo.cn/star/albumcover/500/album.jpg"),
+                Arguments.of("\"albumpic\":\"http://img2.kuwo.cn/star/albumcover/120/album.jpg?version=1\"",
+                        "http://img2.kuwo.cn/star/albumcover/500/album.jpg?version=1"),
+                Arguments.of("\"pic\":\"https://img1.kwcdn.kuwo.cn/star/albumcover/120/album.jpg\"",
+                        "https://img1.kwcdn.kuwo.cn/star/albumcover/500/album.jpg"),
+                Arguments.of("\"albumpic\":\"https://img2.kuwo.cn/star/albumcover/1000/album.jpg\","
+                                + "\"web_albumpic_short\":\"120/album.jpg\"",
+                        "https://img2.kuwo.cn/star/albumcover/1000/album.jpg"),
+                Arguments.of("\"web_albumpic_short\":\"500/album.jpg\"",
+                        "https://img1.kuwo.cn/star/albumcover/500/album.jpg"),
+                Arguments.of("\"albumpic\":\"https://example.com/star/albumcover/120/album.jpg\"",
+                        "https://example.com/star/albumcover/120/album.jpg"),
+                Arguments.of("\"pic\":\"https://img.kuwo.cn.example.com/star/albumcover/120/album.jpg\"",
+                        "https://img.kuwo.cn.example.com/star/albumcover/120/album.jpg"),
+                Arguments.of("\"web_albumpic_short\":\"\",\"hts_MVPIC\":\"https://img4.kuwo.cn/wmvpic/324/video.jpg\"",
+                        "https://img4.kuwo.cn/wmvpic/324/video.jpg"),
+                Arguments.of("\"MVPIC\":\"324/video.jpg\"",
+                        "https://img1.kuwo.cn/wmvpic/324/video.jpg"),
+                Arguments.of("\"web_artistpic_short\":\"120/artist.jpg\"",
+                        "https://img1.kuwo.cn/star/starheads/120/artist.jpg"),
+                Arguments.of("\"ALBUM\":\"Missing artwork\"", null));
+    }
+
+    @Test
+    void playlistSongsPreferAlbumArtworkOverVideoThumbnails() {
+        OkHttpClient client = new OkHttpClient.Builder().addInterceptor(chain -> response(chain,
+                "{\"name\":\"Playlist\",\"pic\":\"https://img/playlist.jpg\",\"total\":1,\"musiclist\":[{"
+                        + "\"id\":\"228908\",\"name\":\"Song\",\"artist\":\"A\",\"artistid\":\"336\","
+                        + "\"hts_MVPIC\":\"https://img4.kuwo.cn/wmvpic/324/video.jpg\","
+                        + "\"web_albumpic_short\":\"120/album.jpg\"}]}"))
+                .build();
+
+        PlaylistDetailView playlist = new KuwoMusicClient(client, new ObjectMapper())
+                .fetchPlaylistDetail("1", 1, 10);
+
+        assertEquals("https://img1.kuwo.cn/star/albumcover/500/album.jpg", playlist.getList().get(0).getCoverUrl());
     }
 
     @Test

@@ -1,12 +1,12 @@
 package com.example.website;
 
-import com.example.website.dto.music.MusicQuality;
-import com.example.website.dto.music.MusicSource;
-import com.example.website.dto.music.PlayInfo;
-import com.example.website.dto.music.PlaylistDetailView;
-import com.example.website.dto.music.SongSearchItem;
-import com.example.website.service.music.QqMusicClient;
-import com.example.website.service.music.TuneFreePayClient;
+import com.example.website.module.music.api.dto.MusicQuality;
+import com.example.website.module.music.api.dto.MusicSource;
+import com.example.website.module.music.api.dto.PlayInfo;
+import com.example.website.module.music.api.dto.PlaylistDetailView;
+import com.example.website.module.music.api.dto.SongSearchItem;
+import com.example.website.module.music.application.QqMusicClient;
+import com.example.website.module.music.application.TuneFreePayClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;

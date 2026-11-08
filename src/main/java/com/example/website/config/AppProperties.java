@@ -148,7 +148,7 @@ public class AppProperties {
             warehouse.setId(id);
             warehouse.setName(name);
             warehouse.setConfigUrl(configUrl);
-            warehouse.setKind(com.example.website.dto.video.VideoSourceKind.TVBOX_JSON);
+            warehouse.setKind(com.example.website.module.video.api.dto.VideoSourceKind.TVBOX_JSON);
             warehouse.setEnabled(true);
             warehouse.setAllowHttp(false);
             warehouse.setSortOrder(sortOrder);
@@ -162,8 +162,8 @@ public class AppProperties {
             private String id;
             private String name;
             private String configUrl;
-            private com.example.website.dto.video.VideoSourceKind kind =
-                    com.example.website.dto.video.VideoSourceKind.TVBOX_JSON;
+            private com.example.website.module.video.api.dto.VideoSourceKind kind =
+                    com.example.website.module.video.api.dto.VideoSourceKind.TVBOX_JSON;
             private boolean enabled = true;
             private boolean allowHttp;
             private int sortOrder;

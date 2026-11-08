@@ -1,11 +1,11 @@
 package com.example.website;
 
 import com.example.website.common.BusinessException;
-import com.example.website.entity.ContentArticle;
-import com.example.website.entity.User;
-import com.example.website.repository.ContentArticleRepository;
-import com.example.website.repository.UserRepository;
-import com.example.website.service.content.ContentArticleService;
+import com.example.website.module.content.domain.ContentArticle;
+import com.example.website.module.identity.domain.User;
+import com.example.website.module.content.infrastructure.persistence.ContentArticleRepository;
+import com.example.website.module.identity.infrastructure.persistence.UserRepository;
+import com.example.website.module.content.application.ContentArticleService;
 import com.example.website.util.JwtUtil;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

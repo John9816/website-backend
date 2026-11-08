@@ -1,7 +1,7 @@
 package com.example.website.config;
 
-import com.example.website.dto.CachedAuthUser;
-import com.example.website.service.AuthUserCacheService;
+import com.example.website.module.identity.api.dto.CachedAuthUser;
+import com.example.website.module.identity.application.AuthUserCacheService;
 import com.example.website.util.JwtUtil;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;

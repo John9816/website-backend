@@ -1,0 +1,18 @@
+{
+  "administration": ["ai", "content", "identity", "images", "knowledge", "music"],
+  "ai": ["identity", "settings"],
+  "assets": [],
+  "compatibility": ["identity", "membership", "music", "navigation"],
+  "content": ["ai", "identity", "images", "settings"],
+  "distribution": [],
+  "identity": ["assets", "settings"],
+  "images": ["assets", "membership", "settings"],
+  "knowledge": ["assets"],
+  "membership": ["identity"],
+  "music": ["identity", "membership", "settings"],
+  "navigation": ["identity"],
+  "operations": [],
+  "reading": ["identity"],
+  "settings": [],
+  "video": ["membership"]
+}

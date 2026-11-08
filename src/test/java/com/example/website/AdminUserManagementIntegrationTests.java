@@ -1,9 +1,9 @@
 package com.example.website;
 
-import com.example.website.entity.MembershipType;
-import com.example.website.entity.RedeemCode;
-import com.example.website.entity.RedeemCodeStatus;
-import com.example.website.repository.RedeemCodeRepository;
+import com.example.website.module.membership.domain.MembershipType;
+import com.example.website.module.membership.domain.RedeemCode;
+import com.example.website.module.membership.domain.RedeemCodeStatus;
+import com.example.website.module.membership.infrastructure.persistence.RedeemCodeRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;

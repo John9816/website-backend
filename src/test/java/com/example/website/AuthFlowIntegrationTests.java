@@ -1,7 +1,7 @@
 package com.example.website;
 
-import com.example.website.entity.User;
-import com.example.website.repository.UserRepository;
+import com.example.website.module.identity.domain.User;
+import com.example.website.module.identity.infrastructure.persistence.UserRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;

@@ -1,14 +1,14 @@
 package com.example.website;
 
-import com.example.website.dto.music.MusicSource;
-import com.example.website.dto.music.PlayInfo;
-import com.example.website.entity.MembershipType;
-import com.example.website.entity.User;
-import com.example.website.entity.UserMembership;
-import com.example.website.repository.MusicPlayHistoryRepository;
-import com.example.website.repository.UserMembershipRepository;
-import com.example.website.repository.UserRepository;
-import com.example.website.service.music.MusicService;
+import com.example.website.module.music.api.dto.MusicSource;
+import com.example.website.module.music.api.dto.PlayInfo;
+import com.example.website.module.membership.domain.MembershipType;
+import com.example.website.module.identity.domain.User;
+import com.example.website.module.membership.domain.UserMembership;
+import com.example.website.module.music.infrastructure.persistence.MusicPlayHistoryRepository;
+import com.example.website.module.membership.infrastructure.persistence.UserMembershipRepository;
+import com.example.website.module.identity.infrastructure.persistence.UserRepository;
+import com.example.website.module.music.application.MusicService;
 import com.example.website.util.JwtUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,7 +45,7 @@ class MembershipFreeLifetimeIntegrationTests {
     @Autowired private JwtUtil jwt;
     @Autowired private ObjectMapper objectMapper;
     @MockBean private MusicService musicService;
-    @MockBean private com.example.website.service.music.MusicHistoryRecorder historyRecorder;
+    @MockBean private com.example.website.module.music.application.MusicHistoryRecorder historyRecorder;
 
     @BeforeEach
     void providePlayableSong() {

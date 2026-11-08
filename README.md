@@ -7,13 +7,17 @@
 - 图片生成与编辑（自定义尺寸、并发多图、OpenAI 兼容响应）、历史记录与公开分享
 - AI 对话、SSE 流式回复、TTS、消息音频回放与重生成
 - 知识库空间、文档树、标签、版本快照、公开分享
-- QQ / 网易云 / 酷我音乐聚合查询、TuneFree 播放代理、播放历史、收藏、单曲公开分享、外部歌单导入
+- QQ / 网易云 / 酷我 / 汽水音乐聚合查询、TuneFree 播放代理、播放历史、收藏、单曲公开分享、外部歌单导入
 - 网飞猫影视目录接入：分类、筛选、搜索、详情、线路/选集、会员播放地址解析和平台投屏回退
 
 前端可以独立部署，后端默认监听 `http://localhost:8080`。
 
 ## 项目文档
 
+- [后端模块架构](docs/backend-architecture.md)
+- [接口契约索引](docs/api-contract-index.md)
+- [模块化性能证据](docs/backend-modular-performance.md)
+- [汽水音乐（黑源）协议与授权](docs/tunefree-next-qishui-api.md)
 - [前端接口文档](docs/frontend-api.md)
 - [生产发布与回滚](docs/production-release.md)
 - [Java / MySQL 迁移说明](docs/java-mysql-migration.md)
@@ -92,7 +96,7 @@
 ### 6. 音乐聚合
 
 - 需登录后调用；未登录访问返回 401，提示「需要登录才能播放」
-- 支持 `qq`、`netease`、`kuwo`
+- 支持 `qq`、`netease`、`kuwo`；`qishui`（别名 `qs`）支持歌曲/歌单搜索、歌单/歌手与歌词。黑源使用独立的用户扫码授权，完整播放另需配置新版解析凭据，详见黑源接口文档。
 - 支持搜索、播放、歌词、榜单、歌单、三平台首页推荐歌单、新歌速递
 - QQ 播放默认先走巡回寺 QQ Music 解析接口，允许 `128k`、`320k`、`flac`、`flac24bit`；QQ 主解析中 `128k` 使用 `standard`，其余值使用 `high` 并原样返回巡回寺的 `isure6` 官方直链，失败后 TuneFree 仍按原始请求音质继续降级，再进入 QQ 文本和跨平台回退
 - 网易云优先走 ChKSz 解析，酷我和其他回退仍使用 TuneFree；TuneFree 会先尝试所请求音质，再按更低音质降级

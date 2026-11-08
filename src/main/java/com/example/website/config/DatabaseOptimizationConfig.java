@@ -14,7 +14,7 @@ import java.sql.Statement;
  * 数据库性能优化配置
  */
 @Configuration
-@EnableJpaRepositories(basePackages = "com.example.website.repository")
+@EnableJpaRepositories(basePackages = "com.example.website.module")
 public class DatabaseOptimizationConfig {
 
     /**

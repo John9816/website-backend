@@ -1,19 +1,19 @@
 package com.example.website.config;
 
-import com.example.website.entity.Category;
-import com.example.website.entity.NavLink;
-import com.example.website.entity.SysConfig;
-import com.example.website.entity.User;
-import com.example.website.repository.CategoryRepository;
-import com.example.website.repository.NavLinkRepository;
-import com.example.website.repository.SysConfigRepository;
-import com.example.website.repository.UserRepository;
-import com.example.website.service.AiConversationService;
-import com.example.website.service.ImageService;
-import com.example.website.service.SysConfigService;
-import com.example.website.service.WechatOfficialAccountClient;
-import com.example.website.service.content.WebSearchService;
-import com.example.website.service.music.TuneFreeAuthService;
+import com.example.website.module.navigation.domain.Category;
+import com.example.website.module.navigation.domain.NavLink;
+import com.example.website.module.settings.domain.SysConfig;
+import com.example.website.module.identity.domain.User;
+import com.example.website.module.navigation.infrastructure.persistence.CategoryRepository;
+import com.example.website.module.navigation.infrastructure.persistence.NavLinkRepository;
+import com.example.website.module.settings.infrastructure.persistence.SysConfigRepository;
+import com.example.website.module.identity.infrastructure.persistence.UserRepository;
+import com.example.website.module.ai.application.AiConversationService;
+import com.example.website.module.images.application.ImageService;
+import com.example.website.module.settings.application.SysConfigService;
+import com.example.website.module.content.application.WechatOfficialAccountClient;
+import com.example.website.module.content.application.WebSearchService;
+import com.example.website.module.music.application.TuneFreeAuthService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
@@ -177,13 +177,13 @@ public class DataInitializer implements CommandLineRunner {
                 "TuneFreeNext account."));
         all.add(new SeedEntry(TuneFreeAuthService.CFG_PASSWORD, "",
                 "TuneFreeNext password."));
-        all.add(new SeedEntry(com.example.website.service.music.MusicService.CFG_PLAY_RESOLVER_ORDER,
-                com.example.website.service.music.MusicService.DEFAULT_PLAY_RESOLVER_ORDER,
+        all.add(new SeedEntry(com.example.website.module.music.application.MusicService.CFG_PLAY_RESOLVER_ORDER,
+                com.example.website.module.music.application.MusicService.DEFAULT_PLAY_RESOLVER_ORDER,
                 "Ordered playback resolvers: primary, qq_text, cross_source."));
-        all.add(new SeedEntry(com.example.website.service.music.MusicService.CFG_CROSS_SOURCE_ORDER,
-                com.example.website.service.music.MusicService.DEFAULT_CROSS_SOURCE_ORDER,
+        all.add(new SeedEntry(com.example.website.module.music.application.MusicService.CFG_CROSS_SOURCE_ORDER,
+                com.example.website.module.music.application.MusicService.DEFAULT_CROSS_SOURCE_ORDER,
                 "Ordered sources used when matching a playable copy on another platform."));
-        all.add(new SeedEntry(com.example.website.service.music.QqTextFallbackClient.CFG_API_KEY, "",
+        all.add(new SeedEntry(com.example.website.module.music.application.QqTextFallbackClient.CFG_API_KEY, "",
                 "API key for QQ text playback fallback. Empty disables only that resolver."));
 
         // Content factory autopilot: unattended topic -> write -> WeChat draft pipeline.
@@ -207,11 +207,11 @@ public class DataInitializer implements CommandLineRunner {
                 "Editorial decision: let the editor pick one topic from live hot topics with rationale. Set false to keep blind single-pick."));
         // Evidence completion needs a web search key (content.search.apiKey, provider content.search.provider).
         // No seed row: add these keys manually via the admin config API to enable evidence-backed writing.
-        all.add(new SeedEntry(com.example.website.service.content.EvidenceService.CFG_ENABLED, "true",
+        all.add(new SeedEntry(com.example.website.module.content.application.EvidenceService.CFG_ENABLED, "true",
                 "Evidence completion master switch. Effective only when a search API key is set."));
-        all.add(new SeedEntry(com.example.website.service.content.ArticlePlanService.CFG_ENABLED, "true",
+        all.add(new SeedEntry(com.example.website.module.content.application.ArticlePlanService.CFG_ENABLED, "true",
                 "Article plan: draft a structured outline before writing. Set false to let the writer self-structure."));
-        all.add(new SeedEntry(com.example.website.service.content.ArticleReviewService.CFG_ENABLED, "true",
+        all.add(new SeedEntry(com.example.website.module.content.application.ArticleReviewService.CFG_ENABLED, "true",
                 "Quality review: score the draft and gate revision. Set false to skip review entirely."));
 
         return all;

@@ -1,11 +1,11 @@
 package com.example.website;
 
-import com.example.website.entity.EmailVerificationCode;
-import com.example.website.entity.EmailVerificationPurpose;
-import com.example.website.entity.User;
-import com.example.website.repository.EmailVerificationCodeRepository;
-import com.example.website.repository.UserRepository;
-import com.example.website.service.CloudMailClient;
+import com.example.website.module.identity.domain.EmailVerificationCode;
+import com.example.website.module.identity.domain.EmailVerificationPurpose;
+import com.example.website.module.identity.domain.User;
+import com.example.website.module.identity.infrastructure.persistence.EmailVerificationCodeRepository;
+import com.example.website.module.identity.infrastructure.persistence.UserRepository;
+import com.example.website.module.identity.application.CloudMailClient;
 import com.example.website.common.BusinessException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;

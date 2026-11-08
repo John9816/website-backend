@@ -1,0 +1,230 @@
+package com.example.website.module.music.api.controller;
+
+import com.example.website.common.ApiResponse;
+import com.example.website.shared.dto.PageView;
+import com.example.website.module.music.api.dto.BatchFavoriteStatusRequest;
+import com.example.website.module.music.api.dto.MusicFavoriteRequest;
+import com.example.website.module.music.api.dto.MusicFavoriteStatusView;
+import com.example.website.module.music.api.dto.MusicFavoriteView;
+import com.example.website.module.music.api.dto.MusicHistoryView;
+import com.example.website.module.music.api.dto.MusicShareRequest;
+import com.example.website.module.music.api.dto.MusicShareView;
+import com.example.website.module.music.api.dto.PlaylistCreateRequest;
+import com.example.website.module.music.api.dto.PlaylistFavoriteRequest;
+import com.example.website.module.music.api.dto.PlaylistFavoriteStatusView;
+import com.example.website.module.music.api.dto.PlaylistImportRequest;
+import com.example.website.module.music.api.dto.PlaylistItemRequest;
+import com.example.website.module.music.api.dto.PlaylistRenameRequest;
+import com.example.website.module.music.api.dto.UserPlaylistDetailView;
+import com.example.website.module.music.api.dto.UserPlaylistItemView;
+import com.example.website.module.music.api.dto.UserPlaylistView;
+import com.example.website.module.identity.application.UserScopeService;
+import com.example.website.module.music.application.MusicLibraryService;
+import com.example.website.module.music.application.MusicShareService;
+import com.example.website.module.music.application.UserPlaylistService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
+
+import javax.servlet.http.HttpServletRequest;
+import javax.validation.Valid;
+
+@RestController
+@RequestMapping("/api/user/music")
+@RequiredArgsConstructor
+public class UserMusicController {
+
+    private final MusicLibraryService musicLibraryService;
+    private final MusicShareService musicShareService;
+    private final UserPlaylistService userPlaylistService;
+    private final UserScopeService userScopeService;
+
+    @GetMapping("/history")
+    public ApiResponse<PageView<MusicHistoryView>> history(HttpServletRequest request,
+                                                           @RequestParam(defaultValue = "0") int page,
+                                                           @RequestParam(defaultValue = "20") int size) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(musicLibraryService.listHistory(userId, page, size));
+    }
+
+    @DeleteMapping("/history/{id}")
+    public ApiResponse<Void> deleteHistory(HttpServletRequest request, @PathVariable Long id) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        musicLibraryService.deleteHistory(userId, id);
+        return ApiResponse.ok();
+    }
+
+    @GetMapping("/favorites")
+    public ApiResponse<PageView<MusicFavoriteView>> favorites(HttpServletRequest request,
+                                                              @RequestParam(defaultValue = "0") int page,
+                                                              @RequestParam(defaultValue = "20") int size) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(musicLibraryService.listFavorites(userId, page, size));
+    }
+
+    @PostMapping("/favorites")
+    public ApiResponse<MusicFavoriteView> saveFavorite(HttpServletRequest request,
+                                                       @Valid @RequestBody MusicFavoriteRequest req) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(musicLibraryService.saveFavorite(userId, req));
+    }
+
+    @DeleteMapping("/favorites")
+    public ApiResponse<Void> deleteFavorite(HttpServletRequest request,
+                                            @RequestParam String source,
+                                            @RequestParam String songId) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        musicLibraryService.deleteFavorite(userId, source, songId);
+        return ApiResponse.ok();
+    }
+
+    @GetMapping("/favorites/status")
+    public ApiResponse<MusicFavoriteStatusView> favoriteStatus(HttpServletRequest request,
+                                                               @RequestParam String source,
+                                                               @RequestParam String songId) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(musicLibraryService.favoriteStatus(userId, source, songId));
+    }
+
+    @PostMapping("/favorites/status")
+    public ApiResponse<List<MusicFavoriteStatusView>> batchFavoriteStatus(HttpServletRequest request,
+                                                                          @Valid @RequestBody BatchFavoriteStatusRequest req) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(musicLibraryService.batchFavoriteStatus(userId, req.getSource(), req.getSongIds()));
+    }
+
+    @GetMapping("/shares/status")
+    public ApiResponse<MusicShareView> shareStatus(HttpServletRequest request,
+                                                   @RequestParam String source,
+                                                   @RequestParam String songId) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(musicShareService.get(userId, source, songId));
+    }
+
+    @PostMapping("/shares")
+    public ApiResponse<MusicShareView> saveShare(HttpServletRequest request,
+                                                 @Valid @RequestBody MusicShareRequest req) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(musicShareService.save(userId, req));
+    }
+
+    @DeleteMapping("/shares")
+    public ApiResponse<Void> deleteShare(HttpServletRequest request,
+                                         @RequestParam String source,
+                                         @RequestParam String songId) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        musicShareService.delete(userId, source, songId);
+        return ApiResponse.ok();
+    }
+
+    @PostMapping("/playlists/import")
+    public ApiResponse<UserPlaylistView> importPlaylist(HttpServletRequest request,
+                                                        @Valid @RequestBody PlaylistImportRequest req) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(userPlaylistService.importFromUrl(userId, req.getUrl()));
+    }
+
+    @GetMapping("/playlist-favorites/status")
+    public ApiResponse<PlaylistFavoriteStatusView> playlistFavoriteStatus(
+            HttpServletRequest request,
+            @RequestParam String source,
+            @RequestParam String playlistId) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(userPlaylistService.favoriteStatus(userId, source, playlistId));
+    }
+
+    @PostMapping("/playlist-favorites")
+    public ApiResponse<UserPlaylistView> favoritePlaylist(
+            HttpServletRequest request,
+            @Valid @RequestBody PlaylistFavoriteRequest req) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(userPlaylistService.favoriteRemote(
+                userId, req.getSource(), req.getPlaylistId()));
+    }
+
+    @DeleteMapping("/playlist-favorites")
+    public ApiResponse<Void> deletePlaylistFavorite(
+            HttpServletRequest request,
+            @RequestParam String source,
+            @RequestParam String playlistId) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        userPlaylistService.deleteRemoteFavorite(userId, source, playlistId);
+        return ApiResponse.ok();
+    }
+
+    /**
+     * Re-pull tracks from a supported remote source for an already-imported playlist.
+     * Track list is remote-wins; local-only playlists return 400.
+     */
+    @PostMapping("/playlists/{id}/sync")
+    public ApiResponse<UserPlaylistView> syncPlaylist(HttpServletRequest request,
+                                                      @PathVariable Long id) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(userPlaylistService.syncFromRemote(userId, id));
+    }
+
+    @PostMapping("/playlists")
+    public ApiResponse<UserPlaylistView> createPlaylist(HttpServletRequest request,
+                                                        @Valid @RequestBody PlaylistCreateRequest req) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(userPlaylistService.create(userId, req));
+    }
+
+    @GetMapping("/playlists")
+    public ApiResponse<PageView<UserPlaylistView>> listPlaylists(HttpServletRequest request,
+                                                                 @RequestParam(defaultValue = "0") int page,
+                                                                 @RequestParam(defaultValue = "20") int size) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(userPlaylistService.list(userId, page, size));
+    }
+
+    @GetMapping("/playlists/{id}")
+    public ApiResponse<UserPlaylistDetailView> playlistDetail(HttpServletRequest request,
+                                                              @PathVariable Long id,
+                                                              @RequestParam(defaultValue = "0") int page,
+                                                              @RequestParam(defaultValue = "30") int size) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(userPlaylistService.detail(userId, id, page, size));
+    }
+
+    @DeleteMapping("/playlists/{id}")
+    public ApiResponse<Void> deletePlaylist(HttpServletRequest request, @PathVariable Long id) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        userPlaylistService.delete(userId, id);
+        return ApiResponse.ok();
+    }
+
+    @DeleteMapping("/playlists/{id}/items/{itemId}")
+    public ApiResponse<Void> removePlaylistItem(HttpServletRequest request,
+                                                @PathVariable Long id,
+                                                @PathVariable Long itemId) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        userPlaylistService.removeItem(userId, id, itemId);
+        return ApiResponse.ok();
+    }
+
+    @PostMapping("/playlists/{id}/items")
+    public ApiResponse<UserPlaylistItemView> addPlaylistItem(HttpServletRequest request,
+                                                             @PathVariable Long id,
+                                                             @Valid @RequestBody PlaylistItemRequest req) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(userPlaylistService.addItem(userId, id, req));
+    }
+
+    @PatchMapping("/playlists/{id}")
+    public ApiResponse<UserPlaylistView> renamePlaylist(HttpServletRequest request,
+                                                        @PathVariable Long id,
+                                                        @Valid @RequestBody PlaylistRenameRequest req) {
+        Long userId = userScopeService.requireAuthenticatedUserId(request);
+        return ApiResponse.ok(userPlaylistService.rename(userId, id, req.getName()));
+    }
+}

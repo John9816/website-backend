@@ -2,7 +2,7 @@ package com.example.website;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.example.website.repository.RedeemCodeRepository;
+import com.example.website.module.membership.infrastructure.persistence.RedeemCodeRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;

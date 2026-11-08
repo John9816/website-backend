@@ -12,3 +12,7 @@ mvn -q -Dtest=MusicServiceTests,NcatVideoServiceTest,VideoSourceGatewayTest test
 These tests validate repository/upstream call coalescing and cache behavior without relying on production network conditions. For a deployed instance, collect the endpoint before and after a traffic window and compare average totals per route; production P95 should be measured at the reverse proxy or load balancer because this endpoint intentionally stores aggregate counters rather than raw request samples.
 
 The metrics implementation keeps route dimensions bounded and excludes authorization headers, query strings, request bodies, and complete upstream URLs.
+
+## 2026-11-09 modular backend update
+
+See [module boundaries](backend-architecture.md), [API compatibility index](api-contract-index.md), and [measured concurrency cases](backend-modular-performance.md). The new checks preserve the existing metrics API and add deterministic catalog/navigation load coalescing and credential-generation isolation coverage.

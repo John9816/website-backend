@@ -1,0 +1,21 @@
+package com.example.website.module.music.infrastructure.persistence;
+
+import com.example.website.module.music.domain.UserPlaylistItem;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.Optional;
+
+public interface UserPlaylistItemRepository extends JpaRepository<UserPlaylistItem, Long> {
+
+    Page<UserPlaylistItem> findByPlaylistIdOrderBySortOrderAscIdAsc(Long playlistId, Pageable pageable);
+
+    Optional<UserPlaylistItem> findByIdAndPlaylistId(Long id, Long playlistId);
+
+    Optional<UserPlaylistItem> findByPlaylistIdAndSourceAndSongId(Long playlistId, String source, String songId);
+
+    long countByPlaylistId(Long playlistId);
+
+    void deleteByPlaylistId(Long playlistId);
+}

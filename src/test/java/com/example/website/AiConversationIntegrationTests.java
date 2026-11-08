@@ -1,6 +1,6 @@
 package com.example.website;
 
-import com.example.website.service.AiChatUpstreamClient;
+import com.example.website.module.ai.application.AiChatUpstreamClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;

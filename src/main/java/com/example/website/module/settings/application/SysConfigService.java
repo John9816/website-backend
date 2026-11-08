@@ -1,0 +1,146 @@
+package com.example.website.module.settings.application;
+
+import com.example.website.common.BusinessException;
+import com.example.website.config.CacheConfig;
+import com.example.website.module.settings.api.dto.SysConfigRequest;
+import com.example.website.module.settings.api.dto.SysConfigView;
+import com.example.website.module.settings.domain.SysConfig;
+import com.example.website.module.settings.infrastructure.persistence.SysConfigRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+@Service
+@RequiredArgsConstructor
+public class SysConfigService {
+
+    private static final Set<String> INTERNAL_CONFIG_KEYS = new java.util.HashSet<>(java.util.Arrays.asList(
+            "image.upload.dir", "image.persist.remote-url-mode",
+            "music.tunefree.udid", "music.tunefree.token", "music.tunefree.token_updated_at",
+            "music.tunefree.token_status",
+            "migration.legacyNav.done", "content.autopilot.dedupDays",
+            "content.evidence.maxQueries", "content.evidence.perQuery",
+            "content.review.minScore", "content.review.maxRevisions",
+            "content.cover.fallback.url", "content.cover.fallback.model",
+            "content.cover.fallback.ratio", "content.cover.fallback.resolution"
+    ));
+
+    private final SysConfigRepository configRepository;
+
+    public List<SysConfigView> listAll() {
+        return configRepository.findAllByOrderByConfigKeyAsc().stream()
+                .filter(config -> !INTERNAL_CONFIG_KEYS.contains(config.getConfigKey()))
+                .map(SysConfigView::from)
+                .collect(Collectors.toList());
+    }
+
+    public SysConfigView get(Long id) {
+        return configRepository.findById(id)
+                .map(SysConfigView::from)
+                .orElseThrow(() -> new BusinessException(404, "Config not found"));
+    }
+
+    @Cacheable(value = CacheConfig.CACHE_SYS_CONFIG, key = "#key",
+            unless = "#result == null")
+    public Optional<String> getValue(String key) {
+        return configRepository.findByConfigKey(key).map(SysConfig::getConfigValue);
+    }
+
+    public String getValueOrThrow(String key) {
+        return getValue(key).orElseThrow(() ->
+                new BusinessException(500, "System config missing: " + key));
+    }
+
+    @Transactional
+    @CacheEvict(value = CacheConfig.CACHE_SYS_CONFIG, key = "#req.configKey")
+    public SysConfigView create(SysConfigRequest req) {
+        if (configRepository.existsByConfigKey(req.getConfigKey())) {
+            throw new BusinessException(409, "configKey already exists: " + req.getConfigKey());
+        }
+        SysConfig c = new SysConfig();
+        c.setConfigKey(req.getConfigKey());
+        c.setConfigValue(requireCreateValue(req));
+        c.setDescription(req.getDescription());
+        return SysConfigView.from(configRepository.save(c));
+    }
+
+    @Transactional
+    @CacheEvict(value = CacheConfig.CACHE_SYS_CONFIG, allEntries = true)
+    public SysConfigView update(Long id, SysConfigRequest req) {
+        SysConfig c = configRepository.findById(id)
+                .orElseThrow(() -> new BusinessException(404, "Config not found"));
+        if (!c.getConfigKey().equals(req.getConfigKey())
+                && configRepository.existsByConfigKey(req.getConfigKey())) {
+            throw new BusinessException(409, "configKey already exists: " + req.getConfigKey());
+        }
+        String previousKey = c.getConfigKey();
+        c.setConfigKey(req.getConfigKey());
+        if (!Boolean.TRUE.equals(req.getPreserveValue())) {
+            c.setConfigValue(req.getConfigValue() == null ? "" : req.getConfigValue());
+        } else if (!SysConfigView.isSensitiveKey(previousKey)
+                || !SysConfigView.isSensitiveKey(req.getConfigKey())) {
+            throw new BusinessException(400, "preserveValue is only valid for an existing sensitive config");
+        }
+        c.setDescription(req.getDescription());
+        return SysConfigView.from(configRepository.save(c));
+    }
+
+    private String requireCreateValue(SysConfigRequest req) {
+        if (Boolean.TRUE.equals(req.getPreserveValue())) {
+            throw new BusinessException(400, "preserveValue cannot be used when creating a config");
+        }
+        if (req.getConfigValue() == null) {
+            throw new BusinessException(400, "configValue is required");
+        }
+        return req.getConfigValue();
+    }
+
+    @Transactional
+    @CacheEvict(value = CacheConfig.CACHE_SYS_CONFIG, allEntries = true)
+    public void delete(Long id) {
+        if (!configRepository.existsById(id)) {
+            throw new BusinessException(404, "Config not found");
+        }
+        configRepository.deleteById(id);
+    }
+
+    @Transactional
+    @CacheEvict(value = CacheConfig.CACHE_SYS_CONFIG, key = "#key")
+    public void seedIfAbsent(String key, String value, String description) {
+        if (configRepository.existsByConfigKey(key)) {
+            return;
+        }
+        SysConfig c = new SysConfig();
+        c.setConfigKey(key);
+        c.setConfigValue(value);
+        c.setDescription(description);
+        configRepository.save(c);
+    }
+
+    /**
+     * Insert or update a config row by its key. Unlike {@link #seedIfAbsent},
+     * this overwrites the value (and description when non-null) if the key
+     * already exists. Used for keys whose value changes at runtime
+     * (e.g. music.tunefree.token written back after a refresh).
+     */
+    @Transactional
+    @CacheEvict(value = CacheConfig.CACHE_SYS_CONFIG, key = "#key")
+    public void upsertByKey(String key, String value, String description) {
+        SysConfig c = configRepository.findByConfigKey(key).orElseGet(SysConfig::new);
+        if (c.getConfigKey() == null) {
+            c.setConfigKey(key);
+        }
+        c.setConfigValue(value);
+        if (description != null) {
+            c.setDescription(description);
+        }
+        configRepository.save(c);
+    }
+}

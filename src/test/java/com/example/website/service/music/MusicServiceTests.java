@@ -82,6 +82,45 @@ class MusicServiceTests {
                 chkszNetease, tfPay, qqTextFallback, playUrlVerifier);
     }
 
+
+    @Test
+    void ordinaryLyricCacheRetriesWordTimingAfterShortExpiryAndIgnoresOldEntries() {
+        AtomicLong now = new AtomicLong(1000);
+        MusicCache cache = new MusicCache(new com.example.website.config.PerformanceMetrics(), now::get);
+        cache.put("music:lyric:official:v2:qq:mid", new LyricView("mid", MusicSource.QQ, "old", null, "qq", true), 21600);
+        musicService = new MusicService(cache, configService, qq, netease, kuwo,
+                chkszNetease, tfPay, qqTextFallback, playUrlVerifier);
+        LyricInfo ordinary = new LyricInfo("[00:01.000]你好", null);
+        LyricInfo enhanced = new LyricInfo("[00:01.000]你好", "[1000,500](1000,500,0)你好");
+        when(qq.fetchLyrics("mid")).thenReturn(ordinary, enhanced);
+        assertEquals(ordinary.getLineLyrics(), musicService.lyric("qq", "mid").getLineLyrics());
+        now.addAndGet(9 * 60 * 1000);
+        assertNull(musicService.lyric("qq", "mid").getKaraokeLyrics());
+        now.addAndGet(2 * 60 * 1000);
+        assertEquals(enhanced.getKaraokeLyrics(), musicService.lyric("qq", "mid").getKaraokeLyrics());
+        now.addAndGet(60 * 60 * 1000);
+        assertEquals(enhanced.getKaraokeLyrics(), musicService.lyric("qq", "mid").getKaraokeLyrics());
+        verify(qq, times(2)).fetchLyrics("mid");
+    }
+
+    @Test
+    void officialWordLyricsAreReturnedAndCachedForBothProviders() {
+        LyricInfo both = new LyricInfo("[00:01.000]你好", "[1000,500](1000,500,0)你好");
+        when(qq.fetchLyrics("mid")).thenReturn(both);
+        when(kuwo.fetchLyrics("228908")).thenReturn(both);
+        for (String source : Arrays.asList("qq", "kuwo")) {
+            String id = source.equals("qq") ? "mid" : "228908";
+            LyricView lyric = musicService.lyric(source, id);
+            assertEquals(both.getKaraokeLyrics(), lyric.getKaraokeLyrics());
+            assertEquals(both.getLineLyrics(), lyric.getLineLyrics());
+            assertTrue(lyric.getOfficial());
+            assertEquals(source, lyric.getProvider());
+            assertEquals(lyric, musicService.lyric(source, id));
+        }
+        verify(qq, times(1)).fetchLyrics("mid");
+        verify(kuwo, times(1)).fetchLyrics("228908");
+    }
+
     @Test
     void lyricUsesOfficialQqEndpointEvenWhenPlayCacheContainsFallbackLyric() {
         SongSearchItem meta = song("song-mid", "track-one", "artist-one");
@@ -100,7 +139,7 @@ class MusicServiceTests {
                 .thenThrow(new MusicBusinessException(MusicErrorCode.MISSING_UPSTREAM_TOKEN, "token missing"));
         when(qq.fetchSongInfo("song-mid")).thenReturn(meta);
         when(qqTextFallback.fetchSongUrl("song-mid", MusicQuality.K128, meta)).thenReturn(fallback);
-        when(qq.fetchLyric("song-mid")).thenReturn("[00:00.00]official-line");
+        when(qq.fetchLyrics("song-mid")).thenReturn(new LyricInfo("[00:00.00]official-line", null));
 
         PlayInfo play = musicService.play("qq", "song-mid", "128k");
 
@@ -117,7 +156,7 @@ class MusicServiceTests {
         assertNull(lyric.getKaraokeLyrics());
         assertEquals("qq", lyric.getProvider());
         assertTrue(lyric.getOfficial());
-        verify(qq).fetchLyric("song-mid");
+        verify(qq).fetchLyrics("song-mid");
         verify(qqTextFallback, never()).fetchLyric(meta);
     }
 
@@ -125,7 +164,7 @@ class MusicServiceTests {
     void lyricFallsBackToQqTextLookupWhenOfficialLyricFails() {
         SongSearchItem meta = song("song-mid", "track-two", "artist-two");
 
-        when(qq.fetchLyric("song-mid"))
+        when(qq.fetchLyrics("song-mid"))
                 .thenThrow(new MusicBusinessException(MusicErrorCode.UPSTREAM_LYRIC_FAILED, "qq lyric failed"));
         when(qq.fetchSongInfo("song-mid")).thenReturn(meta);
         when(qqTextFallback.fetchLyric(meta)).thenReturn(new LyricInfo("[00:01.00]line-two", null));
@@ -142,7 +181,7 @@ class MusicServiceTests {
 
     @Test
     void kuwoLyricUsesOfficialEndpointBeforeTuneFreeFallback() {
-        when(kuwo.fetchLyric("631473518")).thenReturn("[00:00.00]official-kuwo");
+        when(kuwo.fetchLyrics("631473518")).thenReturn(new LyricInfo("[00:00.00]official-kuwo", null));
 
         LyricView lyric = musicService.lyric("kuwo", "631473518");
 
@@ -156,7 +195,7 @@ class MusicServiceTests {
     void kuwoLyricFallsBackToTuneFreeWhenOfficialEndpointFails() {
         PlayInfo fallback = new PlayInfo();
         fallback.setLyric(new LyricInfo("[00:00.00]fallback-kuwo", null));
-        when(kuwo.fetchLyric("631473518"))
+        when(kuwo.fetchLyrics("631473518"))
                 .thenThrow(new MusicBusinessException(MusicErrorCode.UPSTREAM_LYRIC_FAILED, "kuwo failed"));
         when(tfPay.play(MusicSource.KUWO, "631473518", MusicQuality.FLAC)).thenReturn(fallback);
 

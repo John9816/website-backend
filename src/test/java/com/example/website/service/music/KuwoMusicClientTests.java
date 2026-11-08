@@ -32,6 +32,35 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class KuwoMusicClientTests {
 
+
+    @Test
+    void enhancedLyricsUseSameSongIdAndNormalizeWordTiming() throws Exception {
+        byte[] payload = WordLyricCodecTests.kuwoEnvelope("[kuwo:034]\n[00:01.000]<3200,-3200>你<1600,0>好");
+        OkHttpClient client = new OkHttpClient.Builder().addInterceptor(chain -> {
+            assertEquals("newlyric.kuwo.cn", chain.request().url().host());
+            byte[] query = java.util.Base64.getDecoder().decode(chain.request().url().query());
+            byte[] key = "yeelion".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            for (int i = 0; i < query.length; i++) query[i] ^= key[i % key.length];
+            assertTrue(new String(query, java.nio.charset.StandardCharsets.UTF_8).contains("rid=MUSIC_228908&lrcx=1"));
+            return new Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                    .body(ResponseBody.create(payload, MediaType.get("application/octet-stream"))).build();
+        }).build();
+        com.example.website.dto.music.LyricInfo lyric = new KuwoMusicClient(client, new ObjectMapper()).fetchLyrics("228908");
+        assertEquals("[1000,500](1000,400,0)你(1400,100,0)好", lyric.getKaraokeLyrics());
+        assertEquals("[00:01.000]你好", lyric.getLineLyrics());
+    }
+
+    @Test
+    void enhancedFailureFallsBackToOrdinaryKuwoLyrics() {
+        OkHttpClient client = new OkHttpClient.Builder().addInterceptor(chain -> {
+            if (chain.request().url().host().equals("newlyric.kuwo.cn")) throw new IOException("timeout");
+            return response(chain, "{\"code\":200,\"data\":{\"lrclist\":[{\"time\":\"1\",\"lineLyric\":\"普通歌词\"}]}}");
+        }).build();
+        com.example.website.dto.music.LyricInfo lyric = new KuwoMusicClient(client, new ObjectMapper()).fetchLyrics("228908");
+        assertEquals("[00:01.00]普通歌词", lyric.getLineLyrics());
+        org.junit.jupiter.api.Assertions.assertNull(lyric.getKaraokeLyrics());
+    }
+
     @Test
     void searchBuildsCoverUrlFromKuwoSearchFields() {
         OkHttpClient client = new OkHttpClient.Builder()

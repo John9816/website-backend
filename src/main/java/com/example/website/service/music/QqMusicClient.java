@@ -239,6 +239,45 @@ public class QqMusicClient {
         return new NeteaseMusicClient.CollectionSearchResult(total == null ? (long) out.size() : total, out);
     }
 
+    /** Prefer same-recording word timings; any enhanced failure retains the web LRC path. */
+    public LyricInfo fetchLyrics(String id) {
+        try {
+            Map<String, Object> param = new LinkedHashMap<>();
+            param.put("songMid", id);
+            param.put("crypt", 1);
+            param.put("ct", 19);
+            param.put("cv", 2111);
+            param.put("qrc", 1);
+            param.put("qrc_t", 0);
+            param.put("lrc_t", 0);
+            param.put("roma", 0);
+            param.put("roma_t", 0);
+            param.put("trans", 0);
+            param.put("trans_t", 0);
+            param.put("type", 0);
+            Map<String, Object> request = new LinkedHashMap<>();
+            request.put("module", "music.musichallSong.PlayLyricInfo");
+            request.put("method", "GetPlayLyricInfo");
+            request.put("param", param);
+            Map<String, Object> comm = new LinkedHashMap<>();
+            comm.put("ct", 24);
+            comm.put("cv", 0);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("comm", comm);
+            body.put("req_1", request);
+            Map<String, Object> json = musicUPost(body, MusicErrorCode.UPSTREAM_LYRIC_FAILED);
+            Map<String, Object> result = asMap(json.get("req_1"));
+            Map<String, Object> data = result == null ? null : asMap(result.get("data"));
+            if (result != null && Integer.valueOf(0).equals(asInt(result.get("code"))) && data != null) {
+                LyricInfo lyric = WordLyricCodec.decodeQq(asString(data.get("lyric")));
+                if (lyric.getLineLyrics() != null) return lyric;
+            }
+        } catch (Exception ex) {
+            log.debug("QQ enhanced lyric unavailable for {}: {}", id, ex.getClass().getSimpleName());
+        }
+        return new LyricInfo(fetchLyric(id), null);
+    }
+
     public String fetchLyric(String songMid) {
         HttpUrl url = HttpUrl.parse(LYRIC_URL).newBuilder()
                 .addQueryParameter("songmid", songMid)

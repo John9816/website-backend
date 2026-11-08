@@ -946,21 +946,24 @@ public class MusicService {
         MusicSource source = MusicSource.of(rawSource);
         String sid = requireId(id);
 
-        String officialKey = "music:lyric:official:v2:" + source.getValue() + ":" + sid;
+        String officialKey = "music:lyric:official:v3:" + source.getValue() + ":" + sid;
         LyricView cachedOfficial = cache.get(officialKey, LyricView.class);
         if (cachedOfficial != null) return cachedOfficial;
 
         MusicBusinessException officialError;
         try {
             LyricView official = fetchOfficialLyric(source, sid);
-            cache.put(officialKey, official, LYRIC_TTL_SEC);
+            // Retry missing word timing soon: a transient enhanced-endpoint failure
+            // must not hide recovered word lyrics for the full six-hour cache TTL.
+            cache.put(officialKey, official, isEmpty(official.getKaraokeLyrics())
+                    ? LYRIC_FALLBACK_TTL_SEC : LYRIC_TTL_SEC);
             return official;
         } catch (MusicBusinessException ex) {
             officialError = ex;
             log.debug("Official lyric failed for {}/{}: {}", source.getValue(), sid, ex.getMessage());
         }
 
-        String fallbackKey = "music:lyric:fallback:v2:" + source.getValue() + ":" + sid;
+        String fallbackKey = "music:lyric:fallback:v3:" + source.getValue() + ":" + sid;
         LyricView cachedFallback = cache.get(fallbackKey, LyricView.class);
         if (cachedFallback != null) return cachedFallback;
         try {
@@ -982,9 +985,9 @@ public class MusicService {
     private LyricView fetchOfficialLyric(MusicSource source, String id) {
         switch (source) {
             case QQ: {
-                String line = qq.fetchLyric(id);
-                if (!isEmpty(line)) {
-                    return new LyricView(id, source, line, null, "qq", Boolean.TRUE);
+                LyricInfo lyric = qq.fetchLyrics(id);
+                if (lyric != null && (!isEmpty(lyric.getLineLyrics()) || !isEmpty(lyric.getKaraokeLyrics()))) {
+                    return new LyricView(id, source, lyric.getLineLyrics(), lyric.getKaraokeLyrics(), "qq", Boolean.TRUE);
                 }
                 throw new MusicBusinessException(MusicErrorCode.UPSTREAM_LYRIC_FAILED,
                         "no lyric from qq for " + id);
@@ -998,8 +1001,12 @@ public class MusicService {
                 return new LyricView(id, source, both[0], both[1], "netease", Boolean.TRUE);
             }
             case KUWO: {
-                String line = kuwo.fetchLyric(id);
-                return new LyricView(id, source, line, null, "kuwo", Boolean.TRUE);
+                LyricInfo lyric = kuwo.fetchLyrics(id);
+                if (lyric != null && (!isEmpty(lyric.getLineLyrics()) || !isEmpty(lyric.getKaraokeLyrics()))) {
+                    return new LyricView(id, source, lyric.getLineLyrics(), lyric.getKaraokeLyrics(), "kuwo", Boolean.TRUE);
+                }
+                throw new MusicBusinessException(MusicErrorCode.UPSTREAM_LYRIC_FAILED,
+                        "no lyric from kuwo for " + id);
             }
             default:
                 throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");

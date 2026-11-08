@@ -25,6 +25,43 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class QqMusicClientTests {
 
+
+    @Test
+    void enhancedLyricsReturnRealWordTimingWithoutAdditionalLineRequest() {
+        OkHttpClient client = new OkHttpClient.Builder().addInterceptor(chain -> {
+            assertEquals("u.y.qq.com", chain.request().url().host());
+            String body = bodyOf(chain.request());
+            assertTrue(body.contains("GetPlayLyricInfo"));
+            assertTrue(body.contains("song-mid"));
+            return response(chain, "{\"code\":0,\"req_1\":{\"code\":0,\"data\":{\"qrc\":1,\"lyric\":\""
+                    + WordLyricCodecTests.QRC + "\"}}}");
+        }).build();
+        com.example.website.dto.music.LyricInfo lyric = new QqMusicClient(client, new ObjectMapper()).fetchLyrics("song-mid");
+        assertEquals(WordLyricCodecTests.YRC, lyric.getKaraokeLyrics());
+        assertEquals("[00:01.000]你好 世界\n[00:03.000]测试", lyric.getLineLyrics());
+    }
+
+    @Test
+    void malformedEnhancedLyricsFallBackToOrdinaryQqLyrics() {
+        OkHttpClient client = new OkHttpClient.Builder().addInterceptor(chain -> {
+            if (chain.request().url().host().equals("u.y.qq.com"))
+                return response(chain, "{\"code\":0,\"req_1\":{\"code\":0,\"data\":{\"qrc\":1,\"lyric\":\"broken\"}}}");
+            return response(chain, "{\"code\":0,\"lyric\":\"[00:01.00]普通歌词\"}");
+        }).build();
+        com.example.website.dto.music.LyricInfo lyric = new QqMusicClient(client, new ObjectMapper()).fetchLyrics("song-mid");
+        assertEquals("[00:01.00]普通歌词", lyric.getLineLyrics());
+        org.junit.jupiter.api.Assertions.assertNull(lyric.getKaraokeLyrics());
+    }
+
+    @Test
+    void enhancedNetworkFailureKeepsOrdinaryQqLyricsAvailable() {
+        OkHttpClient client = new OkHttpClient.Builder().addInterceptor(chain -> {
+            if (chain.request().url().host().equals("u.y.qq.com")) throw new IOException("timeout");
+            return response(chain, "{\"code\":0,\"lyric\":\"[00:01.00]普通歌词\"}");
+        }).build();
+        assertEquals("[00:01.00]普通歌词", new QqMusicClient(client, new ObjectMapper()).fetchLyrics("song-mid").getLineLyrics());
+    }
+
     @Test
     void fetchArtistDetailUsesCurrentMusicuDetailInfoMethod() {
         OkHttpClient client = new OkHttpClient.Builder()

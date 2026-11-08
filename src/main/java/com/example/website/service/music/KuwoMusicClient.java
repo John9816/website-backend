@@ -6,6 +6,7 @@ import com.example.website.config.OkHttpConfig;
 import com.example.website.dto.music.AlbumDetailView;
 import com.example.website.dto.music.AlbumSummaryItem;
 import com.example.website.dto.music.MusicSource;
+import com.example.website.dto.music.LyricInfo;
 import com.example.website.dto.music.ArtistDetailView;
 import com.example.website.dto.music.ArtistWorksView;
 import com.example.website.dto.music.MusicSearchType;
@@ -57,7 +58,7 @@ import static com.example.website.service.music.MusicValueUtils.truncate;
  * mixed-content blocks if they tried to call it directly; we proxy it here
  * so the frontend never sees the HTTP URL.
  *
- * <p>Lyrics use Kuwo's own Web endpoint and are normalized to LRC text here.
+ * <p>Lyrics prefer Kuwo LRCX word timing and fall back to its Web LRC endpoint.
  */
 @Slf4j
 @Component
@@ -78,6 +79,26 @@ public class KuwoMusicClient {
     private final OkHttpClient okHttpClient;
     private final ObjectMapper objectMapper;
     private final Map<String, String> coverUrlCache = new ConcurrentHashMap<>();
+
+    /** Same-song LRCX includes word timings; ordinary web lyrics remain the fallback. */
+    public LyricInfo fetchLyrics(String id) {
+        try {
+            HttpUrl url = HttpUrl.parse("https://newlyric.kuwo.cn/newlyric.lrc").newBuilder()
+                    .query(WordLyricCodec.kuwoQuery(id)).build();
+            Request request = new Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").get().build();
+            Call call = okHttpClient.newCall(request);
+            MusicRequestBudget.constrain(call, 5, TimeUnit.SECONDS);
+            try (Response response = call.execute()) {
+                if (response.isSuccessful() && response.body() != null) {
+                    LyricInfo lyric = WordLyricCodec.decodeKuwo(WordLyricCodec.readLimited(response.body().byteStream()));
+                    if (lyric.getLineLyrics() != null) return lyric;
+                }
+            }
+        } catch (Exception ex) {
+            log.debug("Kuwo enhanced lyric unavailable for {}: {}", id, ex.getClass().getSimpleName());
+        }
+        return new LyricInfo(fetchLyric(id), null);
+    }
 
     @SuppressWarnings("unchecked")
     public String fetchLyric(String songId) {

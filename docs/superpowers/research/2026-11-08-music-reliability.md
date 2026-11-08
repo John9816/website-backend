@@ -1,6 +1,6 @@
 # 音乐解析与播放可靠性优化
 
-日期：2026-11-08。范围：后端及 DuckMusic 配套客户端。以本地实现和验证为交付范围，本轮没有修改发布版本。
+日期：2026-11-08。范围：后端及 DuckMusic 配套客户端。后端已于当日 17:31（北京时间）部署到 ECS；上线证据见文末。
 
 ## 录音身份与歌词
 
@@ -51,4 +51,25 @@
 
 App 测试沿用本机已有 QA 的 `xcrun` 包装器和 CommandLineTools 环境；未修改系统 Xcode 许可。最终日志与计数位于 DuckMusic 的 `build/qa/music-reliability-2026-11-08/`（构建目录不纳入版本控制）。
 
-测试使用本地模拟上游，没有对生产环境进行压测；本轮没有测量线上延迟收益，也没有完成新版 Android 真机回归。代码尚未提交、推送或部署，未升级 App 版本。
+测试使用本地模拟上游，没有对生产环境进行压测；本轮没有测量线上延迟收益，也没有完成 Android 实体真机回归。
+
+## ECS 发布与线上验收
+
+- 代码提交：`21728239f456ac653dda58fcb7bf77f9e76514b9`，已推送 `origin/codex/tvbox-provider`。
+- 生效时间：2026-11-08 17:31:15，Asia/Shanghai。
+- 当前版本：`/opt/website/releases/20261108T092932Z-music-reliability-21728239f456`。
+- JAR：54,222,290 字节；SHA-256 `00ce48540defde08cd2381dd3f5ed2f37cb8715654cc47bdac4b7c839f72b31a`。
+- 回滚版本：`/opt/website/releases/20261108T065300Z-word-lyrics-15dc6f75b807`；使用既有 `ops/remote-rollback.sh previous` 流程。
+- 数据库备份：`/opt/backups/website-before-20261108T092932Z-music-reliability-21728239f456.sql.gz`，443,997 字节，gzip 完整性和 dump 完成标记均通过。
+- 本次没有数据库迁移；部署复用现有网页产物和服务配置，原子切换版本后仅重启 API。JAR 条目差异核对仅包含预期音乐模块变更。
+
+发布前再次执行 `mvn -q clean verify`：66 个测试类、403 项通过，0 失败、错误或跳过。线上以普通账号验证：
+
+- QQ、网易云、酷我搜索均返回结果；QQ 和酷我样本返回官方逐字歌词。
+- 酷我播放保留正确 `actualSource/actualId`，并标记 `lyricMatch=exact`；QQ 文本回退样本标记 `unverified` 且不冒充确定的 `actualId`。再次命中缓存时身份仍一致。
+- 预加载不写入历史；实际播放随后进入历史。
+- 普通账号访问指标接口返回 403，管理权限约束保持生效。
+
+17:31–17:46 完成至少 15 分钟观察：API、网页和同源代理持续返回 HTTP 200；API PID `324648` 未变化，`NRestarts=0`。观察窗口错误日志为 0，2 条警告均为备用解析被正常取消的 `Canceled`，没有计入上游故障。最后一个内存样本为 448,049,152 字节。上述为功能与稳定性抽查，不代表压力测试或性能收益结论。
+
+原始证据保存在 DuckMusic 的 `build/qa/release-1.1.50-2026-11-08/`：`backend-release.json`、`backend-jar-diff.json`、`backend-production-verification.json`、`backend-history-verification.json`、`backend-monitor.jsonl` 和构建日志。该目录名来自最初 Android 发布尝试；Android 后续修复构建基础设施并递增到 `1.1.51+62`，后端发布提交没有变化。

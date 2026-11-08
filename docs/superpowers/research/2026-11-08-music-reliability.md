@@ -72,4 +72,4 @@ App 测试沿用本机已有 QA 的 `xcrun` 包装器和 CommandLineTools 环境
 
 17:31–17:46 完成至少 15 分钟观察：API、网页和同源代理持续返回 HTTP 200；API PID `324648` 未变化，`NRestarts=0`。观察窗口错误日志为 0，2 条警告均为备用解析被正常取消的 `Canceled`，没有计入上游故障。最后一个内存样本为 448,049,152 字节。上述为功能与稳定性抽查，不代表压力测试或性能收益结论。
 
-原始证据保存在 DuckMusic 的 `build/qa/release-1.1.50-2026-11-08/`：`backend-release.json`、`backend-jar-diff.json`、`backend-production-verification.json`、`backend-history-verification.json`、`backend-monitor.jsonl` 和构建日志。该目录名来自最初 Android 发布尝试；Android 后续修复构建基础设施并递增到 `1.1.51+62`，后端发布提交没有变化。
+原始证据保存在 DuckMusic 的 `build/qa/release-1.1.50-2026-11-08/`：`backend-release.json`、`backend-jar-diff.json`、`backend-production-verification.json`、`backend-history-verification.json`、`backend-monitor.jsonl` 和构建日志。该目录名来自最初 Android 发布尝试；Android 后续修复构建基础设施并递增到 `1.1.53+64`，后端发布提交没有变化。

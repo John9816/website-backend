@@ -103,6 +103,12 @@ app:
     storage-dir: ${APP_UPDATE_STORAGE_DIR:/opt/website/updates}
     base-url: ${APP_UPDATE_BASE_URL:https://api.751152.xyz/updates}
   music:
+    qishui:
+      encryption-key: ${QISHUI_ENCRYPTION_KEY:}
+      client-key: ${QISHUI_CLIENT_KEY:}
+      app-identity: ${QISHUI_APP_IDENTITY:}
+      app-signature: ${QISHUI_APP_SIGNATURE:}
+      parse-access-token: ${QISHUI_PARSE_ACCESS_TOKEN:}
     chksz:
       enabled: ${CHKSZ_ENABLED:true}
       base-url: ${CHKSZ_BASE_URL:https://api.chksz.com}

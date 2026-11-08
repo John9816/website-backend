@@ -8,7 +8,8 @@ public enum MusicSource {
 
     QQ("qq", "qq"),
     NETEASE("netease", "netease"),
-    KUWO("kuwo", "kw");
+    KUWO("kuwo", "kw"),
+    QISHUI("qishui", null);
 
     private final String value;
     private final String tfPayPlatform;
@@ -28,18 +29,20 @@ public enum MusicSource {
      * key is {@code kw}, not {@code kuwo}.
      */
     public String getTfPayPlatform() {
+        if (tfPayPlatform == null) throw new MusicBusinessException(MusicErrorCode.UNSUPPORTED_OPERATION, "Qishui does not use legacy tf-pay");
         return tfPayPlatform;
     }
 
     public static MusicSource of(String raw) {
         if (raw == null) {
             throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE,
-                    "source is required, allowed: qq, netease, kuwo");
+                    "source is required, allowed: qq, netease, kuwo, qishui");
         }
+        if ("qs".equalsIgnoreCase(raw)) return QISHUI;
         for (MusicSource s : values()) {
             if (s.value.equalsIgnoreCase(raw)) return s;
         }
         throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE,
-                "invalid source: " + raw + ", allowed: qq, netease, kuwo");
+                "invalid source: " + raw + ", allowed: qq, netease, kuwo, qishui");
     }
 }

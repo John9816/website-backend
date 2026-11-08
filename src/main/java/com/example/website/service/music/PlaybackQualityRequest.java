@@ -26,7 +26,7 @@ final class PlaybackQualityRequest {
     static PlaybackQualityRequest parse(MusicSource source, String raw) {
         if (source != MusicSource.NETEASE) {
             String requested = normalize(raw);
-            MusicQuality legacy = source == MusicSource.QQ && requested == null
+            MusicQuality legacy = (source == MusicSource.QQ || source == MusicSource.QISHUI) && requested == null
                     ? MusicQuality.K320
                     : MusicQuality.of(requested);
             return new PlaybackQualityRequest(legacy.getValue(), legacy.getValue(), null, legacy);

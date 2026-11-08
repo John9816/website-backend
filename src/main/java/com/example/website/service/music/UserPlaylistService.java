@@ -45,6 +45,8 @@ import java.util.regex.Pattern;
 @Service
 @RequiredArgsConstructor
 public class UserPlaylistService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private QishuiMusicClient qishui;
 
     private static final int MAX_IMPORT_TRACKS = 1000;
     private static final int IMPORT_PAGE_SIZE = 100;
@@ -372,7 +374,7 @@ public class UserPlaylistService {
     @Transactional
     public UserPlaylistItemView addItem(Long userId, Long playlistId, PlaylistItemRequest req) {
         UserPlaylist playlist = requireOwned(userId, playlistId);
-        String source = limit(requireText(req.getSource(), "source is required"), 20);
+        String source = MusicSource.of(requireText(req.getSource(), "source is required")).getValue();
         String songId = limit(requireText(req.getSongId(), "songId is required"), 100);
 
         return itemRepository.findByPlaylistIdAndSourceAndSongId(playlist.getId(), source, songId)
@@ -414,6 +416,8 @@ public class UserPlaylistService {
 
     private PlaylistDetailView fetchPage(PlaylistRef ref, int page, int pageSize) {
         switch (ref.source) {
+            case QISHUI:
+                return qishui.fetchPlaylistDetail(ref.externalId, page, pageSize);
             case QQ:
                 return qq.fetchPlaylistDetail(ref.externalId, page, pageSize);
             case NETEASE:

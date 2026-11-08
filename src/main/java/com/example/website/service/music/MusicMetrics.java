@@ -17,12 +17,12 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class MusicMetrics {
 
-    private static final Set<String> SOURCES = values("qq", "netease", "kuwo");
+    private static final Set<String> SOURCES = values("qq", "netease", "kuwo", "qishui");
     private static final Set<String> OPERATIONS = values("search", "play", "lyric", "cover", "history",
             "lyric_official", "lyric_fallback", "metadata");
     private static final Set<String> OUTCOMES = values("success", "failure", "timeout", "rejected",
             "cache_hit", "fallback", "cooldown", "cancelled", "queued", "duplicate", "retry", "discarded");
-    private static final Set<String> PROVIDERS = values("qq", "netease", "kuwo", "cyapi", "tunefree");
+    private static final Set<String> PROVIDERS = values("qq", "netease", "kuwo", "qishui", "cyapi", "tunefree");
     private static final Set<String> GRANULARITIES = values("word", "line", "none");
 
     private final MeterRegistry registry;

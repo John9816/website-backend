@@ -77,6 +77,11 @@ public class MusicService {
     private static final List<MusicSource> FALLBACK_ORDER =
             Arrays.asList(MusicSource.NETEASE, MusicSource.QQ, MusicSource.KUWO);
 
+    @Autowired
+    private QishuiMusicClient qishui;
+    @Autowired
+    private QishuiParseClient qishuiParse;
+
     private final MusicCache cache;
     private final MusicMetrics metrics;
     private final MusicLyricService lyrics;
@@ -199,6 +204,7 @@ public class MusicService {
             if (type == MusicSearchType.SONG) {
                 List<SongSearchItem> list;
                 switch (source) {
+                    case QISHUI: list = qishui.search(kw, p, s); break;
                     case QQ: list = qq.search(kw, p, s); break;
                     case NETEASE: list = netease.search(kw, p, s); break;
                     case KUWO: list = kuwo.search(kw, p, s); break;
@@ -208,6 +214,7 @@ public class MusicService {
             } else {
                 NeteaseMusicClient.CollectionSearchResult result;
                 switch (source) {
+                    case QISHUI: result = qishui.searchCollections(kw, type, p, s); break;
                     case QQ: result = qq.searchCollections(kw, type, p, s); break;
                     case KUWO: result = kuwo.searchCollections(kw, type, p, s); break;
                     case NETEASE: result = netease.searchCollections(kw, type, p, s); break;
@@ -240,6 +247,8 @@ public class MusicService {
             case KUWO:
                 list = kuwo.fetchToplists();
                 break;
+            case QISHUI:
+                throw QishuiMusicClient.unsupported("operation is not available in this adapter");
             default:
                 throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
         }
@@ -270,6 +279,8 @@ public class MusicService {
             case KUWO:
                 view = kuwo.fetchToplistDetail(sid, p, s);
                 break;
+            case QISHUI:
+                throw QishuiMusicClient.unsupported("operation is not available in this adapter");
             default:
                 throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
         }
@@ -319,6 +330,8 @@ public class MusicService {
                 cache.put(key, view, PLAYLIST_LIST_TTL_SEC);
                 return view;
             }
+            case QISHUI:
+                throw QishuiMusicClient.unsupported("operation is not available in this adapter");
             default:
                 throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
         }
@@ -342,6 +355,8 @@ public class MusicService {
             case KUWO:
                 view = kuwo.fetchRecommendedPlaylists(size);
                 break;
+            case QISHUI:
+                throw QishuiMusicClient.unsupported("operation is not available in this adapter");
             default:
                 throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
         }
@@ -370,6 +385,9 @@ public class MusicService {
             case KUWO:
                 view = kuwo.fetchPlaylistDetail(sid, p, s);
                 break;
+            case QISHUI:
+                view = qishui.fetchPlaylistDetail(sid, p, s);
+                break;
             default:
                 throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
         }
@@ -391,6 +409,8 @@ public class MusicService {
             case KUWO:
                 id = "17";
                 break;
+            case QISHUI:
+                throw QishuiMusicClient.unsupported("operation is not available in this adapter");
             default:
                 throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
         }
@@ -435,6 +455,8 @@ public class MusicService {
             case KUWO:
                 view = kuwo.fetchAlbumDetail(sid, p, s);
                 break;
+            case QISHUI:
+                throw QishuiMusicClient.unsupported("operation is not available in this adapter");
             default:
                 throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
         }
@@ -466,6 +488,9 @@ public class MusicService {
             case KUWO:
                 view = kuwo.fetchArtistWorks(sid, type, p, s);
                 break;
+            case QISHUI:
+                view = qishui.fetchArtistWorks(sid, type, p, s);
+                break;
             default:
                 throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
         }
@@ -475,6 +500,8 @@ public class MusicService {
 
     private ArtistDetailView fetchArtistDetail(MusicSource source, String id) {
         switch (source) {
+            case QISHUI:
+                return qishui.fetchArtistDetail(id);
             case QQ:
                 return qq.fetchArtistDetail(id);
             case NETEASE:
@@ -703,6 +730,8 @@ public class MusicService {
     }
 
     private static List<PlayResolver> applicableResolvers(MusicSource source, List<PlayResolver> configured) {
+        if (source == MusicSource.QISHUI) return configured.contains(PlayResolver.PRIMARY)
+                ? Collections.singletonList(PlayResolver.PRIMARY) : Collections.emptyList();
         if (source == MusicSource.QQ) return configured;
         List<PlayResolver> filtered = new ArrayList<>();
         for (PlayResolver resolver : configured) {
@@ -791,6 +820,7 @@ public class MusicService {
     private PlayInfo playWithPreferredResolver(MusicSource source,
                                                String id,
                                                PlaybackQualityRequest quality) {
+        if (source == MusicSource.QISHUI) return qishuiParse.play(id, quality.getLegacyQuality());
         if (source == MusicSource.QQ) {
             try {
                 return qq.resolvePlay(id, quality.getLegacyQuality());
@@ -884,7 +914,7 @@ public class MusicService {
                 : meta.getName() + " " + meta.getArtist();
 
         for (MusicSource other : resolveCrossSourceOrder()) {
-            if (other == requested) continue;
+            if (other == requested || other == MusicSource.QISHUI) continue;
             MusicRequestBudget.ensureRemaining();
             try {
                 List<SongSearchItem> hits = searchOn(other, keyword, 1, 3);
@@ -972,6 +1002,8 @@ public class MusicService {
 
     private SongSearchItem fetchSongInfoOn(MusicSource source, String id) {
         switch (source) {
+            case QISHUI:
+                return qishui.fetchSongInfo(id);
             case QQ:
                 return qq.fetchSongInfo(id);
             case NETEASE:
@@ -985,6 +1017,8 @@ public class MusicService {
 
     private List<SongSearchItem> searchOn(MusicSource source, String keyword, int page, int pageSize) {
         switch (source) {
+            case QISHUI:
+                return qishui.search(keyword, page, pageSize);
             case QQ:
                 return qq.search(keyword, page, pageSize);
             case NETEASE:

@@ -514,7 +514,7 @@ SSE 事件包括 `meta`、`delta`、`audio`、`audio_error`、`done` 和 `error`
 
 ### 4.6 音乐聚合
 
-以下接口均要求登录。`source` 可选 `qq`、`netease`、`kuwo`；其中 `/api/v1/music/play` 还要求有效会员。未登录返回 `401`，无有效会员返回 `403`。
+以下接口均要求登录。`source` 可选 `qq`、`netease`、`kuwo`、`qishui`（兼容请求别名 `qs`）；其中 `/api/v1/music/play` 还要求有效会员。未登录返回 `401`，无有效会员返回 `403`。
 
 | Method | Path | 说明 |
 | --- | --- | --- |
@@ -531,6 +531,14 @@ SSE 事件包括 `meta`、`delta`、`audio`、`audio_error`、`done` 和 `error`
 | GET | `/api/v1/music/artist?source=&ids=` | 批量歌手详情，`ids` 使用逗号分隔 |
 | GET | `/api/v1/music/artist/works?source=&id=&type=song&page=1&pageSize=30` | 歌手歌曲或专辑作品，`type` 为 `song` 或 `album` |
 
+#### 汽水音乐（黑源）
+
+`source=qishui` 已接入歌曲/歌单搜索、歌词、歌单详情及按复合ID导入、歌手歌曲和简要资料。歌曲ID保持字符串；歌单ID保留 `playlistId:ownerId:type` 全文。专辑、榜单、推荐分类和歌手专辑等未支持能力返回 `1012 / HTTP 501`。
+
+每个网站用户独立扫码绑定：`POST /api/v1/music/qishui/auth/qr` 创建二维码，`GET /api/v1/music/qishui/auth/qr/{sessionId}` 每2秒轮询；账户查询、刷新、解绑分别为 `GET /account`、`POST /account/refresh`、`DELETE /account`（同一 `/api/v1/music/qishui` 前缀）。响应均 no-store，私钥和上游票据不返回前端。
+
+曲库使用独立 client token；个人扫码用于个人账号，不能替代 TuneFree v1 播放凭据。汽水播放默认320k，需单独配置新版解析 token；加密音频目前返回501，未完成端到端完整播放验证。完整字段、鉴权、部署及已验证范围见 [汽水接口文档](tunefree-next-qishui-api.md)。
+
 #### 播放地址
 
 请求示例：
@@ -544,9 +552,9 @@ Authorization: Bearer <token>
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
-| `source` | 是 | `qq`、`netease` 或 `kuwo` |
+| `source` | 是 | `qq`、`netease`、`kuwo` 或 `qishui`（别名 `qs`） |
 | `id` | 是 | 对应平台歌曲 ID。QQ 使用 QQ Music 的 `mid`，例如 `003S1hgM2asCye` |
-| `quality` | 否 | 未传时 QQ 默认为 `320k`，酷我默认为 `flac`，网易云默认为 `lossless` |
+| `quality` | 否 | 未传时 QQ 和汽水默认为 `320k`，酷我默认为 `flac`，网易云默认为 `lossless` |
 
 QQ 和酷我支持四档兼容值：
 
@@ -763,7 +771,7 @@ QQ 的主解析接口为巡回寺 QQ Music 接口（后端调用，前端不需�
 | DELETE | `/api/user/music/playlists/{id}/items/{itemId}` | 移除歌曲 |
 | GET | `/api/public/music/share/{token}` | 公开读取单曲分享 |
 
-收藏远端歌单支持 `qq`、`netease`、`kuwo`。收藏成功后，歌单及最多 1000 首歌曲会保存到当前用户的“我的歌单”；重复收藏返回同一条歌单，不会重复创建。
+收藏远端歌单支持 `qq`、`netease`、`kuwo`、`qishui`（汽水需使用搜索返回的完整复合ID，不支持分享短链）。收藏成功后，歌单及最多 1000 首歌曲会保存到当前用户的“我的歌单”；重复收藏返回同一条歌单，不会重复创建。
 
 收藏状态：
 

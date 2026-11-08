@@ -16,6 +16,8 @@ import java.util.concurrent.TimeUnit;
 /** Official-first lyric loading with a shared deadline, coalescing and recoverable backoff. */
 @Service
 public class MusicLyricService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private QishuiMusicClient qishui;
 
     private static final long WORD_TTL_SECONDS = 6L * 60L * 60L;
     private static final long ORDINARY_TTL_SECONDS = 10L * 60L;
@@ -139,6 +141,9 @@ public class MusicLyricService {
     private LyricView fetchOfficial(MusicSource source, String id) {
         LyricInfo lyric;
         switch (source) {
+            case QISHUI:
+                lyric = qishui.fetchLyrics(id);
+                break;
             case QQ:
                 lyric = qq.fetchLyrics(id);
                 break;
@@ -161,6 +166,8 @@ public class MusicLyricService {
         LyricInfo lyric;
         String provider;
         switch (source) {
+            case QISHUI:
+                return null;
             case QQ:
                 MusicRequestBudget.ensureRemaining();
                 SongSearchItem meta = qq.fetchSongInfo(id);

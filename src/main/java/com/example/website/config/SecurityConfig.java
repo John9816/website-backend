@@ -65,6 +65,9 @@ public class SecurityConfig {
                 })
                 .and()
                 .authorizeRequests()
+                // Legacy knowledge-base routes only return 410; no data handlers remain.
+                .antMatchers("/api/user/kb/**", "/api/admin/kb/**", "/api/public/kb/**",
+                        "/api/v1/kb/**", "/api/kb/**", "/api/share/doc/**").permitAll()
                 // Public endpoints
                 .antMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/health").permitAll()
@@ -72,7 +75,6 @@ public class SecurityConfig {
                 .antMatchers("/api/auth/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/v1/image/file/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/v1/user/avatar/**").permitAll()
-                .antMatchers(HttpMethod.GET, "/api/v1/kb/assets/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/v1/content/assets/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/api/public/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/nav/**").permitAll()
@@ -86,7 +88,6 @@ public class SecurityConfig {
                 .antMatchers("/books/**").authenticated()
                 .antMatchers("/api/v1/books/**").authenticated()
                 .antMatchers(HttpMethod.GET, "/api/v1/image/list").authenticated()
-                .antMatchers(HttpMethod.GET, "/api/v1/kb/**").authenticated()
                 // Automation can write to the one globally configured official account.
                 .antMatchers("/api/content/automation/**").hasRole(ROLE_ADMIN)
                 // User-scoped content template endpoints.

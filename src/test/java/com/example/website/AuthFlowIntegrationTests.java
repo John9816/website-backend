@@ -278,8 +278,8 @@ class AuthFlowIntegrationTests {
 
         mockMvc.perform(get("/api/user/kb/spaces")
                         .header("Authorization", "Bearer " + userToken))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(0));
+                .andExpect(status().isGone())
+                .andExpect(jsonPath("$.code").value(410));
 
         mockMvc.perform(get("/api/user/image/history")
                         .header("Authorization", "Bearer " + userToken))

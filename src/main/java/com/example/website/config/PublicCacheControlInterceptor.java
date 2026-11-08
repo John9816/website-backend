@@ -37,8 +37,7 @@ public class PublicCacheControlInterceptor implements HandlerInterceptor {
     }
 
     private boolean isAlwaysCacheable(String path) {
-        return PATH_MATCHER.match("/api/public/kb/share/**", path)
-                || PATH_MATCHER.match("/api/public/music/share/**", path);
+        return PATH_MATCHER.match("/api/public/music/share/**", path);
     }
 
     private boolean isAnonymousPublicListing(String path, HttpServletRequest request) {

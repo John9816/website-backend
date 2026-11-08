@@ -38,6 +38,11 @@ public class MusicLibraryService {
 
     @Transactional
     public void recordPlay(Long userId, PlayInfo info) {
+        recordPlay(userId, info, LocalDateTime.now());
+    }
+
+    @Transactional
+    public void recordPlay(Long userId, PlayInfo info, LocalDateTime playedAt) {
         if (userId == null || info == null || info.getSource() == null) {
             return;
         }
@@ -49,6 +54,7 @@ public class MusicLibraryService {
         String source = info.getSource().getValue();
         MusicPlayHistory entity = historyRepository.findByUserIdAndSourceAndSongId(userId, source, songId)
                 .orElseGet(MusicPlayHistory::new);
+        if (entity.getPlayedAt() != null && entity.getPlayedAt().isAfter(playedAt)) return;
         if (entity.getId() == null) {
             entity.setUserId(userId);
             entity.setSource(source);
@@ -60,7 +66,7 @@ public class MusicLibraryService {
                 info.getAlbum(),
                 info.getCoverUrl(),
                 info.getDurationSec());
-        entity.setPlayedAt(LocalDateTime.now());
+        entity.setPlayedAt(playedAt);
         historyRepository.save(entity);
         trimHistory(userId);
     }

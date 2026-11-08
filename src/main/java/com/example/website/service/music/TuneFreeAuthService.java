@@ -101,71 +101,75 @@ public class TuneFreeAuthService {
 
         String rawBody;
         int status;
-        circuitBreaker.acquire(MusicErrorCode.MISSING_UPSTREAM_TOKEN);
-        Call call = okHttpClient.newCall(request);
-        MusicRequestBudget.constrain(call, 5, TimeUnit.SECONDS);
-        try (Response response = call.execute()) {
-            status = response.code();
-            ResponseBody rb = response.body();
-            rawBody = rb == null ? "" : rb.string();
-        } catch (IOException e) {
-            circuitBreaker.recordFailure();
-            markStatus("failed:io");
-            log.warn("TuneFree logon I/O failed: {}", e.getMessage());
-            throw new MusicBusinessException(MusicErrorCode.MISSING_UPSTREAM_TOKEN,
-                    "tunefree logon I/O failed: " + e.getMessage(), e);
-        }
+        try (ThirdPartyCircuitBreaker.Attempt ignored = circuitBreaker.acquire(MusicErrorCode.MISSING_UPSTREAM_TOKEN)) {
+            Call call = okHttpClient.newCall(request);
+            MusicRequestBudget.constrain(call, 5, TimeUnit.SECONDS);
+            try (Response response = call.execute()) {
+                status = response.code();
+                ResponseBody rb = response.body();
+                rawBody = rb == null ? "" : rb.string();
+            } catch (IOException e) {
+                MusicRequestBudget.ensureNotCancelled();
+                circuitBreaker.recordFailure();
+                markStatus("failed:io");
+                log.warn("TuneFree logon I/O failed: {}", e.getMessage());
+                throw new MusicBusinessException(MusicErrorCode.MISSING_UPSTREAM_TOKEN,
+                        "tunefree logon I/O failed: " + e.getMessage(), e);
+            }
 
-        if (status < 200 || status >= 300) {
-            circuitBreaker.recordFailure();
-            markStatus("failed:http=" + status);
-            throw new MusicBusinessException(MusicErrorCode.MISSING_UPSTREAM_TOKEN,
-                    "tunefree logon returned HTTP " + status);
-        }
+            MusicRequestBudget.ensureNotCancelled();
+            if (status < 200 || status >= 300) {
+                circuitBreaker.recordFailure();
+                markStatus("failed:http=" + status);
+                throw new MusicBusinessException(MusicErrorCode.MISSING_UPSTREAM_TOKEN,
+                        "tunefree logon returned HTTP " + status);
+            }
 
-        Map<String, Object> json;
-        try {
-            json = objectMapper.readValue(rawBody, MAP_TYPE);
-        } catch (Exception e) {
-            circuitBreaker.recordFailure();
-            markStatus("failed:non-json");
-            log.warn("TuneFree logon returned non-JSON (status={}): {}", status, truncate(rawBody));
-            throw new MusicBusinessException(MusicErrorCode.MISSING_UPSTREAM_TOKEN,
-                    "tunefree logon returned non-JSON (status=" + status + ")", e);
-        }
+            Map<String, Object> json;
+            try {
+                json = objectMapper.readValue(rawBody, MAP_TYPE);
+            } catch (Exception e) {
+                MusicRequestBudget.ensureNotCancelled();
+                circuitBreaker.recordFailure();
+                markStatus("failed:non-json");
+                log.warn("TuneFree logon returned non-JSON (status={}): {}", status, truncate(rawBody));
+                throw new MusicBusinessException(MusicErrorCode.MISSING_UPSTREAM_TOKEN,
+                        "tunefree logon returned non-JSON (status=" + status + ")", e);
+            }
 
-        Object code = json.get("code");
-        if (!(code instanceof Number) || ((Number) code).intValue() != 0) {
+            Object code = json.get("code");
+            if (!(code instanceof Number) || ((Number) code).intValue() != 0) {
+                circuitBreaker.recordSuccess();
+                String msg = String.valueOf(json.getOrDefault("msg", "unknown"));
+                markStatus("failed:code=" + code);
+                log.warn("TuneFree logon rejected: code={}, msg={}", code, msg);
+                throw new MusicBusinessException(MusicErrorCode.MISSING_UPSTREAM_TOKEN,
+                        "tunefree logon failed: " + msg);
+            }
+
+            Object data = json.get("data");
+            String token = null;
+            if (data instanceof Map) {
+                Object t = ((Map<?, ?>) data).get("token");
+                if (t instanceof String) token = (String) t;
+            }
+            if (token == null || token.isEmpty()) {
+                circuitBreaker.recordFailure();
+                markStatus("failed:empty-token");
+                throw new MusicBusinessException(MusicErrorCode.MISSING_UPSTREAM_TOKEN,
+                        "tunefree logon response missing data.token");
+            }
+
+            this.cachedToken = token;
+            this.lastSuccessfulRefreshAtMillis = System.currentTimeMillis();
             circuitBreaker.recordSuccess();
-            String msg = String.valueOf(json.getOrDefault("msg", "unknown"));
-            markStatus("failed:code=" + code);
-            log.warn("TuneFree logon rejected: code={}, msg={}", code, msg);
-            throw new MusicBusinessException(MusicErrorCode.MISSING_UPSTREAM_TOKEN,
-                    "tunefree logon failed: " + msg);
-        }
+            configService.upsertByKey(CFG_TOKEN, token, "TuneFreeNext token, refreshed from logon endpoint");
+            configService.upsertByKey(CFG_TOKEN_UPDATED_AT, OffsetDateTime.now().toString(), null);
+            configService.upsertByKey(CFG_TOKEN_STATUS, "ok", null);
 
-        Object data = json.get("data");
-        String token = null;
-        if (data instanceof Map) {
-            Object t = ((Map<?, ?>) data).get("token");
-            if (t instanceof String) token = (String) t;
+            log.info("TuneFree token refreshed (len={})", token.length());
+            return token;
         }
-        if (token == null || token.isEmpty()) {
-            circuitBreaker.recordFailure();
-            markStatus("failed:empty-token");
-            throw new MusicBusinessException(MusicErrorCode.MISSING_UPSTREAM_TOKEN,
-                    "tunefree logon response missing data.token");
-        }
-
-        this.cachedToken = token;
-        this.lastSuccessfulRefreshAtMillis = System.currentTimeMillis();
-        circuitBreaker.recordSuccess();
-        configService.upsertByKey(CFG_TOKEN, token, "TuneFreeNext token, refreshed from logon endpoint");
-        configService.upsertByKey(CFG_TOKEN_UPDATED_AT, OffsetDateTime.now().toString(), null);
-        configService.upsertByKey(CFG_TOKEN_STATUS, "ok", null);
-
-        log.info("TuneFree token refreshed (len={})", token.length());
-        return token;
     }
 
     private void markStatus(String status) {

@@ -20,30 +20,30 @@ import com.example.website.dto.music.ToplistItem;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
+import io.micrometer.core.instrument.Metrics;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
 import okhttp3.Call;
-import okhttp3.Callback;
 import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
+import javax.annotation.PreDestroy;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static com.example.website.service.music.MusicValueUtils.asString;
 import static com.example.website.service.music.MusicValueUtils.firstNonEmpty;
@@ -62,23 +62,38 @@ import static com.example.website.service.music.MusicValueUtils.truncate;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
-public class KuwoMusicClient {
+public class KuwoMusicClient implements AutoCloseable {
 
     private static final String SEARCH_URL = "http://search.kuwo.cn/r.s";
     private static final String MUSIC_INFO_URL = "http://www.kuwo.cn/api/www/music/musicInfo";
     private static final String LYRIC_URL = "http://www.kuwo.cn/openapi/v1/www/lyric/getlyric";
-    private static final String COVER_RESOLVE_URL = "http://artistpicserver.kuwo.cn/pic.web";
     private static final String TOPLIST_TREE_URL = "http://qukudata.kuwo.cn/q.k";
     private static final String TOPLIST_DETAIL_URL = "http://kbangserver.kuwo.cn/ksong.s";
     private static final String PLAYLIST_LIST_URL = "http://wapi.kuwo.cn/api/pc/classify/playlist/getRcmPlayList";
     private static final String PLAYLIST_DETAIL_URL = "http://nplserver.kuwo.cn/pl.svc";
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<Map<String, Object>>() {};
 
-    @Qualifier(OkHttpConfig.CLIENT_MUSIC)
     private final OkHttpClient okHttpClient;
     private final ObjectMapper objectMapper;
-    private final Map<String, String> coverUrlCache = new ConcurrentHashMap<>();
+    private final KuwoCoverResolver coverResolver;
+
+    public KuwoMusicClient(OkHttpClient okHttpClient, ObjectMapper objectMapper) {
+        this(okHttpClient, objectMapper, new MusicMetrics(Metrics.globalRegistry));
+    }
+
+    @Autowired
+    public KuwoMusicClient(@Qualifier(OkHttpConfig.CLIENT_MUSIC) OkHttpClient okHttpClient,
+                           ObjectMapper objectMapper, MusicMetrics metrics) {
+        this.okHttpClient = okHttpClient;
+        this.objectMapper = objectMapper;
+        this.coverResolver = new KuwoCoverResolver(okHttpClient, metrics);
+    }
+
+    @PreDestroy
+    @Override
+    public void close() {
+        coverResolver.close();
+    }
 
     /** Same-song LRCX includes word timings; ordinary web lyrics remain the fallback. */
     public LyricInfo fetchLyrics(String id) {
@@ -819,86 +834,28 @@ public class KuwoMusicClient {
     /** Resolve missing chart artwork concurrently; Kuwo's chart payload omits per-song pictures. */
     private void enrichMissingCoverUrls(List<SongSearchItem> songs) {
         if (songs == null || songs.isEmpty()) return;
-        Map<String, String> resolved = new ConcurrentHashMap<>();
-        List<String> pending = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
+        long deadline = System.nanoTime() + Math.min(TimeUnit.SECONDS.toNanos(2), MusicRequestBudget.remainingNanos());
+        Map<String, CompletableFuture<String>> pending = new LinkedHashMap<>();
         for (SongSearchItem song : songs) {
             if (song == null || !isEmpty(song.getCoverUrl()) || isEmpty(song.getId())) continue;
-            String cached = coverUrlCache.get(song.getId());
-            if (cached != null) {
-                resolved.put(song.getId(), cached);
-            } else if (seen.add(song.getId())) {
-                pending.add(song.getId());
-            }
+            pending.computeIfAbsent(song.getId(), coverResolver::resolve);
         }
         if (!pending.isEmpty()) {
-            CountDownLatch latch = new CountDownLatch(pending.size());
-            for (String songId : pending) {
-                resolveCoverUrlAsync(songId, resolved, latch);
-            }
             try {
-                if (!latch.await(2, TimeUnit.SECONDS)) {
-                    log.debug("Kuwo cover lookup timed out with {} requests pending", latch.getCount());
-                }
+                CompletableFuture.allOf(pending.values().toArray(new CompletableFuture[0]))
+                        .get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+            } catch (TimeoutException | ExecutionException ex) {
+                log.debug("Kuwo cover lookup exceeded this page's wait budget");
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
             }
         }
         for (SongSearchItem song : songs) {
             if (song == null || !isEmpty(song.getCoverUrl())) continue;
-            String cover = resolved.get(song.getId());
+            CompletableFuture<String> lookup = pending.get(song.getId());
+            String cover = lookup == null ? null : lookup.getNow(null);
             if (cover != null) song.setCoverUrl(cover);
         }
-    }
-
-    private void resolveCoverUrlAsync(String songId,
-                                      Map<String, String> resolved,
-                                      CountDownLatch latch) {
-        HttpUrl url = HttpUrl.parse(COVER_RESOLVE_URL).newBuilder()
-                .addQueryParameter("type", "rid_pic")
-                .addQueryParameter("pictype", "url")
-                .addQueryParameter("size", "500")
-                .addQueryParameter("rid", songId)
-                .build();
-        Request request = new Request.Builder()
-                .url(url)
-                .header("Referer", "http://www.kuwo.cn/")
-                .header("User-Agent", "Mozilla/5.0")
-                .get()
-                .build();
-        okHttpClient.newCall(request).enqueue(new Callback() {
-            @Override
-            public void onFailure(Call call, IOException e) {
-                latch.countDown();
-            }
-
-            @Override
-            public void onResponse(Call call, Response response) {
-                try (Response resp = response) {
-                    ResponseBody body = resp.body();
-                    String candidate = body == null ? null : body.string().trim();
-                    if (resp.isSuccessful() && isValidKuwoImageUrl(candidate)) {
-                        coverUrlCache.put(songId, candidate);
-                        resolved.put(songId, candidate);
-                    }
-                } catch (IOException ex) {
-                    log.debug("Kuwo cover response failed for {}: {}", songId, ex.getMessage());
-                } finally {
-                    latch.countDown();
-                }
-            }
-        });
-    }
-
-    private static boolean isValidKuwoImageUrl(String candidate) {
-        if (candidate == null || candidate.isEmpty()) return false;
-        HttpUrl url = HttpUrl.parse(candidate);
-        if (url == null) return false;
-        String host = url.host().toLowerCase(Locale.ROOT);
-        return (host.equals("kuwo.cn") || host.endsWith(".kuwo.cn"))
-                && url.encodedPath() != null
-                && !url.encodedPath().isEmpty()
-                && !url.encodedPath().endsWith("/");
     }
 
     /**

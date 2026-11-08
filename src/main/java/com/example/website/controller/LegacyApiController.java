@@ -5,7 +5,7 @@ import com.example.website.dto.CategoryView;
 import com.example.website.dto.music.*;
 import com.example.website.service.CategoryService;
 import com.example.website.service.UserScopeService;
-import com.example.website.service.music.MusicLibraryService;
+import com.example.website.service.music.MusicHistoryRecorder;
 import com.example.website.service.music.MusicService;
 import com.example.website.service.MembershipService;
 import lombok.RequiredArgsConstructor;
@@ -27,7 +27,7 @@ public class LegacyApiController {
     private final CategoryService categoryService;
     private final UserScopeService userScopeService;
     private final MusicService musicService;
-    private final MusicLibraryService musicLibraryService;
+    private final MusicHistoryRecorder historyRecorder;
     private final MembershipService membershipService;
 
     // ==================== 导航API兼容 ====================
@@ -79,7 +79,7 @@ public class LegacyApiController {
         PlayInfo info = musicService.play(source, id, quality);
         if (userId != null && !prefetch) {
             try {
-                musicLibraryService.recordPlay(userId, info);
+                historyRecorder.submit(userId, info);
             } catch (Exception e) {
                 log.warn("Music played but failed to persist history: {}", e.getMessage());
             }

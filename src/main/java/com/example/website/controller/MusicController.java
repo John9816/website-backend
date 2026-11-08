@@ -11,7 +11,7 @@ import com.example.website.dto.music.PlayInfo;
 import com.example.website.dto.music.SearchResultView;
 import com.example.website.dto.music.ToplistDetailView;
 import com.example.website.dto.music.ToplistListView;
-import com.example.website.service.music.MusicLibraryService;
+import com.example.website.service.music.MusicHistoryRecorder;
 import com.example.website.service.music.MusicService;
 import com.example.website.service.MembershipService;
 import lombok.RequiredArgsConstructor;
@@ -31,7 +31,7 @@ import java.util.List;
 public class MusicController {
 
     private final MusicService musicService;
-    private final MusicLibraryService musicLibraryService;
+    private final MusicHistoryRecorder historyRecorder;
     private final MembershipService membershipService;
 
     @GetMapping("/search")
@@ -54,7 +54,7 @@ public class MusicController {
         PlayInfo info = musicService.play(source, id, quality);
         if (userId != null && !prefetch) {
             try {
-                musicLibraryService.recordPlay(userId, info);
+                historyRecorder.submit(userId, info);
             } catch (Exception e) {
                 log.warn("Music played but failed to persist history: {}", e.getMessage());
             }

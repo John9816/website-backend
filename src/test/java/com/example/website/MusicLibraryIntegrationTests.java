@@ -124,6 +124,13 @@ class MusicLibraryIntegrationTests {
                 .andExpect(jsonPath("$.code").value(0));
 
         JsonNode history = getJson("/api/user/music/history?page=0&size=120", token).path("data");
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(8);
+        while (System.nanoTime() < deadline && (history.path("total").asInt() != 100
+                || !"song-42".equals(history.path("items").path(0).path("songId").asText())
+                || !containsSong(history.path("items"), "song-101"))) {
+            Thread.sleep(25);
+            history = getJson("/api/user/music/history?page=0&size=120", token).path("data");
+        }
         JsonNode items = history.path("items");
         assertEquals(100, history.path("total").asInt());
         assertEquals(100, items.size());

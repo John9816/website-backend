@@ -19,7 +19,7 @@ final class ThirdPartyCircuitBreaker {
 
     private int consecutiveFailures;
     private long openUntilMillis;
-    private boolean halfOpenProbe;
+    private Attempt halfOpenProbe;
 
     ThirdPartyCircuitBreaker(String upstream) {
         this(upstream, DEFAULT_FAILURE_THRESHOLD, DEFAULT_OPEN_MILLIS, System::currentTimeMillis);
@@ -35,27 +35,43 @@ final class ThirdPartyCircuitBreaker {
         this.clock = clock;
     }
 
-    synchronized void acquire(MusicErrorCode errorCode) {
+    synchronized Attempt acquire(MusicErrorCode errorCode) {
         long now = clock.getAsLong();
-        if (openUntilMillis == 0L) return;
-        if (now < openUntilMillis || halfOpenProbe) {
+        if (openUntilMillis == 0L) return Attempt.UNRESTRICTED;
+        if (now < openUntilMillis || halfOpenProbe != null) {
             throw new MusicBusinessException(errorCode,
                     upstream + " is temporarily unavailable (circuit open)");
         }
-        halfOpenProbe = true;
+        halfOpenProbe = new Attempt(this);
+        return halfOpenProbe;
     }
 
     synchronized void recordSuccess() {
         consecutiveFailures = 0;
         openUntilMillis = 0L;
-        halfOpenProbe = false;
+        halfOpenProbe = null;
     }
 
     synchronized void recordFailure() {
-        halfOpenProbe = false;
+        halfOpenProbe = null;
         consecutiveFailures++;
         if (consecutiveFailures >= failureThreshold) {
             openUntilMillis = clock.getAsLong() + openMillis;
+        }
+    }
+
+    /** Closing an abandoned probe neither erases failures nor starts a new cooldown. */
+    static final class Attempt implements AutoCloseable {
+        private static final Attempt UNRESTRICTED = new Attempt(null);
+        private final ThirdPartyCircuitBreaker owner;
+
+        private Attempt(ThirdPartyCircuitBreaker owner) { this.owner = owner; }
+
+        @Override public void close() {
+            if (owner == null) return;
+            synchronized (owner) {
+                if (owner.halfOpenProbe == this) owner.halfOpenProbe = null;
+            }
         }
     }
 }

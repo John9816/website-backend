@@ -319,6 +319,57 @@ class MusicServiceTests {
     }
 
     @Test
+    void simultaneousCanonicalAndLegacyQualityRequestsKeepIndependentResponses() throws Exception {
+        CountDownLatch started = new CountDownLatch(1), release = new CountDownLatch(1);
+        PlayInfo preferred = new PlayInfo();
+        preferred.setId("2034742057");
+        preferred.setSource(MusicSource.NETEASE);
+        preferred.setActualSource(MusicSource.NETEASE);
+        preferred.setPlayUrl("https://cdn.example.com/lossless.flac");
+        preferred.setActualQuality("lossless");
+        when(chkszNetease.resolve("2034742057", NeteasePlaybackQuality.LOSSLESS)).thenAnswer(call -> {
+            started.countDown();
+            assertTrue(release.await(3, TimeUnit.SECONDS));
+            return preferred;
+        });
+        ExecutorService leader = Executors.newSingleThreadExecutor();
+        java.util.concurrent.atomic.AtomicReference<Thread> followerThread = new java.util.concurrent.atomic.AtomicReference<>();
+        ExecutorService follower = Executors.newSingleThreadExecutor(task -> {
+            Thread thread = new Thread(task);
+            followerThread.set(thread);
+            return thread;
+        });
+        try {
+            java.util.concurrent.Future<PlayInfo> canonical = leader.submit(() -> musicService.play("netease", "2034742057", "lossless"));
+            assertTrue(started.await(1, TimeUnit.SECONDS));
+            java.util.concurrent.Future<PlayInfo> legacy = follower.submit(() -> musicService.play("netease", "2034742057", "flac"));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+            boolean waiting = false;
+            while (System.nanoTime() < deadline) {
+                Thread thread = followerThread.get();
+                waiting = thread.getState() == Thread.State.TIMED_WAITING
+                        && Arrays.stream(thread.getStackTrace()).anyMatch(frame -> frame.getClassName().endsWith("PerformanceSingleFlight"));
+                if (waiting) break;
+                Thread.yield();
+            }
+            assertTrue(waiting, "follower must join the active single flight");
+            release.countDown();
+            PlayInfo first = canonical.get(2, TimeUnit.SECONDS);
+            PlayInfo second = legacy.get(2, TimeUnit.SECONDS);
+            assertEquals("lossless", first.getRequestedQuality());
+            assertEquals("flac", second.getRequestedQuality());
+            org.junit.jupiter.api.Assertions.assertNotSame(first, second);
+            assertFalse(Boolean.TRUE.equals(first.getFromCache()));
+            assertFalse(Boolean.TRUE.equals(second.getFromCache()));
+            verify(chkszNetease).resolve("2034742057", NeteasePlaybackQuality.LOSSLESS);
+        } finally {
+            release.countDown();
+            leader.shutdownNow();
+            follower.shutdownNow();
+        }
+    }
+
+    @Test
     void playInvalidatesCachedQqUrlBeforeReturningIt() {
         MusicCache cache = new MusicCache();
         musicService = new MusicService(cache, configService, qq, netease, kuwo,
@@ -428,6 +479,60 @@ class MusicServiceTests {
     }
 
     @Test
+    void crossSourcePreservesActualRecordingIdentityInResponseAndCache() {
+        when(configService.getValue(MusicService.CFG_PLAY_RESOLVER_ORDER)).thenReturn(Optional.of("cross_source"));
+        when(configService.getValue(MusicService.CFG_CROSS_SOURCE_ORDER)).thenReturn(Optional.of("kuwo"));
+        SongSearchItem original = song("original", "晴天", "周杰伦");
+        original.setDurationSec(269);
+        SongSearchItem match = song("228908", "晴天", "周杰伦");
+        match.setDurationSec(270);
+        when(netease.fetchSongInfo("original")).thenReturn(original);
+        when(kuwo.search("晴天 周杰伦", 1, 3)).thenReturn(Collections.singletonList(match));
+        when(tfPay.play(MusicSource.KUWO, "228908", MusicQuality.FLAC))
+                .thenReturn(playInfo(MusicSource.KUWO, "228908", "https://cdn.example.com/match.flac"));
+        for (int i = 0; i < 2; i++) {
+            PlayInfo result = musicService.play("netease", "original", "lossless");
+            com.fasterxml.jackson.databind.JsonNode json = new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(result);
+            assertEquals("original", result.getId());
+            assertEquals(MusicSource.NETEASE, result.getSource());
+            assertEquals("228908", json.path("actualId").asText());
+            assertEquals("exact", json.path("lyricMatch").asText());
+        }
+    }
+
+    @Test
+    void crossSourceRejectsDifferentRecordingVersionsAndDurations() {
+        when(configService.getValue(MusicService.CFG_PLAY_RESOLVER_ORDER)).thenReturn(Optional.of("cross_source"));
+        when(configService.getValue(MusicService.CFG_CROSS_SOURCE_ORDER)).thenReturn(Optional.of("kuwo"));
+        SongSearchItem original = song("original", "晴天", "周杰伦");
+        original.setDurationSec(269);
+        when(netease.fetchSongInfo("original")).thenReturn(original);
+        for (String title : Arrays.asList("晴天 (Live)", "晴天（现场版）", "晴天 [Remix]", "晴天")) {
+            SongSearchItem wrong = song("wrong", title, "周杰伦");
+            wrong.setDurationSec(title.equals("晴天") ? 320 : 269);
+            when(kuwo.search("晴天 周杰伦", 1, 3)).thenReturn(Collections.singletonList(wrong));
+            lenient().when(tfPay.play(MusicSource.KUWO, "wrong", MusicQuality.FLAC))
+                    .thenReturn(playInfo(MusicSource.KUWO, "wrong", "https://cdn.example.com/wrong.flac"));
+            org.junit.jupiter.api.Assertions.assertThrows(MusicBusinessException.class,
+                    () -> musicService.play("netease", "original", "lossless"), title);
+        }
+        verify(tfPay, never()).play(any(MusicSource.class), anyString(), any(MusicQuality.class));
+    }
+
+    @Test
+    void textResolutionDoesNotClaimKnownLyricIdentity() {
+        when(configService.getValue(MusicService.CFG_PLAY_RESOLVER_ORDER)).thenReturn(Optional.of("qq_text"));
+        SongSearchItem meta = song("mid", "晴天", "周杰伦");
+        when(qq.fetchSongInfo("mid")).thenReturn(meta);
+        when(qqTextFallback.fetchSongUrl("mid", MusicQuality.K128, meta))
+                .thenReturn(playInfo(MusicSource.QQ, "mid", "https://cdn.example.com/text.mp3"));
+        com.fasterxml.jackson.databind.JsonNode json = new com.fasterxml.jackson.databind.ObjectMapper()
+                .valueToTree(musicService.play("qq", "mid", "128k"));
+        assertEquals("unverified", json.path("lyricMatch").asText());
+        assertTrue(json.path("actualId").isNull());
+    }
+
+    @Test
     void crossSourceDoesNotAcceptTitleOnlyOrFirstResultMatch() {
         when(configService.getValue(MusicService.CFG_PLAY_RESOLVER_ORDER))
                 .thenReturn(Optional.of("cross_source"));
@@ -443,6 +548,49 @@ class MusicServiceTests {
                 () -> musicService.play("netease", "netease-id", "lossless"));
 
         verify(tfPay, never()).play(any(MusicSource.class), anyString(), any(MusicQuality.class));
+    }
+
+    @Test
+    void fourSlowPrimariesLeaveExecutionCapacityForFastFallbacks() throws Exception {
+        org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor resolverPool =
+                new com.example.website.config.OkHttpConfig().musicResolverExecutor();
+        ExecutorService callers = Executors.newFixedThreadPool(4);
+        CountDownLatch primaries = new CountDownLatch(4), release = new CountDownLatch(1);
+        when(configService.getValue(MusicService.CFG_PLAY_RESOLVER_ORDER)).thenReturn(Optional.of("primary,qq_text"));
+        doAnswer(call -> {
+            primaries.countDown();
+            try { release.await(4, TimeUnit.SECONDS); }
+            catch (InterruptedException ex) { Thread.currentThread().interrupt(); }
+            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_TIMEOUT);
+        }).when(qq).resolvePlay(anyString(), any(MusicQuality.class));
+        when(qq.fetchSongInfo(anyString())).thenAnswer(call -> song(call.getArgument(0), "track", "artist"));
+        when(qqTextFallback.fetchSongUrl(anyString(), any(MusicQuality.class), any()))
+                .thenAnswer(call -> playInfo(MusicSource.QQ, call.getArgument(0), "https://cdn.example.com/fast.mp3"));
+        musicService = new MusicService(new MusicCache(), configService, qq, netease, kuwo,
+                chkszNetease, tfPay, qqTextFallback, playUrlVerifier, resolverPool, 100);
+        java.util.List<java.util.concurrent.Future<PlayInfo>> results = new java.util.ArrayList<>();
+        try {
+            for (int n = 0; n < 4; n++) {
+                String id = "slow-" + n;
+                results.add(callers.submit(() -> musicService.play("qq", id, "128k")));
+            }
+            assertTrue(primaries.await(1, TimeUnit.SECONDS));
+            for (java.util.concurrent.Future<PlayInfo> result : results)
+                assertEquals("https://cdn.example.com/fast.mp3", result.get(1, TimeUnit.SECONDS).getPlayUrl());
+        } finally {
+            release.countDown(); callers.shutdownNow(); resolverPool.shutdown();
+            callers.awaitTermination(2, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void rejectedResolverReturnsServiceBusyInsteadOfInternalError() {
+        musicService = new MusicService(new MusicCache(), configService, qq, netease, kuwo,
+                chkszNetease, tfPay, qqTextFallback, playUrlVerifier,
+                task -> { throw new java.util.concurrent.RejectedExecutionException("full"); }, 50);
+        MusicBusinessException error = org.junit.jupiter.api.Assertions.assertThrows(MusicBusinessException.class,
+                () -> musicService.play("qq", "mid", "128k"));
+        assertEquals(503, error.getErrorCode().getHttpStatus().value());
     }
 
     @Test

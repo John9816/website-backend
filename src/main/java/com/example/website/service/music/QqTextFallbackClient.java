@@ -169,37 +169,42 @@ public class QqTextFallbackClient {
     }
 
     private Map<String, Object> callJson(Request req, String failureKey) {
-        circuitBreaker.acquire(MusicErrorCode.UPSTREAM_PLAY_FAILED);
-        Call call = okHttpClient.newCall(req);
-        MusicRequestBudget.constrain(call, 5, TimeUnit.SECONDS);
-        try (Response resp = call.execute()) {
-            ResponseBody rb = resp.body();
-            String raw = rb == null ? "" : rb.string();
-            if (!resp.isSuccessful()) {
+        try (ThirdPartyCircuitBreaker.Attempt ignored = circuitBreaker.acquire(MusicErrorCode.UPSTREAM_PLAY_FAILED)) {
+            Call call = okHttpClient.newCall(req);
+            MusicRequestBudget.constrain(call, 5, TimeUnit.SECONDS);
+            try (Response resp = call.execute()) {
+                ResponseBody rb = resp.body();
+                String raw = rb == null ? "" : rb.string();
+                MusicRequestBudget.ensureNotCancelled();
+                if (!resp.isSuccessful()) {
+                    circuitBreaker.recordFailure();
+                    recentFailures.put(failureKey, Boolean.TRUE);
+                    log.warn("QQ text fallback non-2xx status={} body={}", resp.code(), truncate(raw));
+                    throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
+                            "qq text fallback returned " + resp.code());
+                }
+                Map<String, Object> parsed = objectMapper.readValue(raw, MAP_TYPE);
+                MusicRequestBudget.ensureNotCancelled();
+                circuitBreaker.recordSuccess();
+                recentFailures.invalidate(failureKey);
+                return parsed;
+            } catch (IOException e) {
+                MusicRequestBudget.ensureNotCancelled();
                 circuitBreaker.recordFailure();
                 recentFailures.put(failureKey, Boolean.TRUE);
-                log.warn("QQ text fallback non-2xx status={} body={}", resp.code(), truncate(raw));
+                log.warn("QQ text fallback I/O failed: {}", e.getMessage());
                 throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
-                        "qq text fallback returned " + resp.code());
+                        "qq text fallback I/O failed: " + e.getMessage(), e);
+            } catch (MusicBusinessException e) {
+                throw e;
+            } catch (Exception e) {
+                MusicRequestBudget.ensureNotCancelled();
+                circuitBreaker.recordFailure();
+                recentFailures.put(failureKey, Boolean.TRUE);
+                log.warn("QQ text fallback parse failed: {}", e.getMessage());
+                throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
+                        "qq text fallback parse failed: " + e.getMessage(), e);
             }
-            Map<String, Object> parsed = objectMapper.readValue(raw, MAP_TYPE);
-            circuitBreaker.recordSuccess();
-            recentFailures.invalidate(failureKey);
-            return parsed;
-        } catch (IOException e) {
-            circuitBreaker.recordFailure();
-            recentFailures.put(failureKey, Boolean.TRUE);
-            log.warn("QQ text fallback I/O failed: {}", e.getMessage());
-            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
-                    "qq text fallback I/O failed: " + e.getMessage(), e);
-        } catch (MusicBusinessException e) {
-            throw e;
-        } catch (Exception e) {
-            circuitBreaker.recordFailure();
-            recentFailures.put(failureKey, Boolean.TRUE);
-            log.warn("QQ text fallback parse failed: {}", e.getMessage());
-            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
-                    "qq text fallback parse failed: " + e.getMessage(), e);
         }
     }
 

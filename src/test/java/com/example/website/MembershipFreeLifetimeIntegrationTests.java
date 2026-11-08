@@ -45,6 +45,7 @@ class MembershipFreeLifetimeIntegrationTests {
     @Autowired private JwtUtil jwt;
     @Autowired private ObjectMapper objectMapper;
     @MockBean private MusicService musicService;
+    @MockBean private com.example.website.service.music.MusicHistoryRecorder historyRecorder;
 
     @BeforeEach
     void providePlayableSong() {
@@ -71,7 +72,8 @@ class MembershipFreeLifetimeIntegrationTests {
                         .param("source", "qq").param("id", "free-song"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.id").value("free-song"));
-        assertEquals(1, history.countByUserId(user.getId()));
+        org.mockito.Mockito.verify(historyRecorder).submit(org.mockito.ArgumentMatchers.eq(user.getId()),
+                org.mockito.ArgumentMatchers.argThat(info -> "free-song".equals(info.getId())));
         assertFalse(memberships.findByUserId(user.getId()).isPresent());
     }
 

@@ -102,71 +102,75 @@ public class ChkszNeteaseMusicClient {
                 .addQueryParameter("apikey", settings.getApiKey())
                 .build();
 
-        circuitBreaker.acquire(MusicErrorCode.UPSTREAM_PLAY_FAILED);
-        Call call = okHttpClient.newCall(new Request.Builder().url(url).get().build());
-        MusicRequestBudget.constrain(call, 5, TimeUnit.SECONDS);
+        try (ThirdPartyCircuitBreaker.Attempt ignored = circuitBreaker.acquire(MusicErrorCode.UPSTREAM_PLAY_FAILED)) {
+            Call call = okHttpClient.newCall(new Request.Builder().url(url).get().build());
+            MusicRequestBudget.constrain(call, 5, TimeUnit.SECONDS);
 
-        int status;
-        String retryAfter;
-        String raw;
-        try (Response response = call.execute()) {
-            status = response.code();
-            retryAfter = response.header("Retry-After");
-            ResponseBody body = response.body();
-            raw = body == null ? "" : body.string();
-        } catch (IOException e) {
-            circuitBreaker.recordFailure();
-            throw upstreamFailure("ChKSz NetEase request failed", e);
-        }
+            int status;
+            String retryAfter;
+            String raw;
+            try (Response response = call.execute()) {
+                status = response.code();
+                retryAfter = response.header("Retry-After");
+                ResponseBody body = response.body();
+                raw = body == null ? "" : body.string();
+            } catch (IOException e) {
+                MusicRequestBudget.ensureNotCancelled();
+                circuitBreaker.recordFailure();
+                throw upstreamFailure("ChKSz NetEase request failed", e);
+            }
 
-        if (status < 200 || status >= 300) {
-            handleFailureStatus(status, retryAfter, requestKey);
-        }
+            MusicRequestBudget.ensureNotCancelled();
+            if (status < 200 || status >= 300) {
+                handleFailureStatus(status, retryAfter, requestKey);
+            }
 
-        Map<String, Object> json;
-        try {
-            json = objectMapper.readValue(raw, MAP_TYPE);
-        } catch (Exception e) {
-            circuitBreaker.recordFailure();
-            throw upstreamFailure("ChKSz NetEase returned invalid JSON", e);
-        }
+            Map<String, Object> json;
+            try {
+                json = objectMapper.readValue(raw, MAP_TYPE);
+            } catch (Exception e) {
+                MusicRequestBudget.ensureNotCancelled();
+                circuitBreaker.recordFailure();
+                throw upstreamFailure("ChKSz NetEase returned invalid JSON", e);
+            }
 
-        Integer code = asInt(json.get("code"));
-        if (code == null || code != 200) {
-            handleFailureStatus(code == null ? 500 : code, null, requestKey);
-        }
-        Map<String, Object> data = asMap(json.get("data"));
-        if (data == null) {
-            recentMissingUrls.put(requestKey, Boolean.TRUE);
+            Integer code = asInt(json.get("code"));
+            if (code == null || code != 200) {
+                handleFailureStatus(code == null ? 500 : code, null, requestKey);
+            }
+            Map<String, Object> data = asMap(json.get("data"));
+            if (data == null) {
+                recentMissingUrls.put(requestKey, Boolean.TRUE);
+                circuitBreaker.recordSuccess();
+                throw noPlayable("ChKSz NetEase response has no song data");
+            }
+
+            String playUrl = asString(data.get("url"));
+            HttpUrl parsedPlayUrl = HttpUrl.parse(playUrl == null ? "" : playUrl);
+            if (parsedPlayUrl == null || !isHttp(parsedPlayUrl)) {
+                recentMissingUrls.put(requestKey, Boolean.TRUE);
+                circuitBreaker.recordSuccess();
+                throw noPlayable("ChKSz NetEase response has no playable URL");
+            }
+
             circuitBreaker.recordSuccess();
-            throw noPlayable("ChKSz NetEase response has no song data");
+            recentMissingUrls.invalidate(requestKey);
+            PlayInfo info = new PlayInfo();
+            info.setId(id);
+            info.setSource(MusicSource.NETEASE);
+            info.setActualSource(MusicSource.NETEASE);
+            info.setName(asString(data.get("name")));
+            info.setArtist(asString(data.get("artist")));
+            info.setAlbum(asString(data.get("album")));
+            info.setCoverUrl(asString(data.get("picUrl")));
+            info.setPlayUrl(playUrl);
+            info.setRequestedQuality(quality.getValue());
+            String actualQuality = asString(data.get("level"));
+            info.setActualQuality(isBlank(actualQuality) ? quality.getValue() : actualQuality);
+            info.setFileSize(asLongObj(data.get("size")));
+            info.setFromCache(Boolean.FALSE);
+            return info;
         }
-
-        String playUrl = asString(data.get("url"));
-        HttpUrl parsedPlayUrl = HttpUrl.parse(playUrl == null ? "" : playUrl);
-        if (parsedPlayUrl == null || !isHttp(parsedPlayUrl)) {
-            recentMissingUrls.put(requestKey, Boolean.TRUE);
-            circuitBreaker.recordSuccess();
-            throw noPlayable("ChKSz NetEase response has no playable URL");
-        }
-
-        circuitBreaker.recordSuccess();
-        recentMissingUrls.invalidate(requestKey);
-        PlayInfo info = new PlayInfo();
-        info.setId(id);
-        info.setSource(MusicSource.NETEASE);
-        info.setActualSource(MusicSource.NETEASE);
-        info.setName(asString(data.get("name")));
-        info.setArtist(asString(data.get("artist")));
-        info.setAlbum(asString(data.get("album")));
-        info.setCoverUrl(asString(data.get("picUrl")));
-        info.setPlayUrl(playUrl);
-        info.setRequestedQuality(quality.getValue());
-        String actualQuality = asString(data.get("level"));
-        info.setActualQuality(isBlank(actualQuality) ? quality.getValue() : actualQuality);
-        info.setFileSize(asLongObj(data.get("size")));
-        info.setFromCache(Boolean.FALSE);
-        return info;
     }
 
     private void handleFailureStatus(int status, String retryAfter, String requestKey) {

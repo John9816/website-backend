@@ -17,6 +17,10 @@ public class PlayInfo {
      * one had no playable URL (e.g. copyright / geo block).
      */
     private MusicSource actualSource;
+    /** ID on actualSource; null when a text lookup cannot identify the recording. */
+    private String actualId;
+    /** exact or unverified; original source/id remain stable for library entries. */
+    private String lyricMatch;
     private String name;
     private String artist;
     private String album;

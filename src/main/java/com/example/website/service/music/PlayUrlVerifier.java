@@ -52,6 +52,7 @@ public class PlayUrlVerifier {
         }
 
         boolean playable = probe(url);
+        MusicRequestBudget.ensureNotCancelled();
         verdicts.put(normalized, playable);
         return playable;
     }
@@ -76,6 +77,7 @@ public class PlayUrlVerifier {
             log.info("Play URL probe rejected status={} target={}", status, describe(url));
             return false;
         } catch (IOException e) {
+            MusicRequestBudget.ensureNotCancelled();
             log.info("Play URL probe failed target={} reason={}", describe(url), e.getMessage());
             return false;
         }

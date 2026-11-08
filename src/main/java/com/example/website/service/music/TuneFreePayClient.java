@@ -115,49 +115,53 @@ public class TuneFreePayClient {
 
         String raw;
         int status;
-        circuitBreaker.acquire(MusicErrorCode.UPSTREAM_PLAY_FAILED);
-        Call call = okHttpClient.newCall(req);
-        MusicRequestBudget.constrain(call, 5, TimeUnit.SECONDS);
-        try (Response resp = call.execute()) {
-            status = resp.code();
-            ResponseBody rb = resp.body();
-            raw = rb == null ? "" : rb.string();
-        } catch (IOException e) {
-            circuitBreaker.recordFailure();
-            return PayResult.fail("io: " + e.getMessage(), false, false, true);
-        }
+        try (ThirdPartyCircuitBreaker.Attempt ignored = circuitBreaker.acquire(MusicErrorCode.UPSTREAM_PLAY_FAILED)) {
+            Call call = okHttpClient.newCall(req);
+            MusicRequestBudget.constrain(call, 5, TimeUnit.SECONDS);
+            try (Response resp = call.execute()) {
+                status = resp.code();
+                ResponseBody rb = resp.body();
+                raw = rb == null ? "" : rb.string();
+            } catch (IOException e) {
+                MusicRequestBudget.ensureNotCancelled();
+                circuitBreaker.recordFailure();
+                return PayResult.fail("io: " + e.getMessage(), false, false, true);
+            }
 
-        if (status < 200 || status >= 300) {
-            boolean authFailure = status == 401 || status == 403;
-            if (authFailure) circuitBreaker.recordSuccess();
-            else circuitBreaker.recordFailure();
-            return PayResult.fail("http " + status + ": " + truncate(raw),
-                    false, authFailure, !authFailure);
-        }
+            MusicRequestBudget.ensureNotCancelled();
+            if (status < 200 || status >= 300) {
+                boolean authFailure = status == 401 || status == 403;
+                if (authFailure) circuitBreaker.recordSuccess();
+                else circuitBreaker.recordFailure();
+                return PayResult.fail("http " + status + ": " + truncate(raw),
+                        false, authFailure, !authFailure);
+            }
 
-        Map<String, Object> json;
-        try {
-            json = objectMapper.readValue(raw, MAP_TYPE);
-        } catch (Exception e) {
-            circuitBreaker.recordFailure();
-            return PayResult.fail("non-json: " + truncate(raw), false, false, true);
-        }
+            Map<String, Object> json;
+            try {
+                json = objectMapper.readValue(raw, MAP_TYPE);
+            } catch (Exception e) {
+                MusicRequestBudget.ensureNotCancelled();
+                circuitBreaker.recordFailure();
+                return PayResult.fail("non-json: " + truncate(raw), false, false, true);
+            }
 
-        Map<String, Object> data0 = extractDataZero(json);
-        if (data0 == null) {
-            boolean authFailure = hasAuthenticationHint(raw);
-            if (authFailure) circuitBreaker.recordSuccess();
-            else circuitBreaker.recordFailure();
-            return PayResult.fail("no data[0] in response: " + truncate(raw),
-                    false, authFailure, !authFailure);
-        }
-        Object urlObj = data0.get("url");
-        if (!(urlObj instanceof String) || ((String) urlObj).isEmpty()) {
+            Map<String, Object> data0 = extractDataZero(json);
+            if (data0 == null) {
+                boolean authFailure = hasAuthenticationHint(raw);
+                if (authFailure) circuitBreaker.recordSuccess();
+                else circuitBreaker.recordFailure();
+                return PayResult.fail("no data[0] in response: " + truncate(raw),
+                        false, authFailure, !authFailure);
+            }
+            Object urlObj = data0.get("url");
+            if (!(urlObj instanceof String) || ((String) urlObj).isEmpty()) {
+                circuitBreaker.recordSuccess();
+                return PayResult.fail("empty url in data[0]", true, false, false);
+            }
             circuitBreaker.recordSuccess();
-            return PayResult.fail("empty url in data[0]", true, false, false);
+            return PayResult.ok(data0);
         }
-        circuitBreaker.recordSuccess();
-        return PayResult.ok(data0);
     }
 
     private static boolean hasAuthenticationHint(String raw) {

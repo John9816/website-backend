@@ -21,7 +21,8 @@ public enum MusicErrorCode {
     UPSTREAM_TIMEOUT(1009, HttpStatus.GATEWAY_TIMEOUT, "upstream timeout"),
     UPSTREAM_TOPLIST_FAILED(1010, HttpStatus.BAD_GATEWAY, "upstream toplist failed"),
     UPSTREAM_PLAYLIST_FAILED(1011, HttpStatus.BAD_GATEWAY, "upstream playlist failed"),
-    UNSUPPORTED_OPERATION(1012, HttpStatus.NOT_IMPLEMENTED, "unsupported operation");
+    UNSUPPORTED_OPERATION(1012, HttpStatus.NOT_IMPLEMENTED, "unsupported operation"),
+    SERVICE_BUSY(1013, HttpStatus.SERVICE_UNAVAILABLE, "music service is busy, please retry shortly");
 
     private final int code;
     private final HttpStatus httpStatus;

@@ -175,13 +175,13 @@ public class OkHttpConfig {
     @Bean(name = EXECUTOR_MUSIC_RESOLVER, destroyMethod = "shutdown")
     public ThreadPoolTaskExecutor musicResolverExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(4);
+        executor.setCorePoolSize(8);
         executor.setMaxPoolSize(8);
-        executor.setQueueCapacity(64);
+        executor.setQueueCapacity(16);
         executor.setKeepAliveSeconds(30);
         executor.setAllowCoreThreadTimeOut(true);
         executor.setThreadNamePrefix("music-resolver-");
-        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
         executor.setWaitForTasksToCompleteOnShutdown(false);
         executor.initialize();
         return executor;

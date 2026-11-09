@@ -5,6 +5,9 @@ import com.example.website.common.MusicErrorCode;
 import com.example.website.module.music.api.dto.LyricInfo;
 import com.example.website.module.music.api.dto.MusicQuality;
 import com.example.website.module.music.api.dto.MusicSource;
+import com.example.website.module.music.api.dto.MusicSearchType;
+import com.example.website.module.music.api.dto.SearchCollectionItem;
+import com.example.website.module.music.api.dto.SearchResultView;
 import com.example.website.module.music.api.dto.SongSearchItem;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -18,6 +21,25 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.util.*;
 
 class QishuiRoutingTests {
+    @Test
+    void playlistSearchPreservesUnknownTotalAndCachesTheResult() {
+        QishuiMusicClient qs = mock(QishuiMusicClient.class);
+        MusicSearchService service = new MusicSearchService(
+                new MusicCache(), mock(QqMusicClient.class),
+                mock(NeteaseMusicClient.class), mock(KuwoMusicClient.class), qs,
+                new MusicMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
+        List<SearchCollectionItem> items = Collections.singletonList(new SearchCollectionItem());
+        when(qs.searchCollections("test", MusicSearchType.PLAYLIST, 1, 10))
+                .thenReturn(new NeteaseMusicClient.CollectionSearchResult(null, items));
+
+        SearchResultView result = service.search("qs", "test", "playlist", 1, 10);
+        assertNull(result.getTotal());
+        assertEquals(items, result.getPlaylists());
+        assertEquals(MusicSource.QISHUI, result.getSource());
+        assertSame(result, service.search("qishui", "test", "playlist", 1, 10));
+        verify(qs, times(1)).searchCollections("test", MusicSearchType.PLAYLIST, 1, 10);
+    }
+
     @Test
     void existingEndpointsRouteQsToIndependentClientAndNeverUseLegacyParser() {
         QishuiMusicClient qs = mock(QishuiMusicClient.class);

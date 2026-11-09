@@ -81,7 +81,7 @@ public class MusicSearchService {
                     default: throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
                 }
                 List<SearchCollectionItem> items = result == null ? Collections.emptyList() : result.getList();
-                Long total = result == null ? 0L : result.getTotal();
+                Long total = result == null ? Long.valueOf(0L) : result.getTotal();
                 view = SearchResultView.collections(source, type, kw, p, s, total, items);
             }
             MusicRequestBudget.ensureRemaining();

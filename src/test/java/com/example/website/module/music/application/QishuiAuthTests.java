@@ -22,6 +22,20 @@ class QishuiAuthTests {
     final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
 
     @Test
+    void accessFailureIdentifiesStageWithoutReturningUpstreamCredentials() {
+        OkHttpClient http = new OkHttpClient.Builder().addInterceptor(chain ->
+                QishuiClientTests.response(chain,
+                        "{\"err_no\":1234,\"err_msg\":\"secret-token-in-upstream-error\",\"data\":{}}"))
+                .build();
+        QishuiAuthClient client = new QishuiAuthClient(new QishuiHttpClient(http, mapper),
+                mapper, "test-client", "test-identity", "test-signature");
+        MusicBusinessException error = assertThrows(MusicBusinessException.class,
+                () -> client.complete("secret-auth-code", "device", QishuiGuard.create()));
+        assertTrue(error.getMessage().contains("获取授权"));
+        assertFalse(error.getMessage().contains("secret"));
+    }
+
+    @Test
     void guardSignsExactTicketPathAndTimestampAndCsrIsPem() throws Exception {
         QishuiGuard guard = QishuiGuard.create();
         QishuiCredential c = new QishuiCredential();

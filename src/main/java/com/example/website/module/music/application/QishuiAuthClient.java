@@ -14,6 +14,7 @@ import java.util.*;
 
 @Component
 public class QishuiAuthClient {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(QishuiAuthClient.class);
     private final QishuiHttpClient http;
     private final ObjectMapper mapper;
     private final String clientKey, appIdentity, appSignature;
@@ -67,18 +68,18 @@ public class QishuiAuthClient {
         Map<String, String> q = qrParams();
         q.put("token", token);
         q.put("timestamp", Long.toString(System.currentTimeMillis()));
-        return QishuiHttpClient.checked(
-                http.get("https://open.douyin.com/oauth/check_qrcode/", q, null).json);
+        return stage("poll", "读取扫码状态", () -> QishuiHttpClient.checked(
+                http.get("https://open.douyin.com/oauth/check_qrcode/", q, null).json));
     }
 
     QishuiCredential complete(String code, String deviceId, QishuiGuard guard) {
         Map<String, String> q = QishuiHttpClient.common(deviceId);
         q.put("auth_code", code);
-        JsonNode access =
+        JsonNode access = stage("access", "获取授权", () ->
                 QishuiHttpClient.checked(
-                        http.get(QishuiHttpClient.OPEN + "/access/code/get/", q, null).json);
-        QishuiCredential credential = exchange(access, deviceId, guard, null);
-        profile(credential);
+                        http.get(QishuiHttpClient.OPEN + "/access/code/get/", q, null).json));
+        QishuiCredential credential = stage("ticket", "交换登录凭据", () -> exchange(access, deviceId, guard, null));
+        stage("profile", "读取账号资料", () -> { profile(credential); return credential; });
         return credential;
     }
 
@@ -177,8 +178,20 @@ public class QishuiAuthClient {
 
     static String required(JsonNode node, String field) {
         String value = node.path(field).asText("");
-        if (value.isEmpty()) throw QishuiHttpClient.failure();
+        if (value.isEmpty()) {
+            log.warn("Qishui response missing required field={}", field);
+            throw QishuiHttpClient.failure();
+        }
         return value;
+    }
+
+    private <T> T stage(String stage, String label, java.util.function.Supplier<T> call) {
+        try {
+            return call.get();
+        } catch (MusicBusinessException ex) {
+            log.warn("Qishui auth failed stage={} code={}", stage, ex.getErrorCode().getCode());
+            throw new MusicBusinessException(ex.getErrorCode(), "黑源" + label + "失败，请重新获取二维码后扫码");
+        }
     }
 
     private static boolean empty(String s) {

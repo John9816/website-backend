@@ -18,6 +18,7 @@ import java.util.function.Supplier;
 
 @Service
 public class QishuiAccountService {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(QishuiAccountService.class);
     private final java.time.Clock clock;
     private final QishuiAuthClient client;
     private final QishuiCredentialStore store;
@@ -88,10 +89,17 @@ public class QishuiAccountService {
                     JsonNode d = client.poll(s.start.token);
                     String status = d.path("status").asText("");
                     if (!Arrays.asList("new", "scanned", "confirmed", "refused", "expired")
-                            .contains(status)) throw QishuiHttpClient.failure();
+                            .contains(status)) {
+                        log.warn("Qishui auth invalid poll status; statusPresent={}", d.hasNonNull("status"));
+                        throw QishuiHttpClient.failure();
+                    }
                     if ("confirmed".equals(status)) {
                         String code = d.path("code").asText(d.path("auth_code").asText(""));
-                        if (code.isEmpty()) throw QishuiHttpClient.failure();
+                        if (code.isEmpty()) {
+                            log.warn("Qishui auth confirmation missing code; codePresent={} authCodePresent={}",
+                                    d.hasNonNull("code"), d.hasNonNull("auth_code"));
+                            throw QishuiHttpClient.failure();
+                        }
                         // Retain completed exchange on a storage failure; never replay a consumed
                         // authorization code.
                         try {

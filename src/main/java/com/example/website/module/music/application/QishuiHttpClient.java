@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 /** Fixed upstream destinations; never accepts a caller supplied proxy URL. */
 @Component
 public class QishuiHttpClient {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(QishuiHttpClient.class);
     static final String UA = "LunaOpenSDK/1.0.10";
     static final String PLATFORM = "https://open.douyin.com/api/luna/v1/platform";
     static final String OPEN = "https://open.qishui.com/api/luna/v1/platform";
@@ -120,7 +121,10 @@ public class QishuiHttpClient {
         MusicRequestBudget.constrain(call, 5, TimeUnit.SECONDS);
         try (Response response = call.execute()) {
             MusicRequestBudget.ensureNotCancelled();
-            if (!response.isSuccessful() || response.body() == null) throw failure();
+            if (!response.isSuccessful() || response.body() == null) {
+                log.warn("Qishui HTTP failed path={} status={}", url.build().encodedPath(), response.code());
+                throw failure();
+            }
             okio.BufferedSource source = response.body().source();
             source.request(MAX_RESPONSE_BYTES + 1L);
             if (source.buffer().size() > MAX_RESPONSE_BYTES) throw failure();
@@ -138,11 +142,19 @@ public class QishuiHttpClient {
     }
 
     static JsonNode checked(JsonNode root) {
-        if (root.has("err_no") && root.path("err_no").asLong(-1) != 0) throw failure();
-        if (root.has("error_code") && root.path("error_code").asLong(-1) != 0) throw failure();
+        checkCode(root, "err_no", "root");
+        checkCode(root, "error_code", "root");
         JsonNode data = root.has("data") ? root.path("data") : root;
-        if (data.has("error_code") && data.path("error_code").asLong(-1) != 0) throw failure();
+        checkCode(data, "error_code", "data");
         return data;
+    }
+
+    private static void checkCode(JsonNode node, String field, String location) {
+        if (node.has(field) && node.path(field).asLong(-1) != 0) {
+            // Only numeric status codes; never log upstream bodies, URLs, headers or credentials.
+            log.warn("Qishui rejected response location={} field={} code={}", location, field, node.path(field).asLong(-1));
+            throw failure();
+        }
     }
 
     static MusicBusinessException failure() {

@@ -15,6 +15,7 @@ import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -30,9 +31,13 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>The upstream play URL is never handed to the browser: it is short-lived, on a foreign host
  * (CORS), and encrypted. Instead {@link QishuiParseClient} returns a signed local stream URL,
- * and this service produces the bytes behind it. Plain audio is cached by
- * {@code (trackId, quality)} with a bounded total size so repeated HTTP Range requests during
- * seeking do not re-download and re-decrypt the whole track on a 2C2G host.
+ * and this service produces the bytes behind it.
+ *
+ * <p>Caching is two-tier. A small in-memory Caffeine cache (64 MB) serves hot tracks instantly;
+ * a bounded on-disk cache (1 GiB) holds the rest, because a lossless track is ~33 MB and the API
+ * only has a 768 MB heap. {@code Cache.get(key, loader)} makes the load atomic per key, so the
+ * several concurrent HTTP Range requests a browser issues while starting playback cannot trigger
+ * duplicate upstream downloads and decryptions.
  */
 @Slf4j
 @Service
@@ -40,19 +45,22 @@ public class QishuiStreamService {
 
     private static final String PARSE_URL = "https://tunefree.sayqz.com/v1/parse";
     private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
-    private static final long MAX_AUDIO_BYTES = 48L * 1024 * 1024;  // guard against runaway responses
-    private static final long CACHE_MAX_BYTES = 64L * 1024 * 1024;  // ~18 tracks at 128k
+    private static final long MAX_AUDIO_BYTES = 48L * 1024 * 1024;   // guard against runaway responses
+    private static final long CACHE_MAX_BYTES = 64L * 1024 * 1024;    // in-memory hot set; must stay small on a 768m heap
+    private static final long DISK_CACHE_MAX_BYTES = 1024L * 1024 * 1024;
     private static final long CACHE_TTL_SEC = 1100L;
 
     private final TuneFreeV1AuthService auth;
     private final OkHttpClient http;
     private final ObjectMapper mapper;
     private final Cache<String, byte[]> plainCache;
+    private final QishuiDiskCache diskCache;
 
     public QishuiStreamService(
             TuneFreeV1AuthService auth,
             @Qualifier(OkHttpConfig.CLIENT_MUSIC_THIRD_PARTY) OkHttpClient baseClient,
-            ObjectMapper mapper) {
+            ObjectMapper mapper,
+            @Value("${app.music.qishui.cache-dir:/opt/website/cache/qishui-audio}") String cacheDir) {
         this.auth = auth;
         this.http = baseClient.newBuilder()
                 .readTimeout(30, TimeUnit.SECONDS)
@@ -60,6 +68,7 @@ public class QishuiStreamService {
                 .callTimeout(60, TimeUnit.SECONDS)
                 .build();
         this.mapper = mapper;
+        this.diskCache = new QishuiDiskCache(cacheDir, DISK_CACHE_MAX_BYTES, CACHE_TTL_SEC);
         this.plainCache = Caffeine.newBuilder()
                 .maximumWeight(CACHE_MAX_BYTES)
                 .weigher((String k, byte[] v) -> v.length)
@@ -67,14 +76,38 @@ public class QishuiStreamService {
                 .build();
     }
 
-    /** Returns plain MP4 bytes for the given track, using the cache when possible. */
+    /** Returns plain MP4 bytes for the given track, using both cache tiers when possible. */
     public byte[] plaintext(String trackId, String quality) {
-        String key = trackId + "|" + quality;
-        byte[] cached = plainCache.getIfPresent(key);
-        if (cached != null) return cached;
+        String key = cacheKey(trackId, quality);
+        // Atomic per-key load: concurrent Range requests share a single upstream resolve.
+        return plainCache.get(key, k -> load(k, trackId, quality));
+    }
+
+    private byte[] load(String key, String trackId, String quality) {
+        byte[] disk = diskCache.read(key);
+        if (disk != null) {
+            log.info("Qishui stream disk cache hit quality={} bytes={}", quality, disk.length);
+            return disk;
+        }
         byte[] plain = resolvePlaintext(trackId, quality);
-        plainCache.put(key, plain);
+        diskCache.write(key, plain);
         return plain;
+    }
+
+    /**
+     * Upstream {@code flac24bit} returns {@code actualQuality=flac} and byte-identical audio, so
+     * both qualities share one cache entry. This halves the download/decrypt/memory cost for the
+     * Hi-Res option without changing what the browser receives.
+     */
+    static String cacheKey(String trackId, String quality) {
+        return trackId + "|" + normalizeQuality(quality);
+    }
+
+    static String normalizeQuality(String quality) {
+        if (quality == null) {
+            return "";
+        }
+        return "flac24bit".equalsIgnoreCase(quality) ? "flac" : quality;
     }
 
     private byte[] resolvePlaintext(String trackId, String quality) {

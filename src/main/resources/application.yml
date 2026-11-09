@@ -116,6 +116,10 @@ app:
       # page origin, avoiding any cross-subdomain dependency for media playback.
       # Set QISHUI_PUBLIC_BASE_URL only when the frontend and API live on different origins.
       public-base-url: ${QISHUI_PUBLIC_BASE_URL:}
+      # On-disk cache for decrypted audio. The API runs with -Xmx768m, so the in-memory
+      # Caffeine cache stays at 64 MB; lossless tracks (~33 MB each) are persisted here instead.
+      # Entries are bounded (1 GiB) and expire with the audio ticket.
+      cache-dir: ${QISHUI_CACHE_DIR:/opt/website/cache/qishui-audio}
     chksz:
       enabled: ${CHKSZ_ENABLED:true}
       base-url: ${CHKSZ_BASE_URL:https://api.chksz.com}

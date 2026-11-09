@@ -3,6 +3,7 @@ package com.example.website.module.music.application;
 import com.example.website.module.music.api.dto.LyricInfo;
 import com.example.website.module.music.api.dto.MusicQuality;
 import com.example.website.module.music.api.dto.MusicSource;
+import com.example.website.module.music.api.dto.PlayInfo;
 import com.example.website.module.music.api.dto.SongSearchItem;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -133,32 +134,27 @@ class QishuiClientTests {
     }
 
     @Test
-    void newParserRejectsEncryptedUrlsAndUsesNewBearerOnly() {
-        QishuiParseClient parser =
-                new QishuiParseClient(
-                        new QishuiHttpClient(
-                                new OkHttpClient.Builder()
-                                        .addInterceptor(
-                                                c -> {
-                                                    assertEquals(
-                                                            "Bearer parser-test",
-                                                            c.request().header("Authorization"));
-                                                    JsonNode b = mapper.readTree(body(c.request()));
-                                                    assertEquals("qs", b.path("source").asText());
-                                                    assertEquals("id", b.path("trackId").asText());
-                                                    return response(
-                                                            c,
-                                                            "{\"success\":true,\"data\":{\"playUrl\":\"https://media.example/test\",\"encryption\":{\"scheme\":\"qishui-cenc\",\"spadeA\":\"secret\"}}}");
-                                                })
-                                        .build(),
-                                mapper),
-                        mapper,
-                        "parser-test");
-        MusicBusinessException e =
-                assertThrows(
-                        MusicBusinessException.class, () -> parser.play("id", MusicQuality.K320));
-        assertEquals(MusicErrorCode.UNSUPPORTED_OPERATION, e.getErrorCode());
-        assertFalse(e.getMessage().contains("secret"));
+    void parserReturnsSignedLocalStreamUrlInsteadOfRejectingEncryption() {
+        QishuiStreamTicket tickets = new QishuiStreamTicket("test-signing-key".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8));
+        QishuiParseClient parser = new QishuiParseClient(tickets, "https://api.example.test/");
+        PlayInfo info = parser.play("id", MusicQuality.K320);
+
+        assertEquals(MusicSource.QISHUI, info.getSource());
+        assertEquals(MusicSource.QISHUI, info.getActualSource());
+        assertEquals("id", info.getActualId());
+        assertEquals("320k", info.getActualQuality());
+        assertTrue(info.getPlayUrl().startsWith("https://api.example.test/api/public/music/qishui/stream?ticket="));
+        // The upstream host and content key must never leak to the browser.
+        assertFalse(info.getPlayUrl().contains("tunefree.sayqz.com"));
+        assertFalse(info.getPlayUrl().contains("spadeA"));
+
+        String ticket = info.getPlayUrl().substring(info.getPlayUrl().indexOf("ticket=") + 7);
+        QishuiStreamTicket.Payload payload = tickets.verify(java.net.URLDecoder.decode(
+                ticket, java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals("id", payload.getTrackId());
+        assertEquals("320k", payload.getQuality());
+        assertTrue(info.getExpireSec() > 0 && info.getExpireSec() <= 1200);
     }
 
     @Test

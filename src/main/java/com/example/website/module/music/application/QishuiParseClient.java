@@ -1,65 +1,46 @@
 package com.example.website.module.music.application;
 
-import com.example.website.common.MusicBusinessException;
-import com.example.website.common.MusicErrorCode;
 import com.example.website.module.music.api.dto.MusicQuality;
 import com.example.website.module.music.api.dto.MusicSource;
 import com.example.website.module.music.api.dto.PlayInfo;
-
-import com.fasterxml.jackson.databind.*;
-
-import okhttp3.HttpUrl;
-
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.time.Instant;
-import java.util.Collections;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 
-/** TuneFree v1 uses a different account/token from the legacy tf-pay service. */
+/**
+ * Resolves Qishui playback into a local, signed audio stream URL.
+ *
+ * <p>TuneFree v1 always returns CENC-encrypted audio (verified for 128k/320k/flac/flac24bit),
+ * which a browser {@code <audio>} element cannot play. Rather than rejecting with 1012, this
+ * client issues a short-lived ticket and returns the URL of {@link QishuiStreamController},
+ * which performs login, parse, download and in-process decryption, then serves plain MP4.
+ *
+ * <p>The upstream play URL and content key never leave the backend.
+ */
 @Component
 public class QishuiParseClient {
-    private final QishuiHttpClient http;
-    private final ObjectMapper mapper;
-    private final String accessToken;
+
+    private static final String STREAM_PATH = "/api/public/music/qishui/stream";
+    private final QishuiStreamTicket tickets;
+    private final String publicBaseUrl;
 
     public QishuiParseClient(
-            QishuiHttpClient http,
-            ObjectMapper mapper,
-            @Value("${app.music.qishui.parse-access-token:}") String accessToken) {
-        this.http = http;
-        this.mapper = mapper;
-        this.accessToken = accessToken;
+            QishuiStreamTicket tickets,
+            @Value("${app.music.qishui.public-base-url:https://api.751152.xyz}") String publicBaseUrl) {
+        this.tickets = tickets;
+        String base = publicBaseUrl == null ? "" : publicBaseUrl.trim();
+        while (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+        this.publicBaseUrl = base;
     }
 
     public PlayInfo play(String id, MusicQuality quality) {
-        if (accessToken == null || accessToken.trim().isEmpty())
-            throw new MusicBusinessException(
-                    MusicErrorCode.MISSING_UPSTREAM_TOKEN,
-                    "TuneFree v1 parser access token is not configured");
-        JsonNode root =
-                http.post(
-                                "https://tunefree.sayqz.com/v1/parse",
-                                null,
-                                mapper.createObjectNode()
-                                        .put("source", "qs")
-                                        .put("trackId", id)
-                                        .put("quality", quality.getValue()),
-                                Collections.singletonMap(
-                                        "Authorization", "Bearer " + accessToken.trim()))
-                        .json;
-        if (!root.path("success").asBoolean())
-            throw new MusicBusinessException(
-                    MusicErrorCode.UPSTREAM_PLAY_FAILED, "TuneFree v1 parse failed");
-        JsonNode data = root.path("data");
-        if (data.hasNonNull("encryption"))
-            throw QishuiMusicClient.unsupported(
-                    "encrypted audio requires a compatible player; a plain playUrl cannot be"
-                        + " returned");
-        String url = data.path("playUrl").asText("");
-        HttpUrl parsed = HttpUrl.parse(url);
-        if (parsed == null || !("https".equals(parsed.scheme()) || "http".equals(parsed.scheme())))
-            throw new MusicBusinessException(MusicErrorCode.NO_PLAYABLE_URL);
+        String q = quality == null ? MusicQuality.K320.getValue() : quality.getValue();
+        String ticket = tickets.issue(id, q);
+        String url = publicBaseUrl + STREAM_PATH + "?ticket="
+                + URLEncoder.encode(ticket, StandardCharsets.UTF_8);
+
         PlayInfo p = new PlayInfo();
         p.setSource(MusicSource.QISHUI);
         p.setId(id);
@@ -67,24 +48,11 @@ public class QishuiParseClient {
         p.setActualId(id);
         p.setLyricMatch("exact");
         p.setPlayUrl(url);
-        p.setRequestedQuality(quality.getValue());
-        p.setActualQuality(data.path("actualQuality").asText(quality.getValue()));
+        p.setRequestedQuality(q);
+        p.setActualQuality(q);
         p.setFromCache(false);
-        // Unknown expiry is deliberately not cached.
-        int ttl = 0;
-        try {
-            ttl =
-                    (int)
-                            Math.max(
-                                    0,
-                                    Math.min(
-                                            1200,
-                                            Instant.parse(data.path("expiresAt").asText())
-                                                            .getEpochSecond()
-                                                    - Instant.now().getEpochSecond()));
-        } catch (RuntimeException ignored) {
-        }
-        p.setExpireSec(ttl);
+        // The ticket is valid for 1200s; leave a safety margin so the play cache refreshes first.
+        p.setExpireSec(1080);
         return p;
     }
 }

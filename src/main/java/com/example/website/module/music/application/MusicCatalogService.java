@@ -135,7 +135,7 @@ public class MusicCatalogService {
                 String key = "music:playlist:" + source.getValue() + ":" + cat + ":" + ord + ":" + p + ":" + s;
                 return cached(key, PlaylistListView.class, PLAYLIST_LIST_TTL_SEC, () ->
                         new PlaylistListView(source, cat, ord, p, s, null,
-                                qishui.discoverPlaylists(cat, s)));
+                                qishui.discoverPlaylists(cat, p, s)));
             }
             default:
                 throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");

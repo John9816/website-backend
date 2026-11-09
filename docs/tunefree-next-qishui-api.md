@@ -8,15 +8,17 @@
 
 | 链路 | 凭据 | 本次结果 |
 | --- | --- | --- |
-| 曲库、歌曲/歌单搜索、歌词、歌单详情、歌手歌曲 | Luna `client_token` | 已从零获取 token，并成功调用上述接口 |
-| 扫码登录、个人资料、音乐漫游账号 | 个人 `access_code`、ticket、设备 EC 私钥、Guard 证书 | 已创建二维码；使用本机已授权账号成功验证个人资料签名请求；完整的新扫码确认/换票/刷新尚未由账号持有人完成实测 |
-| TuneFree v1 播放解析 | TuneFree v1 Bearer access token | 已恢复请求合同和解码分支；未实测获授权的完整播放 |
+| 曲库、搜索、歌单、专辑、发现页、漫游请求 | Luna `client_token` | 发现页实测12首，漫游场景45个；个人 feed 使用绑定设备和 `common_params.user_id`，不是个人 ticket |
+| 扫码登录、个人资料、绑定有效性 | 个人 `access_code`、ticket、设备 EC 私钥、Guard 证书 | 已恢复流程并验证个人资料签名；远端已修复真人扫码暴露的 Guard 头取票问题；本轮未重新扫码或刷新 |
+| TuneFree v1 播放解析 | TuneFree v1 Bearer access token | 已拉取远端自动登录、CENC 解密和本地音频流实现；本轮未重测端到端播放 |
 
 安装包说明个人登录信息用于音乐漫游，播放仍沿用原解析与会员规则。**不能用个人 `access_code` 当作曲库 token，也不能用旧版 UMS/tf-pay token 当作 TuneFree v1 Bearer。**
 
-本次后端实现：歌曲及歌单搜索、歌单详情/按 ID 导入、歌词（LRC + YRC）、歌手歌曲及基于歌曲关联信息的简要歌手资料、个人扫码绑定/状态/刷新/解绑、独立 v1 解析适配。未证实的榜单、分类歌单、推荐歌单、新歌、专辑详情、歌手专辑和专辑/歌手搜索，明确返回 `1012 / HTTP 501`。
+当前能力包括歌曲/歌单/歌手搜索、歌曲结果聚合的专辑搜索、歌单详情/按 ID 导入、分类/推荐歌单、专辑详情、歌手歌曲/专辑/简要资料、LRC + YRC、个人扫码绑定、发现推荐及有状态音乐漫游。第6节区分直接上游接口与搜索派生能力；歌单第二页现在会传递正确的首游标。
 
-播放适配只接受上游返回的普通 HTTP(S) 音频地址。返回非空 `encryption` 时明确拒绝，不把 CENC 文件冒充普通音频，也不把解密材料放入公开响应。新扫码授权完成和端到端完整音频播放是本次验证的缺口；搜索成功不代表这两项已验证。
+**榜单边界：**所检查的 4.3.5 发现页代码中，榜单集合为空，尚未恢复汽水官方排行榜协议。本站现有榜单与新歌端点返回标明“搜索发现／非官方榜单”的兼容结果，不能视为官方排名。分类歌单也是分类词搜索，不存在已验证的分类 ID 树。
+
+远端现有播放分支已支持服务端解密 CENC 并通过带签名的同源音频流地址输出。客户端不接触上游票据或解密材料；取得本站播放 URL 只代表签发了流票据，实际解析、下载、解密发生在读取音频流时，不能据此宣称完整播放已验证。
 
 ## 2. 证据登记
 
@@ -45,6 +47,11 @@ REA 用于文件身份和布局确认。以下方法恢复来自独立的 LLDB �
 | `QsCatalogSource._search / getLyrics` | `0xa06780 / 0xa051e4` | 搜索/媒体元数据 |
 | `QsCatalogSource.getPlaylistDetailPage` | `0xa15624` | 歌单 ID、owner、type 与分页 |
 | `QsCatalogSource.getArtistDetailPage` | `0xa0fac0` | 歌手歌曲 |
+| `QsCatalogSource.getDiscoveryFeed` / track closure | `0xa078c0 / 0xa07b9c` | `/feed/song-tab/`，匿名12首；热门歌单走搜索；榜单集合为空 |
+| `QsCatalogSource.getCategoryPlaylists` | `0xa0fa7c` | 分类字符串直接转歌单搜索 |
+| `QsPersonalFeedSession.songs / _post / _songTabBody` | `0x3e6d18 / 0x3e7cbc / 0x3e801c` | client token、绑定设备、个人 user_id、20首与模式计数 |
+| `QsPersonalFeedSession.modes / QsFeedMode.parse` | `0x3e9308 / 0x3e936c` | 模式接口及 `feed_mode_block` 层级 |
+| `QsFeedPage.parse / MusicRoamingController._fetch` | `0x3e6d94 / 0x3e69a8` | track 卡片、has_more、最多3批补取及最近1000首去重 |
 | `ParseRepository.resolve / _decodePlayable` | `0xa1d3ac / 0xa1dff8` | v1 parse 请求、加密字段 |
 
 临时原始证据在 `/tmp/tunefreenext-black-20261108/`，不会提交到 Git。含 `private` 的文件只用于本机验证，包含令牌、个人资料或带签名 URL。仓库内测试数据均为合成值。
@@ -63,6 +70,12 @@ REA 用于文件身份和布局确认。以下方法恢复来自独立的 LLDB �
 | 歌手歌曲 | `err_no=0`，tracks 数组 | `qs-artist-tracks-verified-private.json` |
 | 个人资料 | `err_no=0`，my_info | `qs-me-verified-private.json` |
 | 封面 | 补齐模板后缀后 HTTP 200、image/png | 本次 HEAD 探测 |
+| 匿名发现推荐 | `err_no=0`，12条，has_more=true | `qs-discovery-verified-private.json` |
+| 漫游模式 | `err_no=0`，45个场景 | `qs-modes-verified-private.json` |
+| 个人模式 / 默认 feed | `err_no=0`，45个场景 / 20条歌曲 | `qs-personal-modes-verified-private.json` / `qs-personal-feed-verified-private.json` |
+| 场景模式连续两次 feed | 各20条，has_more=true | `qs-scene-feed-page1-verified-private.json` / `qs-scene-feed-page2-verified-private.json` |
+
+本轮最终 Java 生产客户端复验：发现推荐12首、45个场景（响应另加1个本地默认模式）、模式图标 HTTP 200。此时本地个人凭据已过期，Java 探测跳过个人请求；表中个人 feed 为此前独立 HTTP 验证，不代表本轮重新确认了授权有效性或个性化排序质量。
 
 早期尝试 `grant_type=client_credential` 获取 token 失败；将 `accessCode` 放入搜索的 `access-token` 也失败。这些失败不表示正确流程不可用，更不能据此宣称本机个人授权过期。
 
@@ -76,7 +89,7 @@ REA 用于文件身份和布局确认。以下方法恢复来自独立的 LLDB �
 https://open.douyin.com/api/luna/v1/platform{path}
 ```
 
-下列通用字段在 URL query 中，`deviceId` 为当前客户端独立生成的标识，个人资料请求使用该次用户绑定的设备标识：
+下列通用字段在 URL query 中，`deviceId` 为当前客户端独立生成的标识，个人资料和个人漫游请求使用该次用户绑定的设备标识：
 
 ```text
 aid=765213                         app_id=765213
@@ -115,7 +128,7 @@ User-Agent: LunaOpenSDK/1.0.10
 access-token: <client_token>
 ```
 
-JSON body 均加 `"common_params": {}`。成功外壳为 `{ "err_no": 0, "err_msg": "", "data": {...} }`；非零业务码不能当作空结果缓存。
+普通目录及匿名 feed 的 JSON body 加 `"common_params": {}`；个人 feed 则为 `{"user_id":"绑定中的上游用户ID"}`。成功外壳为 `{ "err_no": 0, "err_msg": "", "data": {...} }`；非零业务码不能当作空结果缓存。
 
 **搜索 `/search/`**：
 
@@ -135,7 +148,7 @@ JSON body 均加 `"common_params": {}`。成功外壳为 `{ "err_no": 0, "err_ms
 }
 ```
 
-`search_type=track` 或 `playlist`，结果在 `data.result_groups[]`；对应 group.id 为 `tracks` 或 `playlists`。组内包含 `data[].entity.track/playlist`、`has_more:boolean`、`next_cursor:string`。`ab_param` 必须是字符串，`last_viewed_media` 是对象。
+`search_type=track`、`playlist` 或 `artist`，结果在 `data.result_groups[]`；对应 group.id 为 `tracks`、`playlists` 或 `artists`。组内包含 `data[].entity.track/playlist/artist`、`has_more:boolean`、`next_cursor:string`。`ab_param` 必须是字符串，`last_viewed_media` 是对象。当前专辑搜索从最多100条歌曲命中中的 `related_info.album_link` 聚合去重，再作分页，不能当作独立的上游 album 搜索，也不承诺完整专辑总数。
 
 本次 track 首页固定返回20条。适配器按目标版本用 `(page-1)*pageSize` 作为首个游标，再使用响应的 `next_cursor` 补齐页面，最多5次且受8秒总预算约束；检测重复游标，最后裁剪到 pageSize。不能假设上游支持客户端给定 count。
 
@@ -163,7 +176,74 @@ owner_id 和 type 来自搜索结果 `playlist.base_info`；不要用网站用�
 
 结果包含 `tracks[]`、`has_more`、`next_cursor`；tracks 条目直接使用下表的 track 结构。歌手简要资料从歌曲的 `artist_links` 取对应 ID，歌曲总数/专辑数未知时保持 null。
 
-### 3.4 字段映射
+**专辑详情 `/album/detail/`**：
+
+```json
+{"common_params":{},"album_id":"专辑ID","count":30,"cursor":"0"}
+```
+
+结果包含 `album_info` 与 `tracks[]`。专辑资料读取 `base_info.id/name/intro/count_tracks/release_date`、`display.url_cover`、`related_info.artists`。发布日期 epoch 秒转换为北京时间日期。此能力来自本轮拉取的远端实现及其回归测试，本轮未新增真实专辑网络探测。
+
+**歌手专辑 `/artist/albums/`**：
+
+```json
+{"common_params":{},"artist_id":"歌手ID","count":30,"cursor":"0"}
+```
+
+结果 `albums[]` 使用上述专辑结构，本站保留歌手 ID 列表；上游未给定总数时 `total=null`。
+
+### 3.4 发现页与音乐漫游
+
+**推荐歌曲 `POST /feed/song-tab/`**，匿名发现页的请求体：
+
+```json
+{
+  "common_params":{},
+  "played_media":[],
+  "is_first_request":true,
+  "with_client_cache":false,
+  "is_did_first_request":false,
+  "count":12,
+  "feed_preference":{
+    "preference_mode":null,
+    "total_request_count":1,
+    "preference_mode_request_count":1,
+    "current_mode_request_count":1,
+    "scene_mode_id":null,
+    "scene_mode_select_time":null
+  }
+}
+```
+
+个人漫游使用同一路径、同一 `client_token`，但通用 query 使用绑定设备，`common_params.user_id` 来自当前网站用户的加密绑定，`count=20`。不使用 ticket、Guard，不接受前端指定上游身份。
+
+| 字段 | 已恢复的规则 |
+| --- | --- |
+| `total_request_count` | 会话从1开始，每次上游取歌递增 |
+| `preference_mode_request_count` / `current_mode_request_count` | 当前模式从1开始，切换模式重置 |
+| `is_first_request` / `with_client_cache` | 当前模式首次为 true/false，后续为 false/true |
+| `is_did_first_request` | 会话首次为 false，后续为 true；字段名虽反直觉，按目标实现发送 |
+| `scene_mode_id` | 默认模式为 null；场景模式为上游返回的数字 ID |
+| `scene_mode_select_time` | 默认模式为 null；切换场景时的 Unix 秒，后续同场景沿用 |
+| `played_media` / `preference_mode` | 目标版本保持 `[]` / null；本站不虚构已播放上报 |
+
+歌曲在 `data.items[].entity.media.track_entity`；外层卡片 `type=track`，内层 `media_type=track`。响应还有布尔 `data.has_more`，没有 page cursor。本站过滤非歌曲卡片，批内及会话最近1000首按字符串 ID 去重。空批/全重复且仍有更多时，一次本站调用最多取3批，总预算8秒；仍无新歌返回1004，不能把“没有新歌”假装成上游结束。
+
+**模式 `POST /feed/mode/`**：匿名 body `{"common_params":{}}`；个人 body 增加相同的绑定 user_id。响应路径：
+
+```text
+data.feed_mode_block[].title
+data.feed_mode_block[].feed_mode[].entity.feed_mode
+  type = "feed_scene_mode"
+  text / cutover_toast / url_info
+  scene_mode.scene_mode_id / scene_mode.sub_queue_type
+```
+
+后端从 `text`、块标题、`url_info`、`cutover_toast` 提供名称/分组/图标/提示。每次从接口读取模式集合，实测45个场景；另加本地 `recommended`（为你推荐）。前端把模式 ID 当字符串，不能写死场景清单。`sub_queue_type` 不属于当前本站控制参数。
+
+**歌单发现与榜单**：目标 `getCategoryPlaylists` 调用分类词歌单搜索；目标发现页热门歌单为 `searchPlaylists("热门", limit:10)`。本站 `/playlist/recommend` 兼容实现按“热门、华语流行、新歌”搜索并按复合 ID 合并。`order` 仅沿用本站响应字段，上游没有已验证的分类排序参数。官方榜单没有恢复，不能构造 `/toplist/` 上游路径。
+
+### 3.5 字段映射
 
 | Luna track 字段 | 本站 SongSearchItem |
 | --- | --- |
@@ -302,14 +382,16 @@ Content-Type: application/json
 
 解码读取 `success/data`、`playUrl`、`expiresAt`、`requestedQuality`、`actualQuality`，以及可选 `encryption`。目标安装包包含 `scheme=qishui-cenc`、`method=cenc-aes-ctr` 和 `spadeA` 分支。
 
-本站此分支：
+当前远端实现（`e04b23f`、`d2e3c7b`、`85f6d90`）已替换早期“拒绝加密音频”的分支：
 
-- 使用独立 `QISHUI_PARSE_ACCESS_TOKEN`；不读取本机 TuneFree 登录凭据，不复用旧 tf-pay。
-- 继续要求本站有效会员；`prefetch=true` 保留现有不记历史行为。
-- 进入现有8秒总预算、每源4个并发、有限执行器及同请求合并；qs 只走自身主解析，不发起跨源替换。
-- 普通音频成功时保持 `source/id` 和 `actualSource/actualId` 为原曲，`lyricMatch=exact`。
-- 明确期限的普通音频沿用现有缓存：最多1200秒并减30秒，期限未知/临近则不缓存。
-- 有加密描述时返回1012，缺少 v1 token 时返回1003。上述拒绝行为已有测试，完整播放尚未实测。
+- `TuneFreeV1AuthService` 优先使用可选的 `QISHUI_PARSE_ACCESS_TOKEN`；否则用系统配置 `music.tunefree.account/password` 登录 `/v1/auth/login`，在内存维护 v1 access/refresh token，经 `/v1/auth/refresh` 刷新。与旧 tf-pay 的 token 空间隔离。
+- `/api/v1/music/play` 仍需网站登录及有效会员，`prefetch=true` 保持不记历史。汽水默认320k，返回原曲 source/id 与 `lyricMatch=exact`。
+- `playUrl` 默认形如 `/api/public/music/qishui/stream?ticket=<签名票据>`，票据有效1200秒，`PlayInfo.expireSec=1080`。该 URL 可直接交给同源 `<audio>`，不需要向音频请求加 Bearer。
+- 流端点校验票据后才执行 TuneFree parse、下载、CENC AES-CTR 解密，返回 `audio/mp4`，支持 Range 的200/206及不满足范围的416。解密材料、上游签名 URL 不返回浏览器。
+- 流下载使用独立60秒调用上限，并受48MiB音频大小检查约束；内存缓存上限64MiB，磁盘缓存上限1GiB，缓存TTL1100秒。`flac24bit` 与 `flac` 共用缓存键。
+- 当前 `PlayInfo.actualQuality` 在签发票据时使用请求值，尚不能证明流最终达到该品质；不要把选择 Hi-Res 当作实际高解析音质的证据。此处如需准确呈现，应进一步传递最终解析品质。
+
+音频票据签名含进程随机盐，重启会使旧票据失效，多实例也不能直接互验；客户端重新取播放地址，部署时让取地址与流请求命中同一实例。本轮仅核对该已有实现与自动化测试，没有再次运行完整音频播放。
 
 ## 6. 本站接口文档
 
@@ -322,6 +404,11 @@ Content-Type: application/json
 | GET | `/api/v1/music/qishui/account` | 当前用户的绑定状态及脱敏资料 |
 | POST | `/api/v1/music/qishui/account/refresh` | 刷新当前用户授权 |
 | DELETE | `/api/v1/music/qishui/account` | 删除本地绑定及待确认会话；不代表上游撤销授权 |
+| GET | `/api/v1/music/qishui/discovery` | 无参数；发现推荐12首以内；只需网站登录，不需个人绑定 |
+| GET | `/api/v1/music/qishui/roaming/modes` | 要求有效个人绑定；返回默认模式及上游场景数组 |
+| POST | `/api/v1/music/qishui/roaming/sessions?modeId=recommended` | 可选 query `modeId`；创建会话并返回第一批歌曲 |
+| POST | `/api/v1/music/qishui/roaming/sessions/{sessionId}/next?sequence=1&modeId=2` | 必填 query `sequence`；`modeId` 可省略以沿用当前模式 |
+| DELETE | `/api/v1/music/qishui/roaming/sessions/{sessionId}` | 关闭本人漫游会话；data=null |
 
 响应沿用 `{code:0,message:"ok",data:{...}}`，HTTP `Cache-Control: no-store`。创建示意：
 
@@ -339,20 +426,93 @@ Content-Type: application/json
 
 账户状态为 `unbound`、`bound`、`expired`；`bound=true` 表示存在绑定，是否尚在有效期另看 status。账户响应 `expiresAt` 是授权期限；QR 响应 `sessionExpiresAt` 是二维码会话期限。昵称/头像/VIP 仅在有已保存资料时存在，不返回平台 userId、accessCode、openId、ticket、证书或私钥。
 
-音乐接口继续使用现有响应 DTO：
+### 6.1 发现页和漫游调用示例
+
+下列 POST 参数在 **query** 中，无 JSON body。每个请求携带本站 `Authorization: Bearer <token>`。
+
+```http
+GET /api/v1/music/qishui/discovery
+GET /api/v1/music/qishui/roaming/modes
+POST /api/v1/music/qishui/roaming/sessions?modeId=recommended
+POST /api/v1/music/qishui/roaming/sessions/<sessionId>/next?sequence=1
+POST /api/v1/music/qishui/roaming/sessions/<sessionId>/next?sequence=2&modeId=2
+DELETE /api/v1/music/qishui/roaming/sessions/<sessionId>
+```
+
+发现页响应 `data={"source":"qishui","list":[SongSearchItem...]}`。模式响应示例（图标等值省略）：
+
+```json
+{"code":0,"message":"ok","data":[
+  {"id":"recommended","name":"为你推荐","group":"推荐","iconUrl":null,"toast":"已切换到为你推荐"},
+  {"id":"2","name":"运动","group":"场景","iconUrl":null,"toast":"已切换"}
+]}
+```
+
+创建及续页的响应结构相同。以下 `list` 为示意；歌曲字段同3.5节的 `SongSearchItem`，没有播放 URL，播放仍调用 `/music/play`：
+
+```json
+{"code":0,"message":"ok","data":{
+  "sessionId":"随机UUID",
+  "source":"qishui",
+  "modeId":"recommended",
+  "sequence":0,
+  "nextSequence":1,
+  "hasMore":true,
+  "expiresAt":"2030-01-01T00:30:00Z",
+  "list":[{"id":"9000000000000000001","source":"qishui","name":"示例歌曲"}]
+}}
+```
+
+- 创建返回 `sequence=0`；续页使用上次响应的 `nextSequence`，合法范围1至100000。一次最多返回20首，去重后可能更少。
+- 最新一次已完成的续页序号可以重试，返回同一批歌曲且不重复请求上游。只保留最新一页的重试结果；旧序号、跳号、同序号改成另一模式返回 code=409。
+- 续页省略 `modeId` 沿用当前模式；显式 `recommended` 回默认。上游成功返回的模式 ID 才能切换，未知 ID 返回400。
+- 失败不会提交模式、序号、去重状态和计数变更；使用相同参数重试即可。失败时上游可能已处理 HTTP 请求，本地状态回滚不等于能撤销上游处理。
+- `hasMore=false` 时停止自动续页。同模式继续请求不会再访问上游，返回空 list；用下个合法序号切换模式可以继续。
+- 绑定有效性在每次调用、重试读取及上游返回后检查。刷新/重新绑定改变 bindingId，解绑或到期后拒绝旧会话；跨网站用户不可续用 sessionId。
+- 每个网站用户只保留一个漫游会话，成功创建才替换旧会话；每秒最多创建一次。最多1000个会话，绝对期限为30分钟与个人授权期限的较早者，续页不延长。使用进程内会话及分条操作锁，冲突立即返回1013，不排队重复取歌。
+- 所有新 feed 端点及其控制器错误响应带 `Cache-Control: no-store`。个人结果不进入全站 MusicCache；会话失效、进程重启或容量淘汰后重新创建。
+
+### 6.2 完整目录能力与来源
+
+音乐接口继续使用现有响应 DTO；未写全的分页参数均沿用现有端点：
 
 | 请求 | qishui 支持情况 |
 | --- | --- |
-| `GET /api/v1/music/search?source=qs&keyword=...&type=song` | 支持；type=playlist 也支持；pageSize最大30 |
+| `GET /api/v1/music/search?source=qs&keyword=...&type=song` | 直接 track 搜索；type=playlist/artist 也为直接上游搜索；pageSize最大30 |
+| `GET /api/v1/music/search?source=qs&keyword=...&type=album` | 歌曲命中的专辑关联聚合；有限候选，不是完整专辑搜索 |
 | `GET /api/v1/music/lyric?source=qs&id=...` | 支持；provider=qishui，official=true，KRC归一化为YRC |
+| `GET /api/v1/music/playlist?source=qs&category=摇滚&page=2&pageSize=20` | 搜索分类词，默认“热门”；page=2初始cursor=20，最大pageSize=50；total未知 |
+| `GET /api/v1/music/playlist/recommend?source=qs&limit=20` | 热门/华语流行/新歌的歌单搜索合并，limit最大50；不是个人推荐 |
 | `GET /api/v1/music/playlist/detail?source=qs&id=<复合ID>` | 支持；pageSize最大100 |
 | 现有用户歌单按 source + sourceId 导入 | 支持 qs 复合ID；未增加分享短链解析 |
-| `GET /api/v1/music/artist/works?source=qs&id=...&type=song` | 支持；total未知时null |
+| `GET /api/v1/music/toplist?source=qs` | 3个搜索发现分组，id分别为“热门”“华语流行”“新歌”；name/description明确标注非官方榜单 |
+| `GET /api/v1/music/toplist/detail?source=qs&id=热门` | 以该词搜索歌曲；只接受上述3个ID；total未知 |
+| `GET /api/v1/music/new?source=qs` | 同“新歌”搜索发现；不保证上架时间排序 |
+| `GET /api/v1/music/album/detail?source=qs&id=...` | 直接 `/album/detail/`，专辑信息及分页歌曲 |
+| `GET /api/v1/music/artist/works?source=qs&id=...&type=song` | 直接歌手歌曲；type=album 使用 `/artist/albums/`；未知total为null |
 | `GET /api/v1/music/artist?source=qs&ids=...` | 尽力提供歌曲关联中的简要资料；无歌曲时可能缺项 |
-| `GET /api/v1/music/play?source=qs&id=...&quality=320k` | 需单独 v1 token；加密结果未支持 |
-| 其余目录能力 | 明确1012/501，不伪装为空列表 |
+| `GET /api/v1/music/play?source=qs&id=...&quality=320k` | 网站会员接口，签发本地音频流地址；v1登录/解析/CENC解密在读取流时执行 |
 
-授权错误沿用统一异常外壳：401未登录、404会话不存在/不属于本人/过期、409绑定已变更或未绑定、429创建过快；1003配置不完整、1004上游请求或格式失败、1009超时、1013忙。错误消息不附上游原文、签名URL、响应头或凭据。
+歌曲 ID 保持字符串；歌单 ID `playlistId:ownerId:type` 原样 URL 编码。modeId 也是字符串。榜单与分类的中文 query 必须 URL 编码，不拼成未经验证的上游地址。收藏/导入写入的是本站用户歌单，不是写回汽水收藏。
+
+### 6.3 错误码
+
+响应 `{code,message,data}`；**业务码409在本项目现有 GlobalExceptionHandler 中对应 HTTP 400**，前端需同时读取 JSON code，不能只等 HTTP 409。
+
+| JSON code | HTTP | 含义与处理 |
+| --- | --- | --- |
+| 400 | 400 | sequence缺失/格式错误、非法模式等；修正参数 |
+| 401 | 401 | 未登录网站 |
+| 404 | 404 | 会话不存在、不属于本人、已关闭或绝对期限已到；重新创建 |
+| 409 | 400 | 未绑定/授权过期/绑定改变，或序号不连续/重试模式冲突；检查账号与会话 |
+| 429 | 429 | 创建会话过快，稍后重试 |
+| 1003 | 502 | 缺少配置或上游凭据 |
+| 1004 | 502 | 上游失败、响应格式不符、3批内未取到新歌；保留当前序号重试 |
+| 1009 | 504 | 请求超时 |
+| 1012 | 501 | 调用了不支持的操作 |
+| 1013 | 503 | 操作锁冲突，稍后以同一序号重试 |
+
+feed 错误不附上游原文、签名 URL、响应头或凭据。
 
 ## 7. 部署与隔离
 
@@ -367,23 +527,25 @@ Content-Type: application/json
 | `QISHUI_APP_IDENTITY` | 匹配该应用的身份参数 |
 | `QISHUI_APP_SIGNATURE` | 匹配该应用的签名参数 |
 | `QISHUI_PARSE_ACCESS_TOKEN` | 可选，新版 TuneFree v1 解析凭据 |
+| `QISHUI_PUBLIC_BASE_URL` | 默认空，返回同源音频相对路径；分离部署时可配置公开API基地址 |
+| `QISHUI_CACHE_DIR` | 已有解密音频磁盘缓存目录，默认 `/opt/website/cache/qishui-audio` |
 
 密钥固定保存于部署环境，所有副本一致；丢失/更换后旧密文不能解密，需要重新授权。参数为空不影响旧音乐源启动，只有相关功能调用会报配置错误。目录查询不依赖个人凭据或 OAuth 配置。
 
 个人凭据 AES-256-GCM 加密，随机12字节IV，128位标签，AAD绑定网站 userId及随机bindingId，密文格式 `v1.base64(iv).base64(ciphertext+tag)`。每次绑定/刷新轮换bindingId；刷新采用数据库条件更新，旧刷新不能覆盖新绑定或复活已删除记录。重新绑定也检查开始登录时的绑定代次。
 
-二维码会话及操作锁在内存中。多实例部署必须把同一用户的授权创建、轮询、刷新、解绑固定到同一实例；数据库CAS只保护写回，不能代替跨节点授权会话取消。若需要无粘性的水平扩容，应先引入共享会话和分布式互斥。
+二维码、漫游会话及操作锁在内存中。多实例部署必须把同一用户的授权创建、轮询、刷新、解绑、漫游固定到同一实例；数据库CAS只保护写回，不能代替跨节点授权会话取消。若需要无粘性的水平扩容，应先引入共享会话和分布式互斥。漫游新增能力复用已有加密绑定表，无新数据库迁移。
 
-曲库缓存只含使用 client_token 得到的公开目录结果；个人资料不进入全站 MusicCache。未来漫游/个人媒体功能必须用 `websiteUserId + bindingId` 隔离缓存。本次未增加个人漫游接口，也没有将本机已有授权导入网站数据库。
+公开目录结果使用全站 MusicCache；个人资料和漫游结果不进入该缓存。漫游会话按 `websiteUserId + bindingId` 校验归属，服务器自行读取上游 user_id。本次没有将本机已有授权导入网站数据库，也没有部署服务器。
 
 ## 8. 验证与限制
 
-2026-11-09 最终执行 `mvn -q clean verify`：71 个测试套件、443 项测试，失败/错误/跳过均为0。
+2026-11-09 本轮执行 `mvn -q clean verify`：**85个测试套件、500项测试，失败/错误/跳过均为0**。测试使用Java 21运行、按项目Java 8目标编译。完整测试日志保留在本机 `/tmp/qs-feed-clean-verify.log`；接口契约逐项比较确认既有路由、DTO及实体没有修改或删除。
 
-自动化覆盖：凭据加密/篡改/换用户/换绑定代次、刷新CAS、首次绑定竞态、扫码归属/过期/限频/重复确认/失败重放、Guard签名与公钥恢复、HTTP请求方法与字段、刷新时保留原设备密钥及缺失openId的回退、19位ID、歌词时间换算和数值溢出、歌单参数校验、上游响应结构校验、重复分页游标、取消预算、加密媒体拒绝、源别名、旧解析器隔离。
+自动化覆盖：既有授权加密/Guard/绑定代次、目录搜索/分页/歌词、远端加入的专辑/歌手/CENC/音频票据/缓存；本轮新增歌单第二页、真实 feed 卡片层级、绑定身份与catalog token、场景计数、未知模式、用户隔离、序号幂等、失败回滚、返回对象隔离、请求途中到期、账号过期重试、有限去重补取、并发冲突和控制器登录/错误/no-store。API合同新增5条路由、3个DTO，数据库实体仍34个。
 
-新实现的 Java 客户端另做了真实网络检查：歌曲搜索返回3条、取得歌词、歌单详情返回3条；已有个人授权的 Guard 签名请求返回个人资料；新二维码返回PNG，首次轮询为 `new`。Java 生成的 CSR 已通过 `openssl req -verify -noout` 验签。这些检查调用生产客户端类，不依赖合成的成功响应。
+早期接入阶段的 Java 客户端真实网络检查：歌曲搜索返回3条、取得歌词、歌单详情返回3条；当时已有个人授权的 Guard 签名请求返回个人资料；新二维码返回PNG，首次轮询为 `new`。Java 生成的 CSR 已通过 `openssl req -verify -noout` 验签。这些为此前的生产客户端检查，不代表本轮重新验证了账号授权。
 
-真实网络验证与自动化测试应分开理解：QR创建、目录/歌词/歌单/歌手请求和已授权个人资料成功；新的扫码确认换票、真实刷新及带会员权限的完整播放仍未端到端测试。不会通过编造上游成功样本来代替这些验证。
+真实网络验证与自动化测试分开记录：本轮 Java 已验证发现推荐与模式；此前独立 HTTP 已验证个人 feed 与场景续取。本轮 Java 个人探测因本地授权已过期而跳过，未重新扫码或刷新，未再做带会员权限的完整播放验证。自动化成功不补齐这些实测缺口。
 
 用户最初给出的 mhub 项目（`https://github.com/jizizr/mhub`，参考提交 `8cda3d5dcd940677b86e060832baca36b2e25c8f` 的 `src/music/soda.rs`）另有匿名 `api.qishui.com/luna/search/track` 和 `beta-luna.douyin.com/luna/h5/seo_track` 路线。本次交叉探测成功，但所测 H5 播放器是试听；后端主适配没有偷偷切换到这条路线，没有搬入其下载/解密实现。

@@ -2486,6 +2486,54 @@
         "vip" : [ "java.lang.Boolean", false, true, true ]
       }
     },
+    "QishuiDiscoveryView" : {
+      "request" : {
+        "list" : [ "java.util.List<SongSearchItem>", false, true, true ],
+        "source" : [ "MusicSource", false, true, true ]
+      },
+      "response" : {
+        "list" : [ "java.util.List<SongSearchItem>", false, true, true ],
+        "source" : [ "MusicSource", false, true, true ]
+      }
+    },
+    "QishuiFeedModeView" : {
+      "request" : {
+        "group" : [ "java.lang.String", false, true, true ],
+        "iconUrl" : [ "java.lang.String", false, true, true ],
+        "id" : [ "java.lang.String", false, true, true ],
+        "name" : [ "java.lang.String", false, true, true ],
+        "toast" : [ "java.lang.String", false, true, true ]
+      },
+      "response" : {
+        "group" : [ "java.lang.String", false, true, true ],
+        "iconUrl" : [ "java.lang.String", false, true, true ],
+        "id" : [ "java.lang.String", false, true, true ],
+        "name" : [ "java.lang.String", false, true, true ],
+        "toast" : [ "java.lang.String", false, true, true ]
+      }
+    },
+    "QishuiRoamingPageView" : {
+      "request" : {
+        "expiresAt" : [ "java.time.Instant", false, true, true ],
+        "hasMore" : [ "boolean", false, true, true ],
+        "list" : [ "java.util.List<SongSearchItem>", false, true, true ],
+        "modeId" : [ "java.lang.String", false, true, true ],
+        "nextSequence" : [ "long", false, true, true ],
+        "sequence" : [ "long", false, true, true ],
+        "sessionId" : [ "java.lang.String", false, true, true ],
+        "source" : [ "MusicSource", false, true, true ]
+      },
+      "response" : {
+        "expiresAt" : [ "java.time.Instant", false, true, true ],
+        "hasMore" : [ "boolean", false, true, true ],
+        "list" : [ "java.util.List<SongSearchItem>", false, true, true ],
+        "modeId" : [ "java.lang.String", false, true, true ],
+        "nextSequence" : [ "long", false, true, true ],
+        "sequence" : [ "long", false, true, true ],
+        "sessionId" : [ "java.lang.String", false, true, true ],
+        "source" : [ "MusicSource", false, true, true ]
+      }
+    },
     "RedeemCodeAdminView" : {
       "request" : {
         "code" : [ "java.lang.String", false, true, true ],
@@ -3200,6 +3248,16 @@
       "parameters" : [ {
         "annotations" : [ ],
         "type" : "javax.servlet.http.HttpServletRequest"
+      } ],
+      "returns" : "org.springframework.http.ResponseEntity<ApiResponse<java.lang.Void>>"
+    },
+    "{DELETE [/api/v1/music/qishui/roaming/sessions/{sessionId}]}" : {
+      "parameters" : [ {
+        "annotations" : [ ],
+        "type" : "javax.servlet.http.HttpServletRequest"
+      }, {
+        "annotations" : [ "org.springframework.web.bind.annotation.PathVariable{name=, required=true, value=}" ],
+        "type" : "java.lang.String"
       } ],
       "returns" : "org.springframework.http.ResponseEntity<ApiResponse<java.lang.Void>>"
     },
@@ -4013,6 +4071,20 @@
         "type" : "java.lang.String"
       } ],
       "returns" : "org.springframework.http.ResponseEntity<ApiResponse<QishuiAccountView>>"
+    },
+    "{GET [/api/v1/music/qishui/discovery]}" : {
+      "parameters" : [ {
+        "annotations" : [ ],
+        "type" : "javax.servlet.http.HttpServletRequest"
+      } ],
+      "returns" : "org.springframework.http.ResponseEntity<ApiResponse<QishuiDiscoveryView>>"
+    },
+    "{GET [/api/v1/music/qishui/roaming/modes]}" : {
+      "parameters" : [ {
+        "annotations" : [ ],
+        "type" : "javax.servlet.http.HttpServletRequest"
+      } ],
+      "returns" : "org.springframework.http.ResponseEntity<ApiResponse<java.util.List<QishuiFeedModeView>>>"
     },
     "{GET [/api/v1/music/search]}" : {
       "parameters" : [ {
@@ -4969,6 +5041,32 @@
         "type" : "javax.servlet.http.HttpServletRequest"
       } ],
       "returns" : "org.springframework.http.ResponseEntity<ApiResponse<QishuiAccountView>>"
+    },
+    "{POST [/api/v1/music/qishui/roaming/sessions/{sessionId}/next]}" : {
+      "parameters" : [ {
+        "annotations" : [ ],
+        "type" : "javax.servlet.http.HttpServletRequest"
+      }, {
+        "annotations" : [ "org.springframework.web.bind.annotation.PathVariable{name=, required=true, value=}" ],
+        "type" : "java.lang.String"
+      }, {
+        "annotations" : [ "org.springframework.web.bind.annotation.RequestParam{defaultValue=\n\t\t\n\t\t\n\n\t\t\t\t\n, name=, required=true, value=}" ],
+        "type" : "long"
+      }, {
+        "annotations" : [ "org.springframework.web.bind.annotation.RequestParam{defaultValue=\n\t\t\n\t\t\n\n\t\t\t\t\n, name=, required=false, value=}" ],
+        "type" : "java.lang.String"
+      } ],
+      "returns" : "org.springframework.http.ResponseEntity<ApiResponse<QishuiRoamingPageView>>"
+    },
+    "{POST [/api/v1/music/qishui/roaming/sessions]}" : {
+      "parameters" : [ {
+        "annotations" : [ ],
+        "type" : "javax.servlet.http.HttpServletRequest"
+      }, {
+        "annotations" : [ "org.springframework.web.bind.annotation.RequestParam{defaultValue=\n\t\t\n\t\t\n\n\t\t\t\t\n, name=, required=false, value=}" ],
+        "type" : "java.lang.String"
+      } ],
+      "returns" : "org.springframework.http.ResponseEntity<ApiResponse<QishuiRoamingPageView>>"
     },
     "{PUT [/api/admin/categories/{id} || /api/user/categories/{id}]}" : {
       "parameters" : [ {

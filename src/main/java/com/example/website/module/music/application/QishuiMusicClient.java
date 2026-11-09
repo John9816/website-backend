@@ -92,12 +92,28 @@ public class QishuiMusicClient {
     }
 
     private JsonNode postWithinBudget(String path, ObjectNode body) {
-        body.set("common_params", mapper.createObjectNode());
+        return postWithinBudget(path, body, deviceId, null);
+    }
+
+    JsonNode postFeed(String path, ObjectNode body, QishuiCredential credential) {
+        if (!"/feed/song-tab/".equals(path) && !"/feed/mode/".equals(path))
+            throw new IllegalArgumentException("Unsupported feed path");
+        try (MusicRequestBudget.Scope ignored = MusicRequestBudget.start(8, TimeUnit.SECONDS)) {
+            return postWithinBudget(path, body,
+                    credential == null ? deviceId : credential.getDeviceId(),
+                    credential == null ? null : credential.getUserId());
+        }
+    }
+
+    private JsonNode postWithinBudget(String path, ObjectNode original, String requestDevice, String userId) {
+        ObjectNode body = original.deepCopy();
+        ObjectNode common = body.putObject("common_params");
+        if (userId != null) common.put("user_id", userId);
         CatalogToken used = token();
         JsonNode r =
                 http.post(
                                 QishuiHttpClient.PLATFORM + path,
-                                QishuiHttpClient.common(deviceId),
+                                QishuiHttpClient.common(requestDevice),
                                 body,
                                 Collections.singletonMap("access-token", used.value))
                         .json;
@@ -512,10 +528,8 @@ public class QishuiMusicClient {
     }
 
     /**
-     * The car-head-unit Luna application has no official chart / recommendation / new-release
-     * endpoints (verified against the upstream, 100+ path and method combinations). These
-     * discovery views are built from real /search/ results and are explicitly labelled as
-     * search-based rather than official charts.
+     * No official chart protocol has been established for this adapter. These compatibility
+     * views use search results. The independent /feed/song-tab/ endpoint supplies recommendations.
      */
     static final List<String> DISCOVERY_KEYWORDS =
             Collections.unmodifiableList(Arrays.asList("热门", "华语流行", "新歌"));
@@ -540,8 +554,12 @@ public class QishuiMusicClient {
     }
 
     public List<PlaylistItem> discoverPlaylists(String keyword, int limit) {
+        return discoverPlaylists(keyword, 1, limit);
+    }
+
+    public List<PlaylistItem> discoverPlaylists(String keyword, int page, int limit) {
         int size = Math.min(50, Math.max(1, limit));
-        return searchEntities(keyword, "playlist", 1, size).stream()
+        return searchEntities(keyword, "playlist", page, size).stream()
                 .map(e -> playlistItem(playlist(e.path("playlist"))))
                 .collect(Collectors.toList());
     }

@@ -2,7 +2,7 @@
 
 由 `tools/generate-api-index.py` 从重构前的契约基线生成。`ArchitectureContractTests` 每次构建会从实际 Spring 路由、Jackson 模型和 JPA 实体重新采集并比较，重构不得通过重写基线绕过差异。
 
-共 189 条路由映射（包含同一 handler 的路径别名）、140 个 JSON DTO/枚举、34 个数据库实体。路径、参数注解、返回类型、JSON 属性、实体注解均纳入比较；Java 包名前缀不纳入对外契约。
+共 195 条路由映射（包含同一 handler 的路径别名）、143 个 JSON DTO/枚举、34 个数据库实体。路径、参数注解、返回类型、JSON 属性、实体注解均纳入比较；Java 包名前缀不纳入对外契约。
 
 请求与响应示例见 [前端接口文档](frontend-api.md)，汽水的上游协议、独立扫码及后端适配见 [黑源接口文档](tunefree-next-qishui-api.md)。
 
@@ -27,6 +27,7 @@
 | `{DELETE [/api/user/music/shares]}` | `ApiResponse<Void>` |
 | `{DELETE [/api/v1/books/user-sources/{id}]}` | `ApiResponse<Void>` |
 | `{DELETE [/api/v1/music/qishui/account]}` | `org.springframework.http.ResponseEntity<ApiResponse<Void>>` |
+| `{DELETE [/api/v1/music/qishui/roaming/sessions/{sessionId}]}` | `org.springframework.http.ResponseEntity<ApiResponse<Void>>` |
 | `{GET [/api/admin/categories &#124;&#124; /api/user/categories]}` | `ApiResponse<List<CategoryView>>` |
 | `{GET [/api/admin/categories/{id} &#124;&#124; /api/user/categories/{id}]}` | `ApiResponse<CategoryView>` |
 | `{GET [/api/admin/configs/{id}]}` | `ApiResponse<SysConfigView>` |
@@ -64,6 +65,7 @@
 | `{GET [/api/public/links]}` | `ApiResponse<List<LinkView>>` |
 | `{GET [/api/public/metrics]}` | `ApiResponse<PerformanceMetrics$Snapshot>` |
 | `{GET [/api/public/music/installer/latest]}` | `ApiResponse<Map<String, Object>>` |
+| `{GET [/api/public/music/qishui/stream], produces [audio/mp4]}` | `org.springframework.http.ResponseEntity<byte[]>` |
 | `{GET [/api/public/music/share/{token}]}` | `ApiResponse<MusicPublicShareView>` |
 | `{GET [/api/public/nav]}` | `ApiResponse<List<CategoryView>>` |
 | `{GET [/api/user/ai/conversations/{id}/messages]}` | `ApiResponse<PageView<AiChatMessageView>>` |
@@ -102,6 +104,8 @@
 | `{GET [/api/v1/music/playlist]}` | `ApiResponse<PlaylistListView>` |
 | `{GET [/api/v1/music/qishui/account]}` | `org.springframework.http.ResponseEntity<ApiResponse<QishuiAccountView>>` |
 | `{GET [/api/v1/music/qishui/auth/qr/{sessionId}]}` | `org.springframework.http.ResponseEntity<ApiResponse<QishuiAccountView>>` |
+| `{GET [/api/v1/music/qishui/discovery]}` | `org.springframework.http.ResponseEntity<ApiResponse<QishuiDiscoveryView>>` |
+| `{GET [/api/v1/music/qishui/roaming/modes]}` | `org.springframework.http.ResponseEntity<ApiResponse<List<QishuiFeedModeView>>>` |
 | `{GET [/api/v1/music/search]}` | `ApiResponse<SearchResultView>` |
 | `{GET [/api/v1/music/toplist/detail]}` | `ApiResponse<ToplistDetailView>` |
 | `{GET [/api/v1/music/toplist]}` | `ApiResponse<ToplistListView>` |
@@ -188,6 +192,8 @@
 | `{POST [/api/v1/books/user-sources/import]}` | `ApiResponse<BookUserSourceView>` |
 | `{POST [/api/v1/music/qishui/account/refresh]}` | `org.springframework.http.ResponseEntity<ApiResponse<QishuiAccountView>>` |
 | `{POST [/api/v1/music/qishui/auth/qr]}` | `org.springframework.http.ResponseEntity<ApiResponse<QishuiAccountView>>` |
+| `{POST [/api/v1/music/qishui/roaming/sessions/{sessionId}/next]}` | `org.springframework.http.ResponseEntity<ApiResponse<QishuiRoamingPageView>>` |
+| `{POST [/api/v1/music/qishui/roaming/sessions]}` | `org.springframework.http.ResponseEntity<ApiResponse<QishuiRoamingPageView>>` |
 | `{PUT [/api/admin/categories/{id} &#124;&#124; /api/user/categories/{id}]}` | `ApiResponse<CategoryView>` |
 | `{PUT [/api/admin/configs/{id}]}` | `ApiResponse<SysConfigView>` |
 | `{PUT [/api/admin/content/articles/{id}]}` | `ApiResponse<ContentArticleView>` |

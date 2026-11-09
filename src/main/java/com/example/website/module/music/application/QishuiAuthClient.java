@@ -109,7 +109,10 @@ public class QishuiAuthClient {
                 openId =
                         access.path("open_id")
                                 .asText(access.path("open_uid").asText(previousOpenId));
-        if (empty(openId)) throw QishuiHttpClient.failure();
+        if (empty(openId)) {
+            log.warn("Qishui auth missing open_id; accessFields={}", fields(access));
+            throw QishuiHttpClient.failure("missing_open_id");
+        }
         Map<String, String> q = new LinkedHashMap<>();
         q.put("aid", "1128");
         q.put("client_key", clientKey);
@@ -126,28 +129,68 @@ public class QishuiAuthClient {
                         q,
                         body,
                         headers);
-        JsonNode d = QishuiHttpClient.checked(r.json);
-        try {
-            String encoded = r.headers.get("bd-ticket-guard-server-data");
-            if (encoded == null || encoded.length() > 65536) throw QishuiHttpClient.failure();
-            JsonNode server = mapper.readTree(Base64.getDecoder().decode(encoded));
-            String cert = required(server, "client_cert");
-            if (cert.startsWith("-----BEGIN"))
-                cert = Base64.getEncoder().encodeToString(cert.getBytes(StandardCharsets.UTF_8));
-            Instant expires = expiry(access.path("expires_time"), Instant.now());
-            QishuiCredential c = new QishuiCredential();
-            c.setPrivateScalar(guard.privateScalar());
-            c.setDeviceId(deviceId);
-            c.setAccessCode(accessCode);
-            c.setOpenId(openId);
-            c.setTicket(required(d, "ticket"));
-            c.setGuardCert(cert);
-            c.setGuardTsSign(required(server, "ts_sign"));
-            c.setExpiresAt(expires);
-            return c;
-        } catch (java.io.IOException | IllegalArgumentException ex) {
-            throw QishuiHttpClient.failure();
+        JsonNode root = r.json;
+        JsonNode d = QishuiHttpClient.checked(root);
+
+        String encoded = r.headers.get("bd-ticket-guard-server-data");
+        if (encoded == null || encoded.length() > 65536) {
+            log.warn("Qishui ticket guard header missing or oversized; headerNames={}",
+                    headerNames(r.headers));
+            throw QishuiHttpClient.failure("missing_guard_header");
         }
+        JsonNode server;
+        try {
+            server = mapper.readTree(Base64.getDecoder().decode(encoded));
+        } catch (java.io.IOException | IllegalArgumentException ex) {
+            log.warn("Qishui ticket guard header is not valid base64 JSON");
+            throw QishuiHttpClient.failure("invalid_guard_header");
+        }
+
+        // 只记录字段名/响应头名，绝不记录任何值、URL 或凭据。
+        log.warn("Qishui ticket response shape rootFields={} dataFields={} guardFields={} headerNames={}",
+                fields(root), fields(d), fields(server), headerNames(r.headers));
+
+        // 上游实际把 ticket 放在何处与逆向假设不一致：在 body(root/data)、Guard 数据及响应头中兼容查找。
+        String ticket = firstText(d, "ticket", "access_ticket", "ticket_str", "access_token");
+        if (empty(ticket)) ticket = firstText(root, "ticket", "access_ticket", "access_token");
+        if (empty(ticket))
+            ticket = firstText(server, "ticket", "access_ticket", "access_token", "access-token");
+        if (empty(ticket))
+            ticket = firstHeader(r.headers, "access-token", "x-tt-ticket", "bd-ticket",
+                    "bd-ticket-guard-server-ticket", "ticket");
+        if (empty(ticket)) {
+            log.warn("Qishui response missing required field=ticket");
+            throw QishuiHttpClient.failure("missing_field=ticket");
+        }
+
+        String cert = firstText(server, "client_cert");
+        if (empty(cert)) {
+            log.warn("Qishui response missing required field=client_cert");
+            throw QishuiHttpClient.failure("missing_field=client_cert");
+        }
+        if (cert.startsWith("-----BEGIN"))
+            cert = Base64.getEncoder().encodeToString(cert.getBytes(StandardCharsets.UTF_8));
+        String tsSign = firstText(server, "ts_sign");
+        if (empty(tsSign)) {
+            log.warn("Qishui response missing required field=ts_sign");
+            throw QishuiHttpClient.failure("missing_field=ts_sign");
+        }
+        JsonNode expiresNode = access.path("expires_time");
+        if (expiresNode.isNumber() && expiresNode.asLong(-1) <= 0) {
+            log.warn("Qishui auth invalid expires_time");
+            throw QishuiHttpClient.failure("bad_expires_time");
+        }
+        Instant expires = expiry(expiresNode, Instant.now());
+        QishuiCredential c = new QishuiCredential();
+        c.setPrivateScalar(guard.privateScalar());
+        c.setDeviceId(deviceId);
+        c.setAccessCode(accessCode);
+        c.setOpenId(openId);
+        c.setTicket(ticket);
+        c.setGuardCert(cert);
+        c.setGuardTsSign(tsSign);
+        c.setExpiresAt(expires);
+        return c;
     }
 
     private void profile(QishuiCredential c) {
@@ -180,7 +223,7 @@ public class QishuiAuthClient {
         String value = node.path(field).asText("");
         if (value.isEmpty()) {
             log.warn("Qishui response missing required field={}", field);
-            throw QishuiHttpClient.failure();
+            throw QishuiHttpClient.failure("missing_field=" + field);
         }
         return value;
     }
@@ -189,9 +232,50 @@ public class QishuiAuthClient {
         try {
             return call.get();
         } catch (MusicBusinessException ex) {
-            log.warn("Qishui auth failed stage={} code={}", stage, ex.getErrorCode().getCode());
-            throw new MusicBusinessException(ex.getErrorCode(), "黑源" + label + "失败，请重新获取二维码后扫码");
+            log.warn("Qishui auth failed stage={} code={} reason={}", stage,
+                    ex.getErrorCode().getCode(), ex.getMessage());
+            throw new MusicBusinessException(ex.getErrorCode(),
+                    "黑源" + label + "失败（" + ex.getMessage() + "），请重新获取二维码后扫码");
         }
+    }
+
+    /** 在多个候选字段中取第一个非空文本值。 */
+    private static String firstText(JsonNode node, String... names) {
+        if (node == null || !node.isObject()) return "";
+        for (String name : names) {
+            String value = node.path(name).asText("");
+            if (!empty(value)) return value;
+        }
+        return "";
+    }
+
+    private static String firstHeader(okhttp3.Headers headers, String... names) {
+        for (String name : names) {
+            String value = headers.get(name);
+            if (!empty(value)) return value;
+        }
+        return "";
+    }
+
+    /** 只输出字段名，便于定位响应结构而不泄露任何值。 */
+    private static String fields(JsonNode node) {
+        if (node == null || !node.isObject()) return "[]";
+        StringBuilder sb = new StringBuilder("[");
+        Iterator<String> it = node.fieldNames();
+        while (it.hasNext()) {
+            if (sb.length() > 1) sb.append(',');
+            sb.append(it.next());
+        }
+        return sb.append(']').toString();
+    }
+
+    private static String headerNames(okhttp3.Headers headers) {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < headers.size(); i++) {
+            if (i > 0) sb.append(',');
+            sb.append(headers.name(i));
+        }
+        return sb.append(']').toString();
     }
 
     private static boolean empty(String s) {

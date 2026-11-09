@@ -3,12 +3,17 @@ package com.example.website.module.music.application;
 import com.example.website.common.BusinessException;
 import com.example.website.common.MusicBusinessException;
 import com.example.website.common.MusicErrorCode;
+import com.example.website.module.music.api.dto.AlbumDetailView;
+import com.example.website.module.music.api.dto.AlbumSummaryItem;
 import com.example.website.module.music.api.dto.ArtistDetailView;
 import com.example.website.module.music.api.dto.ArtistWorksView;
 import com.example.website.module.music.api.dto.LyricInfo;
 import com.example.website.module.music.api.dto.MusicSearchType;
 import com.example.website.module.music.api.dto.MusicSource;
 import com.example.website.module.music.api.dto.PlaylistDetailView;
+import com.example.website.module.music.api.dto.PlaylistItem;
+import com.example.website.module.music.api.dto.ToplistDetailView;
+import com.example.website.module.music.api.dto.ToplistItem;
 import com.example.website.module.music.api.dto.SearchCollectionItem;
 import com.example.website.module.music.api.dto.SongSearchItem;
 
@@ -18,6 +23,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -109,12 +116,25 @@ public class QishuiMusicClient {
 
     public NeteaseMusicClient.CollectionSearchResult searchCollections(
             String keyword, MusicSearchType type, int page, int pageSize) {
-        if (type != MusicSearchType.PLAYLIST)
-            throw unsupported("only song and playlist search are available");
-        List<SearchCollectionItem> list =
-                searchEntities(keyword, "playlist", page, pageSize).stream()
+        List<SearchCollectionItem> list;
+        switch (type) {
+            case PLAYLIST:
+                list = searchEntities(keyword, "playlist", page, pageSize).stream()
                         .map(e -> playlist(e.path("playlist")))
                         .collect(Collectors.toList());
+                break;
+            case ARTIST:
+                list = searchEntities(keyword, "artist", page, pageSize).stream()
+                        .map(e -> artist(e.path("artist")))
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toList());
+                break;
+            case ALBUM:
+                list = searchAlbums(keyword, page, pageSize);
+                break;
+            default:
+                throw unsupported("unsupported collection search type");
+        }
         return new NeteaseMusicClient.CollectionSearchResult(null, list);
     }
 
@@ -337,7 +357,10 @@ public class QishuiMusicClient {
     }
 
     public ArtistWorksView fetchArtistWorks(String id, String type, int page, int size) {
-        if (!"song".equals(type)) throw unsupported("artist album listing is not available");
+        if ("album".equals(type))
+            return new ArtistWorksView(id, MusicSource.QISHUI, "album", page, size, null,
+                    Collections.emptyList(), fetchArtistAlbums(id, page, size));
+        if (!"song".equals(type)) throw unsupported("unsupported artist works type");
         List<SongSearchItem> tracks = new ArrayList<>();
         for (JsonNode t : artistTracks(id, page, size).path("tracks")) {
             SongSearchItem song = track(t);
@@ -359,6 +382,186 @@ public class QishuiMusicClient {
                 return view;
             }
         return null;
+    }
+
+
+    /** Upstream /search/ has no "albums" group; aggregate distinct albums from real track hits. */
+    private List<SearchCollectionItem> searchAlbums(String keyword, int page, int size) {
+        int fetch = Math.min(100, Math.max(size * (page + 1), 40));
+        Map<String, SearchCollectionItem> unique = new LinkedHashMap<>();
+        for (JsonNode e : searchEntities(keyword, "track", 1, fetch)) {
+            JsonNode t = e.path("track");
+            JsonNode link = t.path("related_info").path("album_link");
+            String id = link.path("id").asText("");
+            if (id.isEmpty() || unique.containsKey(id)) continue;
+            SearchCollectionItem a = new SearchCollectionItem();
+            a.setSource(MusicSource.QISHUI);
+            a.setType(MusicSearchType.ALBUM);
+            a.setId(id);
+            a.setName(link.path("name").asText(""));
+            a.setCoverUrl(imageUrl(t.path("display_info").path("cover_url")));
+            JsonNode artists = t.path("related_info").path("artist_links");
+            if (artists.isArray() && artists.size() > 0) {
+                a.setArtist(artists.get(0).path("name").asText(""));
+                a.setArtistId(artists.get(0).path("id").asText(""));
+                List<String> ids = new ArrayList<>();
+                for (JsonNode ar : artists) ids.add(ar.path("id").asText());
+                a.setArtistIds(ids);
+            }
+            unique.put(id, a);
+        }
+        List<SearchCollectionItem> all = new ArrayList<>(unique.values());
+        int from = Math.min(all.size(), (page - 1) * size);
+        int to = Math.min(all.size(), from + size);
+        return new ArrayList<>(all.subList(from, to));
+    }
+
+    static SearchCollectionItem artist(JsonNode node) {
+        JsonNode b = node.path("base_info");
+        if (b.path("id").asText("").isEmpty()) return null;
+        SearchCollectionItem a = new SearchCollectionItem();
+        a.setSource(MusicSource.QISHUI);
+        a.setType(MusicSearchType.ARTIST);
+        a.setId(b.path("id").asText());
+        a.setName(b.path("name").asText());
+        a.setCoverUrl(imageUrl(b.path("url_avatar")));
+        a.setTrackCount(b.path("count_tracks").asInt(0));
+        return a;
+    }
+
+    public AlbumDetailView fetchAlbumDetail(String id, int page, int size) {
+        if (page < 1 || page > 1000 || size < 1 || size > 100)
+            throw new BusinessException(400, "Invalid Qishui pagination");
+        JsonNode data = post("/album/detail/", mapper.createObjectNode()
+                .put("album_id", id)
+                .put("count", size)
+                .put("cursor", Long.toString((long) (page - 1) * size)));
+        JsonNode info = data.path("album_info");
+        if (info.path("base_info").path("id").asText("").isEmpty()
+                || !data.path("tracks").isArray()) throw QishuiHttpClient.failure();
+        JsonNode b = info.path("base_info");
+        List<SongSearchItem> songs = new ArrayList<>();
+        for (JsonNode t : data.path("tracks")) {
+            SongSearchItem s = track(t);
+            if (s != null) songs.add(s);
+        }
+        String artist = null;
+        JsonNode artists = info.path("related_info").path("artists");
+        if (artists.isArray() && artists.size() > 0)
+            artist = artists.get(0).path("name").asText(null);
+        AlbumDetailView view = new AlbumDetailView();
+        view.setId(id);
+        view.setSource(MusicSource.QISHUI);
+        view.setName(b.path("name").asText());
+        view.setCoverUrl(imageUrl(info.path("display").path("url_cover")));
+        view.setDescription(b.path("intro").asText(null));
+        view.setArtist(artist);
+        view.setPublishTime(publishTime(b.path("release_date").asText("")));
+        view.setPage(page);
+        view.setPageSize(size);
+        view.setTotal(b.path("count_tracks").asInt(0));
+        view.setList(songs);
+        return view;
+    }
+
+    private List<AlbumSummaryItem> fetchArtistAlbums(String id, int page, int size) {
+        if (page < 1 || page > 1000 || size < 1 || size > 100)
+            throw new BusinessException(400, "Invalid Qishui pagination");
+        JsonNode data = post("/artist/albums/", mapper.createObjectNode()
+                .put("artist_id", id)
+                .put("count", size)
+                .put("cursor", Long.toString((long) (page - 1) * size)));
+        if (!data.path("albums").isArray()) throw QishuiHttpClient.failure();
+        List<AlbumSummaryItem> albums = new ArrayList<>();
+        for (JsonNode a : data.path("albums")) {
+            JsonNode b = a.path("base_info");
+            String albumId = b.path("id").asText("");
+            if (albumId.isEmpty()) continue;
+            AlbumSummaryItem item = new AlbumSummaryItem();
+            item.setId(albumId);
+            item.setSource(MusicSource.QISHUI);
+            item.setName(b.path("name").asText());
+            item.setCoverUrl(imageUrl(a.path("display").path("url_cover")));
+            item.setPublishTime(publishTime(b.path("release_date").asText("")));
+            item.setTrackCount(b.path("count_tracks").asInt(0));
+            item.setDescription(b.path("intro").asText(null));
+            List<String> names = new ArrayList<>(), ids = new ArrayList<>();
+            for (JsonNode ar : a.path("related_info").path("artists")) {
+                names.add(ar.path("name").asText());
+                ids.add(ar.path("id").asText());
+            }
+            item.setArtist(names.isEmpty() ? null : String.join(" / ", names));
+            item.setArtistIds(ids);
+            item.setArtistId(ids.isEmpty() ? null : ids.get(0));
+            albums.add(item);
+        }
+        return albums;
+    }
+
+    private static String publishTime(String raw) {
+        if (raw == null || raw.isEmpty()) return null;
+        try {
+            long sec = Long.parseLong(raw);
+            if (sec <= 0) return null;
+            // Upstream release_date is stored as Beijing midnight epoch seconds; UTC would
+            // shift every release to the previous day for Chinese users.
+            return Instant.ofEpochSecond(sec).atZone(ZoneOffset.ofHours(8)).toLocalDate().toString();
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    /**
+     * The car-head-unit Luna application has no official chart / recommendation / new-release
+     * endpoints (verified against the upstream, 100+ path and method combinations). These
+     * discovery views are built from real /search/ results and are explicitly labelled as
+     * search-based rather than official charts.
+     */
+    static final List<String> DISCOVERY_KEYWORDS =
+            Collections.unmodifiableList(Arrays.asList("热门", "华语流行", "新歌"));
+    private static final Set<String> DISCOVERY_IDS = new HashSet<>(DISCOVERY_KEYWORDS);
+    private static final String DISCOVERY_NOTE = "基于汽水音乐真实搜索，非官方榜单";
+
+    public List<ToplistItem> discoveryToplists() {
+        List<ToplistItem> list = new ArrayList<>();
+        for (String kw : DISCOVERY_KEYWORDS)
+            list.add(new ToplistItem(kw, MusicSource.QISHUI, "搜索发现 · " + kw,
+                    null, DISCOVERY_NOTE, null));
+        return list;
+    }
+
+    public ToplistDetailView discoveryToplistDetail(String keyword, int page, int size) {
+        if (!DISCOVERY_IDS.contains(keyword))
+            throw new BusinessException(400, "Unknown Qishui discovery id");
+        int s = Math.min(30, Math.max(1, size));
+        List<SongSearchItem> songs = search(keyword, page, s);
+        return new ToplistDetailView(keyword, MusicSource.QISHUI, "搜索发现 · " + keyword,
+                null, DISCOVERY_NOTE, null, page, s, null, songs);
+    }
+
+    public List<PlaylistItem> discoverPlaylists(String keyword, int limit) {
+        int size = Math.min(50, Math.max(1, limit));
+        return searchEntities(keyword, "playlist", 1, size).stream()
+                .map(e -> playlistItem(playlist(e.path("playlist"))))
+                .collect(Collectors.toList());
+    }
+
+    public List<PlaylistItem> discoveryPlaylists(int limit) {
+        int size = Math.min(50, Math.max(1, limit));
+        Map<String, PlaylistItem> unique = new LinkedHashMap<>();
+        for (String kw : DISCOVERY_KEYWORDS) {
+            if (unique.size() >= size) break;
+            for (PlaylistItem p : discoverPlaylists(kw, Math.min(20, size))) {
+                if (unique.size() >= size) break;
+                unique.putIfAbsent(p.getId(), p);
+            }
+        }
+        return new ArrayList<>(unique.values());
+    }
+
+    private static PlaylistItem playlistItem(SearchCollectionItem s) {
+        return new PlaylistItem(s.getId(), MusicSource.QISHUI, s.getName(), s.getCoverUrl(),
+                null, s.getCreatorName(), s.getTrackCount(), s.getPlayCount());
     }
 
     static String imageUrl(JsonNode node) {

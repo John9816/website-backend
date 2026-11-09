@@ -2,6 +2,7 @@ package com.example.website.module.music.application;
 
 import com.example.website.common.MusicBusinessException;
 import com.example.website.common.MusicErrorCode;
+import com.example.website.module.music.api.dto.AlbumDetailView;
 import com.example.website.module.music.api.dto.LyricInfo;
 import com.example.website.module.music.api.dto.MusicQuality;
 import com.example.website.module.music.api.dto.MusicSource;
@@ -70,12 +71,10 @@ class QishuiRoutingTests {
                 assertThrows(MusicBusinessException.class, () -> service.play("qs", "track", null))
                         .getErrorCode());
         verifyNoInteractions(legacy, qq, wy, kw);
-        assertEquals(
-                MusicErrorCode.UNSUPPORTED_OPERATION,
-                assertThrows(
-                                MusicBusinessException.class,
-                                () -> service.albumDetail("qs", "album", 1, 10))
-                        .getErrorCode());
+        AlbumDetailView album = new AlbumDetailView();
+        when(qs.fetchAlbumDetail("album", 1, 10)).thenReturn(album);
+        assertSame(album, service.albumDetail("qs", "album", 1, 10));
+        verify(qs).fetchAlbumDetail("album", 1, 10);
     }
 
     @Test

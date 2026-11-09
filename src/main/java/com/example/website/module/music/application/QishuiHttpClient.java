@@ -86,7 +86,7 @@ public class QishuiHttpClient {
                             mapper.writeValueAsBytes(body)),
                     headers);
         } catch (IOException ex) {
-            throw failure();
+            throw failure("serialize_error");
         }
     }
 
@@ -123,7 +123,7 @@ public class QishuiHttpClient {
             MusicRequestBudget.ensureNotCancelled();
             if (!response.isSuccessful() || response.body() == null) {
                 log.warn("Qishui HTTP failed path={} status={}", url.build().encodedPath(), response.code());
-                throw failure();
+                throw failure("http_status=" + response.code());
             }
             okio.BufferedSource source = response.body().source();
             source.request(MAX_RESPONSE_BYTES + 1L);
@@ -137,7 +137,7 @@ public class QishuiHttpClient {
             throw new MusicBusinessException(MusicErrorCode.UPSTREAM_TIMEOUT);
         } catch (IOException | IllegalArgumentException ex) {
             MusicRequestBudget.ensureNotCancelled();
-            throw failure();
+            throw failure("transport_error");
         }
     }
 
@@ -151,15 +151,21 @@ public class QishuiHttpClient {
 
     private static void checkCode(JsonNode node, String field, String location) {
         if (node.has(field) && node.path(field).asLong(-1) != 0) {
+            long code = node.path(field).asLong(-1);
             // Only numeric status codes; never log upstream bodies, URLs, headers or credentials.
-            log.warn("Qishui rejected response location={} field={} code={}", location, field, node.path(field).asLong(-1));
-            throw failure();
+            log.warn("Qishui rejected response location={} field={} code={}", location, field, code);
+            throw failure("business_code=" + code + "@" + location + "." + field);
         }
     }
 
+    /** 脱敏失败原因：只允许标签与数字，禁止放入上游 body、URL、响应头或凭据。 */
     static MusicBusinessException failure() {
+        return failure("request_failed");
+    }
+
+    static MusicBusinessException failure(String reason) {
         return new MusicBusinessException(
-                MusicErrorCode.UPSTREAM_SEARCH_FAILED, "Qishui upstream request failed");
+                MusicErrorCode.UPSTREAM_SEARCH_FAILED, "Qishui upstream " + reason);
     }
 
     static final class Result {

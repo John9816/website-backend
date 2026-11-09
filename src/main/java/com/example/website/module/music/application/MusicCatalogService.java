@@ -54,7 +54,8 @@ public class MusicCatalogService {
                     list = kuwo.fetchToplists();
                     break;
                 case QISHUI:
-                    throw QishuiMusicClient.unsupported("operation is not available in this adapter");
+                    list = qishui.discoveryToplists();
+                    break;
                 default:
                     throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
             }
@@ -84,7 +85,8 @@ public class MusicCatalogService {
                     view = kuwo.fetchToplistDetail(sid, p, s);
                     break;
                 case QISHUI:
-                    throw QishuiMusicClient.unsupported("operation is not available in this adapter");
+                    view = qishui.discoveryToplistDetail(sid, p, s);
+                    break;
                 default:
                     throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
             }
@@ -127,8 +129,14 @@ public class MusicCatalogService {
                     return view;
                 });
             }
-            case QISHUI:
-                throw QishuiMusicClient.unsupported("operation is not available in this adapter");
+            case QISHUI: {
+                String cat = (category == null || category.trim().isEmpty()) ? "热门" : category.trim();
+                String ord = normaliseOrder(order);
+                String key = "music:playlist:" + source.getValue() + ":" + cat + ":" + ord + ":" + p + ":" + s;
+                return cached(key, PlaylistListView.class, PLAYLIST_LIST_TTL_SEC, () ->
+                        new PlaylistListView(source, cat, ord, p, s, null,
+                                qishui.discoverPlaylists(cat, s)));
+            }
             default:
                 throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
         }
@@ -151,7 +159,9 @@ public class MusicCatalogService {
                     view = kuwo.fetchRecommendedPlaylists(size);
                     break;
                 case QISHUI:
-                    throw QishuiMusicClient.unsupported("operation is not available in this adapter");
+                    view = new PlaylistListView(source, null, "hot", 1, size, null,
+                            qishui.discoveryPlaylists(size));
+                    break;
                 default:
                     throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
             }
@@ -202,7 +212,8 @@ public class MusicCatalogService {
                 id = "17";
                 break;
             case QISHUI:
-                throw QishuiMusicClient.unsupported("operation is not available in this adapter");
+                id = "新歌";
+                break;
             default:
                 throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
         }
@@ -246,7 +257,8 @@ public class MusicCatalogService {
                     view = kuwo.fetchAlbumDetail(sid, p, s);
                     break;
                 case QISHUI:
-                    throw QishuiMusicClient.unsupported("operation is not available in this adapter");
+                    view = qishui.fetchAlbumDetail(sid, p, s);
+                    break;
                 default:
                     throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported source");
             }

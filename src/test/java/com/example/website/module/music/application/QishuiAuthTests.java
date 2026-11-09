@@ -187,13 +187,13 @@ class QishuiAuthTests {
                                         assertEquals("1128", r.url().queryParameter("aid"));
                                         return QishuiClientTests.response(
                                                         chain,
-                                                        "{\"data\":{\"error_code\":0,\"ticket\":\"ticket-test\",\"expires_time\":4102444800}}")
+                                                        "{\"data\":{\"error_code\":0,\"expires_time\":4102444800}}")
                                                 .newBuilder()
                                                 .header(
                                                         "bd-ticket-guard-server-data",
                                                         Base64.getEncoder()
                                                                 .encodeToString(
-                                                                        "{\"client_cert\":\"cert-test\",\"ts_sign\":\"sign-test\"}"
+                                                                        "{\"client_cert\":\"cert-test\",\"ticket\":\"ticket-test\",\"ts_sign\":\"sign-test\"}"
                                                                                 .getBytes(
                                                                                         StandardCharsets
                                                                                                 .UTF_8)))
@@ -265,13 +265,13 @@ class QishuiAuthTests {
                                             assertNotNull(r.header("bd-ticket-guard-client-csr"));
                                             return QishuiClientTests.response(
                                                             chain,
-                                                            "{\"data\":{\"error_code\":0,\"ticket\":\"new-ticket\"}}")
+                                                            "{\"data\":{\"error_code\":0}}")
                                                     .newBuilder()
                                                     .header(
                                                             "bd-ticket-guard-server-data",
                                                             Base64.getEncoder()
                                                                     .encodeToString(
-                                                                            "{\"client_cert\":\"new-cert\",\"ts_sign\":\"new-sign\"}"
+                                                                            "{\"client_cert\":\"new-cert\",\"ticket\":\"new-ticket\",\"ts_sign\":\"new-sign\"}"
                                                                                     .getBytes(
                                                                                             StandardCharsets
                                                                                                     .UTF_8)))

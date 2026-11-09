@@ -253,7 +253,7 @@ bd-ticket-guard-client-csr: <base64(UTF8(PEM CSR))>
 access_code=<access_code>&open_id=<open_id>
 ```
 
-CSR 为 P-256 EC 公钥的 PKCS#10 请求，subject `CN=bd-ticket-guard`，签名算法 SHA256withECDSA。响应正文读取 `data.error_code`、`data.ticket`；响应头 `bd-ticket-guard-server-data` 是 base64 JSON，含 `client_cert` 与 `ts_sign`。证书若为 PEM，保存/发送前将整段 PEM UTF-8 base64 编码。到期时间取前一步 access code 响应，不能从 ticket 响应猜测。
+CSR 为 P-256 EC 公钥的 PKCS#10 请求，subject `CN=bd-ticket-guard`，签名算法 SHA256withECDSA。响应正文读取 `data.error_code`；响应头 `bd-ticket-guard-server-data` 是 base64 JSON，含 **`ticket`**、`client_cert` 与 `ts_sign`。`ticket` 不在正文 `data` 中；2026-11-09 的真人扫码联调暴露并修正了此前文档及实现对该字段位置的误判。证书若为 PEM，保存/发送前将整段 PEM UTF-8 base64 编码。到期时间取前一步 access code 响应，不能从 ticket 响应猜测。
 
 ### 4.4 个人资料与签名
 

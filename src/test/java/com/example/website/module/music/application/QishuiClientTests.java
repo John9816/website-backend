@@ -158,6 +158,28 @@ class QishuiClientTests {
     }
 
     @Test
+    void parserReturnsSameOriginRelativeStreamUrlWhenNoPublicBaseUrlIsConfigured() {
+        QishuiStreamTicket tickets = new QishuiStreamTicket("test-signing-key".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8));
+        QishuiParseClient parser = new QishuiParseClient(tickets, "");
+        PlayInfo info = parser.play("track-1", MusicQuality.FLAC);
+
+        assertTrue(info.getPlayUrl().startsWith("/api/public/music/qishui/stream?ticket="));
+        // No absolute origin: playback resolves against whatever origin serves the page,
+        // so a separate api.* subdomain can never be blocked before the request is sent.
+        assertFalse(info.getPlayUrl().contains("http"));
+        assertFalse(info.getPlayUrl().contains("751152.xyz"));
+        assertFalse(info.getPlayUrl().contains("tunefree.sayqz.com"));
+        assertFalse(info.getPlayUrl().contains("spadeA"));
+
+        String ticket = info.getPlayUrl().substring(info.getPlayUrl().indexOf("ticket=") + 7);
+        QishuiStreamTicket.Payload payload = tickets.verify(java.net.URLDecoder.decode(
+                ticket, java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals("track-1", payload.getTrackId());
+        assertEquals(MusicQuality.FLAC.getValue(), payload.getQuality());
+    }
+
+    @Test
     void repeatedPaginationCursorFailsInsteadOfDuplicatingResults() {
         OkHttpClient http =
                 new OkHttpClient.Builder()

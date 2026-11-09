@@ -111,8 +111,11 @@ app:
       # Optional override. When empty, the v1 access token is obtained automatically from the
       # account/password already stored in sys_config (music.tunefree.*).
       parse-access-token: ${QISHUI_PARSE_ACCESS_TOKEN:}
-      # Public origin used to build the local signed audio-stream URL handed to <audio>.
-      public-base-url: ${QISHUI_PUBLIC_BASE_URL:https://api.751152.xyz}
+      # Optional public origin for the signed audio-stream URL handed to <audio>.
+      # Empty (default) -> a same-origin relative path; the browser resolves it against the
+      # page origin, avoiding any cross-subdomain dependency for media playback.
+      # Set QISHUI_PUBLIC_BASE_URL only when the frontend and API live on different origins.
+      public-base-url: ${QISHUI_PUBLIC_BASE_URL:}
     chksz:
       enabled: ${CHKSZ_ENABLED:true}
       base-url: ${CHKSZ_BASE_URL:https://api.chksz.com}

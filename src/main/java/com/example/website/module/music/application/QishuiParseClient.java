@@ -28,7 +28,7 @@ public class QishuiParseClient {
 
     public QishuiParseClient(
             QishuiStreamTicket tickets,
-            @Value("${app.music.qishui.public-base-url:https://api.751152.xyz}") String publicBaseUrl) {
+            @Value("${app.music.qishui.public-base-url:}") String publicBaseUrl) {
         this.tickets = tickets;
         String base = publicBaseUrl == null ? "" : publicBaseUrl.trim();
         while (base.endsWith("/")) base = base.substring(0, base.length() - 1);
@@ -38,8 +38,14 @@ public class QishuiParseClient {
     public PlayInfo play(String id, MusicQuality quality) {
         String q = quality == null ? MusicQuality.K320.getValue() : quality.getValue();
         String ticket = tickets.issue(id, q);
-        String url = publicBaseUrl + STREAM_PATH + "?ticket="
+        String stream = STREAM_PATH + "?ticket="
                 + URLEncoder.encode(ticket, StandardCharsets.UTF_8);
+        // An empty public base URL yields a same-origin relative path. The browser resolves it
+        // against the page origin, so playback never depends on a separate subdomain (which can
+        // be blocked by DNS, proxies, extensions or privacy policies before a request is even
+        // sent -> <audio> reports MEDIA_ERR_SRC_NOT_SUPPORTED with a misleading "expired" hint).
+        // Set QISHUI_PUBLIC_BASE_URL only when the frontend and API are on different origins.
+        String url = publicBaseUrl.isEmpty() ? stream : publicBaseUrl + stream;
 
         PlayInfo p = new PlayInfo();
         p.setSource(MusicSource.QISHUI);

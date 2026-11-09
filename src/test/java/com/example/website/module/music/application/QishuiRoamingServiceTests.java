@@ -26,6 +26,7 @@ class QishuiRoamingServiceTests {
         ctor.setAccessible(true);
         QishuiCredentialStore.StoredCredential value = ctor.newInstance(generation, c);
         when(store.load(user)).thenReturn(Optional.of(value));
+        when(store.isCurrent(eq(user),anyString())).thenAnswer(inv -> generation.equals(inv.getArgument(1)));
         return value;
     }
     private QishuiFeedClient.Page page(boolean more, String... ids) {
@@ -60,7 +61,9 @@ class QishuiRoamingServiceTests {
     @Test void bindingChangedDuringRequestDiscardsTheResponse() throws Exception {
         bind(7, "b1");
         when(feed.songs(any(), anyString(), anyLong(), anyLong(), any())).thenAnswer(inv -> {
-            when(store.load(7L)).thenReturn(Optional.empty()); return page(true,"private");
+            when(store.load(7L)).thenReturn(Optional.empty());
+            when(store.isCurrent(eq(7L),anyString())).thenReturn(false);
+            return page(true,"private");
         });
         assertThrows(BusinessException.class, () -> service.start(7L, null));
     }
@@ -110,6 +113,51 @@ class QishuiRoamingServiceTests {
         QishuiRoamingPageView first = service.start(7L,null);
         service.close(7L,first.getSessionId());
         assertThrows(BusinessException.class, () -> service.next(7L,first.getSessionId(),1,null));
+    }
+
+    @Test void browsingModesThenStartingRoamingReusesOnlyTheSameBindingModes() throws Exception {
+        QishuiCredential first = bind(7,"b1").getCredential();
+        when(feed.modes(first)).thenReturn(Collections.singletonList(new QishuiFeedModeView("2","运动","场景",null,null)));
+        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any())).thenReturn(page(true,"a"));
+        service.modes(7L).get(0).setName("changed by caller");
+        assertEquals("运动",service.modes(7L).get(0).getName());
+        service.start(7L,"2");
+        verify(feed,times(1)).modes(first);
+        QishuiCredential rebound = bind(7,"b2").getCredential();
+        when(feed.modes(rebound)).thenReturn(Collections.singletonList(new QishuiFeedModeView("4","深夜","场景",null,null)));
+        assertEquals("4",service.modes(7L).get(0).getId());
+        verify(feed).modes(rebound);
+    }
+
+    @Test void modeCacheExpiresAndCannotHideRevokedBindings() throws Exception {
+        QishuiCredential c = bind(7,"b1").getCredential();
+        java.util.concurrent.atomic.AtomicLong tick = new java.util.concurrent.atomic.AtomicLong();
+        QishuiRoamingService timed = new QishuiRoamingService(feed,store,Clock.fixed(now,ZoneOffset.UTC),tick::get);
+        when(feed.modes(c)).thenReturn(
+                Collections.singletonList(new QishuiFeedModeView("2","运动","场景",null,null)),
+                Collections.singletonList(new QishuiFeedModeView("4","深夜","场景",null,null)));
+        assertEquals("2",timed.modes(7L).get(0).getId());
+        tick.set(TimeUnit.SECONDS.toNanos(299));
+        assertEquals("2",timed.modes(7L).get(0).getId());
+        tick.set(TimeUnit.SECONDS.toNanos(301));
+        assertEquals("4",timed.modes(7L).get(0).getId());
+        verify(feed,times(2)).modes(c);
+        when(store.isCurrent(7L,"b1")).thenReturn(false);
+        assertEquals(409,assertThrows(BusinessException.class,() -> timed.modes(7L)).getCode());
+    }
+
+    @Test void eachRoamingPageDecryptsOnceButReplayStillChecksLiveBinding() throws Exception {
+        bind(7,"b1");
+        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any())).thenReturn(page(true,"a"),page(true,"b"));
+        QishuiRoamingPageView first = service.start(7L,null);
+        clearInvocations(store);
+        assertEquals("b",service.next(7L,first.getSessionId(),1,null).getList().get(0).getId());
+        verify(store,times(1)).load(7L);
+        verify(store,atLeastOnce()).isCurrent(7L,"b1");
+        // Simulate a stale ORM snapshot while the lightweight database check sees revocation.
+        when(store.isCurrent(7L,"b1")).thenReturn(false);
+        assertEquals(409,assertThrows(BusinessException.class,
+                () -> service.next(7L,first.getSessionId(),1,null)).getCode());
     }
 
     @Test void failedModeSwitchDoesNotChangeTheCurrentModeOrConsumeSequence() throws Exception {

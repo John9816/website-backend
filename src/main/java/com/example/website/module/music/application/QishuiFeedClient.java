@@ -1,26 +1,59 @@
 package com.example.website.module.music.application;
 
 import com.example.website.common.BusinessException;
+import com.example.website.common.MusicBusinessException;
+import com.example.website.common.MusicErrorCode;
 import com.example.website.module.music.api.dto.*;
+import com.example.website.shared.concurrent.PerformanceSingleFlight;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import lombok.RequiredArgsConstructor;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.Ticker;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 /** TuneFreeNext 4.3.5 feed protocol. Only catalog tokens and server-owned account identities. */
 @Component
-@RequiredArgsConstructor
 public class QishuiFeedClient {
     static final String RECOMMENDED = "recommended";
     private final QishuiMusicClient catalog;
     private final ObjectMapper mapper;
+    private final Cache<String, Page> discoveryCache;
+    private final PerformanceSingleFlight discoveryFlights = new PerformanceSingleFlight();
+
+    @Autowired
+    public QishuiFeedClient(QishuiMusicClient catalog, ObjectMapper mapper) {
+        this(catalog, mapper, Ticker.systemTicker());
+    }
+
+    QishuiFeedClient(QishuiMusicClient catalog, ObjectMapper mapper, Ticker ticker) {
+        this.catalog = catalog; this.mapper = mapper;
+        this.discoveryCache = Caffeine.newBuilder().maximumSize(1)
+                .expireAfterWrite(30, TimeUnit.SECONDS).ticker(ticker).build();
+    }
 
     public QishuiDiscoveryView discovery() {
-        Page page = parse(catalog.postFeed("/feed/song-tab/", body(12, RECOMMENDED, 1, 1, null), null));
-        return new QishuiDiscoveryView(MusicSource.QISHUI,
-                new ArrayList<>(page.songs.subList(0, Math.min(12, page.songs.size()))));
+        try (MusicRequestBudget.Scope ignored = MusicRequestBudget.start(8, TimeUnit.SECONDS)) {
+            MusicRequestBudget.ensureRemaining();
+            Page page = discoveryCache.getIfPresent(RECOMMENDED);
+            if (page == null) page = discoveryFlights.execute(RECOMMENDED, () -> {
+                Page ready = discoveryCache.getIfPresent(RECOMMENDED);
+                if (ready != null) return ready;
+                Page parsed = parse(catalog.postFeed("/feed/song-tab/", body(12, RECOMMENDED, 1, 1, null), null));
+                Page loaded = new Page(new ArrayList<>(parsed.songs.subList(0, Math.min(12, parsed.songs.size()))), parsed.hasMore);
+                MusicRequestBudget.ensureRemaining();
+                discoveryCache.put(RECOMMENDED, loaded);
+                return loaded;
+            }, MusicRequestBudget.remainingNanos(), TimeUnit.NANOSECONDS);
+            return new QishuiDiscoveryView(MusicSource.QISHUI,
+                    copySongs(page.songs.subList(0, Math.min(12, page.songs.size()))));
+        } catch (PerformanceSingleFlight.WaitTimeoutException ex) {
+            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_TIMEOUT);
+        }
     }
 
     List<QishuiFeedModeView> modes(QishuiCredential credential) {
@@ -88,6 +121,17 @@ public class QishuiFeedClient {
             if (song != null) songs.putIfAbsent(song.getId(), song);
         }
         return new Page(new ArrayList<>(songs.values()), data.path("has_more").booleanValue());
+    }
+
+    static List<SongSearchItem> copySongs(List<SongSearchItem> originals) {
+        List<SongSearchItem> songs = new ArrayList<>();
+        for (SongSearchItem s : originals) {
+            songs.add(new SongSearchItem(s.getId(), s.getSource(), s.getName(), s.getArtist(),
+                    s.getArtistId(), s.getArtistIds() == null ? null : new ArrayList<>(s.getArtistIds()),
+                    s.getAlbum(), s.getAlbumId(), s.getCoverUrl(), s.getDurationMs(), s.getDurationSec(),
+                    s.getAvailableQualities() == null ? null : new ArrayList<>(s.getAvailableQualities())));
+        }
+        return songs;
     }
 
     static final class Page {

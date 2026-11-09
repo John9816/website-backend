@@ -14,6 +14,17 @@
 
 安装包说明个人登录信息用于音乐漫游，播放仍沿用原解析与会员规则。**不能用个人 `access_code` 当作曲库 token，也不能用旧版 UMS/tf-pay token 当作 TuneFree v1 Bearer。**
 
+**汽水扫码绑定只作为个人音乐漫游的前置条件。** 账户查询、刷新和解绑是这份绑定的管理接口。各业务的依赖如下：
+
+| 业务 | 需要汽水扫码绑定 | 其它要求 |
+| --- | --- | --- |
+| 搜索、歌单、榜单、专辑、歌手、歌词 | 否 | 本站登录；后端获取曲库 client token |
+| 发现推荐 `/qishui/discovery` | 否 | 本站登录；匿名 feed |
+| 播放 `/music/play` | 否 | 本站登录及有效会员；服务器独立 TuneFree v1 账号/解析 token |
+| 漫游模式、创建漫游会话、续页 | 是 | 当前网站用户的有效个人绑定 |
+
+普通曲库和播放链路不读取 `QishuiCredentialStore`。没有个人绑定、个人授权过期或未配置扫码应用参数，都不构成普通曲库/播放的前置拒绝条件；播放所需的独立 v1 配置仍必须可用。
+
 当前能力包括歌曲/歌单/歌手搜索、歌曲结果聚合的专辑搜索、歌单详情/按 ID 导入、分类/推荐歌单、专辑详情、歌手歌曲/专辑/简要资料、LRC + YRC、个人扫码绑定、发现推荐及有状态音乐漫游。第6节区分直接上游接口与搜索派生能力；歌单第二页现在会传递正确的首游标。
 
 **榜单边界：**所检查的 4.3.5 发现页代码中，榜单集合为空，尚未恢复汽水官方排行榜协议。本站现有榜单与新歌端点返回标明“搜索发现／非官方榜单”的兼容结果，不能视为官方排名。分类歌单也是分类词搜索，不存在已验证的分类 ID 树。
@@ -45,7 +56,10 @@ REA 用于文件身份和布局确认。以下方法恢复来自独立的 LLDB �
 | `QsGuard.headers / sign / csr` | `0xddd3c / 0xddfbc / 0x1057f4` | 签名与 CSR |
 | `QsClient._loadToken / commonParams / post` | `0x1c66a8 / 0x106498 / 0xa063d4` | 曲库 token 与通用请求 |
 | `QsCatalogSource._search / getLyrics` | `0xa06780 / 0xa051e4` | 搜索/媒体元数据 |
+| `QsCatalogSource.searchSuggestions` / suggestion closure | `0xa07654 / 0xa0785c` | 独立 `/search/sug/`，读取 `sugs[].suggestion` |
 | `QsCatalogSource.getPlaylistDetailPage` | `0xa15624` | 歌单 ID、owner、type 与分页 |
+| `QsCatalogSource.resolvePlaylistShareLink / _parseShareLink` | `0x48d6f8 / 0x48da00` | 从响应 Location/HTML 中解析分享歌单目标 |
+| `QsCatalogSource._sharePlaylist / _parseSharePlaylistPage / _routerData` | `0xa1623c / 0xa16580 / 0xa174e0` | 官方分享页与 `_ROUTER_DATA` 歌单数据；本站尚未接入 |
 | `QsCatalogSource.getArtistDetailPage` | `0xa0fac0` | 歌手歌曲 |
 | `QsCatalogSource.getDiscoveryFeed` / track closure | `0xa078c0 / 0xa07b9c` | `/feed/song-tab/`，匿名12首；热门歌单走搜索；榜单集合为空 |
 | `QsCatalogSource.getCategoryPlaylists` | `0xa0fa7c` | 分类字符串直接转歌单搜索 |
@@ -239,7 +253,7 @@ data.feed_mode_block[].feed_mode[].entity.feed_mode
   scene_mode.scene_mode_id / scene_mode.sub_queue_type
 ```
 
-后端从 `text`、块标题、`url_info`、`cutover_toast` 提供名称/分组/图标/提示。每次从接口读取模式集合，实测45个场景；另加本地 `recommended`（为你推荐）。前端把模式 ID 当字符串，不能写死场景清单。`sub_queue_type` 不属于当前本站控制参数。
+后端从 `text`、块标题、`url_info`、`cutover_toast` 提供名称/分组/图标/提示。模式集合来自上游，并按网站用户和绑定版本缓存5分钟，实测45个场景；另加本地 `recommended`（为你推荐）。前端把模式 ID 当字符串，不能写死场景清单。`sub_queue_type` 不属于当前本站控制参数。
 
 **歌单发现与榜单**：目标 `getCategoryPlaylists` 调用分类词歌单搜索；目标发现页热门歌单为 `searchPlaylists("热门", limit:10)`。本站 `/playlist/recommend` 兼容实现按“热门、华语流行、新歌”搜索并按复合 ID 合并。`order` 仅沿用本站响应字段，上游没有已验证的分类排序参数。官方榜单没有恢复，不能构造 `/toplist/` 上游路径。
 
@@ -439,7 +453,7 @@ POST /api/v1/music/qishui/roaming/sessions/<sessionId>/next?sequence=2&modeId=2
 DELETE /api/v1/music/qishui/roaming/sessions/<sessionId>
 ```
 
-发现页响应 `data={"source":"qishui","list":[SongSearchItem...]}`。模式响应示例（图标等值省略）：
+发现页响应 `data={"source":"qishui","list":[SongSearchItem...]}`，服务器共享匿名快照30秒；短时间重复读取可能返回同一批歌曲。个人漫游歌曲不使用这份缓存。模式响应示例（图标等值省略）：
 
 ```json
 {"code":0,"message":"ok","data":[
@@ -471,6 +485,7 @@ DELETE /api/v1/music/qishui/roaming/sessions/<sessionId>
 - 绑定有效性在每次调用、重试读取及上游返回后检查。刷新/重新绑定改变 bindingId，解绑或到期后拒绝旧会话；跨网站用户不可续用 sessionId。
 - 每个网站用户只保留一个漫游会话，成功创建才替换旧会话；每秒最多创建一次。最多1000个会话，绝对期限为30分钟与个人授权期限的较早者，续页不延长。使用进程内会话及分条操作锁，冲突立即返回1013，不排队重复取歌。
 - 所有新 feed 端点及其控制器错误响应带 `Cache-Control: no-store`。个人结果不进入全站 MusicCache；会话失效、进程重启或容量淘汰后重新创建。
+- 模式清单按 `websiteUserId + bindingId` 缓存5分钟，浏览模式后开始漫游可复用；命中缓存也查询数据库绑定版本并检查授权期限。漫游每次请求只读取/解密一次完整凭据，后续边界校验通过数据库标量查询完成，不缓存撤销结果。
 
 ### 6.2 完整目录能力与来源
 
@@ -536,11 +551,11 @@ feed 错误不附上游原文、签名 URL、响应头或凭据。
 
 二维码、漫游会话及操作锁在内存中。多实例部署必须把同一用户的授权创建、轮询、刷新、解绑、漫游固定到同一实例；数据库CAS只保护写回，不能代替跨节点授权会话取消。若需要无粘性的水平扩容，应先引入共享会话和分布式互斥。漫游新增能力复用已有加密绑定表，无新数据库迁移。
 
-公开目录结果使用全站 MusicCache；个人资料和漫游结果不进入该缓存。漫游会话按 `websiteUserId + bindingId` 校验归属，服务器自行读取上游 user_id。本次没有将本机已有授权导入网站数据库，也没有部署服务器。
+公开目录结果使用全站 MusicCache；汽水客户端另有公开媒体详情缓存与匿名发现快照，容量和期限见第9节。个人资料和漫游歌曲不进入这些共享缓存。漫游会话及模式缓存按 `websiteUserId + bindingId` 校验归属，服务器自行读取上游 user_id。本次没有将本机已有授权导入网站数据库，也没有部署服务器。
 
 ## 8. 验证与限制
 
-2026-11-09 本轮执行 `mvn -q clean verify`：**85个测试套件、500项测试，失败/错误/跳过均为0**。测试使用Java 21运行、按项目Java 8目标编译。完整测试日志保留在本机 `/tmp/qs-feed-clean-verify.log`；接口契约逐项比较确认既有路由、DTO及实体没有修改或删除。
+2026-11-09 发现页与漫游接入阶段执行 `mvn -q clean verify`：85个测试套件、500项测试，失败/错误/跳过均为0；日志为 `/tmp/qs-feed-clean-verify.log`。随后本轮性能优化最终执行同一命令：**86个测试套件、512项测试，失败/错误/跳过均为0**；日志为 `/tmp/qs-perf-clean-verify.log`。测试使用Java 21运行、按项目Java 8目标编译。接口契约逐项比较确认性能优化没有改变既有路由、DTO及实体。
 
 自动化覆盖：既有授权加密/Guard/绑定代次、目录搜索/分页/歌词、远端加入的专辑/歌手/CENC/音频票据/缓存；本轮新增歌单第二页、真实 feed 卡片层级、绑定身份与catalog token、场景计数、未知模式、用户隔离、序号幂等、失败回滚、返回对象隔离、请求途中到期、账号过期重试、有限去重补取、并发冲突和控制器登录/错误/no-store。API合同新增5条路由、3个DTO，数据库实体仍34个。
 
@@ -549,3 +564,50 @@ feed 错误不附上游原文、签名 URL、响应头或凭据。
 真实网络验证与自动化测试分开记录：本轮 Java 已验证发现推荐与模式；此前独立 HTTP 已验证个人 feed 与场景续取。本轮 Java 个人探测因本地授权已过期而跳过，未重新扫码或刷新，未再做带会员权限的完整播放验证。自动化成功不补齐这些实测缺口。
 
 用户最初给出的 mhub 项目（`https://github.com/jizizr/mhub`，参考提交 `8cda3d5dcd940677b86e060832baca36b2e25c8f` 的 `src/music/soda.rs`）另有匿名 `api.qishui.com/luna/search/track` 和 `beta-luna.douyin.com/luna/h5/seo_track` 路线。本次交叉探测成功，但所测 H5 播放器是试听；后端主适配没有偷偷切换到这条路线，没有搬入其下载/解密实现。
+
+## 9. 性能优化与测量（2026-11-09）
+
+沿用搜索/目录端点已有缓存和相同请求合并。本轮补上三处重复读取：
+
+| 数据 | 缓存范围与期限 | 并发和失效处理 |
+| --- | --- | --- |
+| `/media/mget/` 歌曲资料和歌词原始实体 | 按歌曲ID，5分钟；按序列化字节估算限制16MiB权重（不是JVM总堆上限） | 同ID冷请求合并；确认歌曲身份后才缓存；歌词解析失败移除对应快照 |
+| 匿名发现推荐 | 单份公共快照，30秒 | 并发刷新只加载一次；返回独立DTO，调用者不能修改缓存 |
+| 个人漫游模式 | 每个网站用户＋绑定版本，5分钟，最多1000项 | 同用户操作锁合并访问；模式浏览与场景启动复用；重新绑定不可复用旧版本 |
+
+缓存命中不延长期限，失败/超时不写入成功缓存。公开数据并发等待仍遵守调用者的8秒总预算；等待者超时不会取消其他调用者正在使用的共享请求。个人漫游歌曲不做跨用户或跨序号的缓存，仅保留已有的最近一次序号重试结果。
+
+每次漫游原本多次加载整行密文并解密；现在只加载/解密一次，后续通过 `select bindingId ... where userId=...` 读取最新数据库版本。没有减少绑定验证次数或缓存“仍有效”的结果，避免性能优化导致解绑延迟生效。
+
+同机直接调用生产Java客户端的真实网络小样本，统计网络拦截器中的对应路径调用次数：
+
+| 场景 | 优化前 | 优化后 |
+| --- | --- | --- |
+| 连续读取发现页4次 | 4次上游调用 | 1次上游调用 |
+| 发现页后续3次客户端调用耗时 | 686 / 716 / 811 ms | 0.76 / 0.06 / 0.03 ms |
+| 同一歌曲两轮“资料＋歌词” | 4次 `/media/mget/` | 1次 `/media/mget/` |
+| 第二轮“资料＋歌词”客户端耗时 | 278 ms | 1.75 ms |
+
+这组数字衡量本机Java方法和上游请求，不含本站HTTP、鉴权、数据库或前端渲染，也不是生产压测的P95承诺；冷启动仍需访问上游。原始脱敏统计保存在本机 `/tmp/qs-perf-before.json`、`/tmp/qs-perf-after.json`。个人授权仍过期，本轮不进行个人上游性能实测；模式缓存、隔离、撤销、过期及重复解密次数通过自动化测试验证。
+
+## 10. 与 TuneFreeNext 黑源的剩余差异（2026-11-09）
+
+范围仅为本机 TuneFreeNext 4.3.5（9）的汽水来源，不是整个应用或其它音乐源的接口清单。本轮重新计算 AOT SHA-256，与第2节一致；复用此前运行时方法/常量池映射，并通过 LLDB 离线反汇编核对具体调用。没有把方法名或字符串命中直接当作已实测功能。
+
+双方的普通歌曲/歌单搜索都使用 Luna `/search/` 和曲库 `client_token`；普通歌单详情已有 `/playlist/detail/`。TuneFreeNext 的分类歌单调用分类词搜索，发现页热门歌单调用 `searchPlaylists("热门", limit:10)`；本站推荐歌单使用第3.4节的三个搜索词，属于同类派生方式，结果不承诺相同。扫码账户用于个人漫游和绑定管理，播放另走 TuneFree v1 解析。
+
+**不能把 TuneFreeNext 的所有歌单详情概括为只走 Luna JSON 接口。** `getPlaylistDetailPage` 还存在 `_sharePlaylist` 分支，尝试读取官方分享网页的数据；该分支不可用时再进入 Luna 分页逻辑。本站目前没有这条 H5 分支。
+
+已确认、尚未在本站接入的能力如下，其中分享链接解析和分享页详情属于同一条导入链路：
+
+| 能力 | TuneFreeNext 的实现证据 | 本站状态 |
+| --- | --- | --- |
+| 搜索输入建议 | `searchSuggestions` 调用 `POST /search/sug/`，body 为 `q` 加通用参数，读取 `data.sugs[].suggestion` | 缺少专用客户端方法和对前端的建议接口；普通搜索已支持 |
+| 汽水分享歌单链接解析 | `resolvePlaylistShareLink` 读取响应 `Location`/HTML，`_parseShareLink` 提取可信站点目标及 `playlist_id`，含锚点和嵌套 scheme 处理 | URL 导入只识别网易/QQ，未覆盖汽水分享链接；汽水复合 ID 收藏/导入已支持 |
+| 分享页歌单详情 | 请求 `https://music.douyin.com/qishui/share/playlist?playlist_id=...`，解析 `_ROUTER_DATA.loaderData.playlist_page` 中的 `playlistInfo` 和 `medias` | 缺少 H5 数据解析、对应歌曲字段转换及分页处理；现有实现要求 Luna 复合 ID |
+
+搜索建议已使用本站生产 `QishuiMusicClient.post` 做匿名真实网络探测：输入“周杰”，`sugs` 为数组，20条且20条有非空 `suggestion`。仅输出结构和计数，未打印或提交 token。脱敏日志在 `/tmp/tunefreenext-black-20261108/qs-suggestions-probe.log`。这验证了上游可用性，不表示本站已经开放该接口。
+
+分享链路的依据为目标版本静态调用路径，本轮没有拿真人分享短链重新做完整导入实测，也不承诺分享页包含全部歌曲。对应离线证据为 `qs-sharelink-asm.txt`、`qs-sharepage-asm.txt`；建议接口为 `qs-suggestions-asm.txt`，均在第2节临时目录。
+
+已核对的 `QsCatalogSource` 方法和发现页实现中，没有确认独立的汽水官方排行榜、官方歌单分类树、评论或个人收藏双向同步调用；发现页榜单集合为空。因此不能把这些项目列成“已证明 TuneFreeNext 有、本站没有”。本站的兼容榜单仍是搜索发现，本站收藏仍保存在本站。此结论是限定范围内的未发现，不是对整个二进制所有路径的绝对否定。

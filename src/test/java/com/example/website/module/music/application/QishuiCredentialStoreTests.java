@@ -74,6 +74,22 @@ class QishuiCredentialStoreTests {
     }
 
     @Test
+    void generationCheckReadsOnlyTheBindingAndObservesReplacementAndDeletion() {
+        String binding = store.save(101L,credential("first")).getBindingId();
+        UserQishuiAccount row = repository.findById(101L).orElseThrow(AssertionError::new);
+        // The lightweight generation query must not load/decrypt the credential payload.
+        row.setEncryptedCredential("not-a-credential"); repository.saveAndFlush(row); entityManager.clear();
+        assertTrue(store.isCurrent(101L,binding));
+        assertFalse(store.isCurrent(102L,binding));
+        assertTrue(store.replaceIfCurrent(101L,binding,credential("new")));
+        assertFalse(store.isCurrent(101L,binding));
+        String next = store.load(101L).get().getBindingId();
+        assertTrue(store.isCurrent(101L,next));
+        store.delete(101L); repository.flush();
+        assertFalse(store.isCurrent(101L,next));
+    }
+
+    @Test
     void persistsOnlyCiphertextAndRestoresTheCompleteCredential() {
         QishuiCredential input = credential("alice");
         QishuiCredentialStore.StoredCredential saved = store.save(101L, input);

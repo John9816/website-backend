@@ -19,6 +19,7 @@ public class QishuiRoamingService {
     private final QishuiFeedClient client;
     private final QishuiCredentialStore store;
     private final Clock clock;
+    private final Cache<String, List<QishuiFeedModeView>> modeLists;
     private final Cache<Long, Session> sessions = Caffeine.newBuilder()
             .maximumSize(1000).expireAfterWrite(30, TimeUnit.MINUTES).build();
     private final Cache<Long, Long> lastStarts = Caffeine.newBuilder()
@@ -30,16 +31,19 @@ public class QishuiRoamingService {
         this(client, store, Clock.systemUTC());
     }
     QishuiRoamingService(QishuiFeedClient client, QishuiCredentialStore store, Clock clock) {
+        this(client, store, clock, Ticker.systemTicker());
+    }
+    QishuiRoamingService(QishuiFeedClient client, QishuiCredentialStore store, Clock clock, Ticker ticker) {
         this.client = client; this.store = store; this.clock = clock;
+        this.modeLists = Caffeine.newBuilder().maximumSize(1000)
+                .expireAfterWrite(5, TimeUnit.MINUTES).ticker(ticker).build();
         for (int i = 0; i < locks.length; i++) locks[i] = new ReentrantLock();
     }
 
     public List<QishuiFeedModeView> modes(Long userId) {
         return locked(userId, () -> {
             QishuiCredentialStore.StoredCredential account = account(userId);
-            List<QishuiFeedModeView> modes = client.modes(account.getCredential());
-            current(userId, account.getBindingId());
-            return modes;
+            return copyModes(loadModes(userId, account.getBindingId(), account.getCredential()));
         });
     }
 
@@ -53,7 +57,7 @@ public class QishuiRoamingService {
             Instant end = Instant.now(clock).plusSeconds(1800);
             if (account.getCredential().getExpiresAt().isBefore(end)) end = account.getCredential().getExpiresAt();
             Session session = new Session(account.getBindingId(), end);
-            selectMode(session, normalize(modeId), account.getCredential());
+            selectMode(userId, session, normalize(modeId), account.getCredential());
             QishuiRoamingPageView result = fetch(userId, session, account.getCredential(), 0);
             sessions.put(userId, session);
             return result;
@@ -69,6 +73,7 @@ public class QishuiRoamingService {
             if (s.last != null && sequence == s.last.getSequence()) {
                 if (modeId != null && !requested.equals(s.last.getModeId()))
                     throw new BusinessException(409, "Roaming sequence was already used with a different mode");
+                verifyCurrent(userId, s.binding, credential);
                 return copyPage(s.last);
             }
             if (s.last == null || sequence != s.last.getNextSequence())
@@ -76,7 +81,7 @@ public class QishuiRoamingService {
             // Only publish state after a complete successful page. A failed mode switch or
             // upstream request must not consume the caller's sequence or delivered-song set.
             Session working = new Session(s);
-            selectMode(working, requested, credential);
+            selectMode(userId, working, requested, credential);
             QishuiRoamingPageView result = fetch(userId, working, credential, sequence);
             sessions.put(userId, working);
             return result;
@@ -92,9 +97,9 @@ public class QishuiRoamingService {
         for (int attempt = 0; attempt < 3 && s.hasMore && songs.isEmpty(); attempt++) {
             MusicRequestBudget.ensureRemaining();
             ensureAlive(s);
-            current(userId, s.binding);
+            verifyCurrent(userId, s.binding, c);
             QishuiFeedClient.Page page = client.songs(c, s.mode, ++s.total, ++s.modeCount, s.selectedAt);
-            current(userId, s.binding);
+            verifyCurrent(userId, s.binding, c);
             ensureAlive(s);
             s.hasMore = page.hasMore;
             for (SongSearchItem song : page.songs) {
@@ -103,7 +108,7 @@ public class QishuiRoamingService {
             }
             while (s.seen.size() > 1000) s.seen.remove(s.seen.iterator().next());
         }
-        current(userId, s.binding);
+        verifyCurrent(userId, s.binding, c);
         ensureAlive(s);
         if (songs.isEmpty() && s.hasMore) throw QishuiHttpClient.failure("no_new_roaming_tracks");
         s.last = new QishuiRoamingPageView(s.id, MusicSource.QISHUI, s.mode, sequence,
@@ -111,17 +116,37 @@ public class QishuiRoamingService {
         return copyPage(s.last);
     }
 
-    private void selectMode(Session s, String mode, QishuiCredential c) {
+    private void selectMode(Long userId, Session s, String mode, QishuiCredential c) {
         if (mode.equals(s.mode)) return;
         if (!QishuiFeedClient.RECOMMENDED.equals(mode)) {
             if (s.allowedModes == null) {
                 s.allowedModes = new HashSet<>();
-                for (QishuiFeedModeView item : client.modes(c)) s.allowedModes.add(item.getId());
+                for (QishuiFeedModeView item : loadModes(userId, s.binding, c)) s.allowedModes.add(item.getId());
             }
             if (!s.allowedModes.contains(mode)) throw new BusinessException(400, "Unknown Qishui roaming mode");
         }
         s.mode = mode; s.modeCount = 0; s.hasMore = true;
         s.selectedAt = QishuiFeedClient.RECOMMENDED.equals(mode) ? null : Instant.now(clock).getEpochSecond();
+    }
+
+    private List<QishuiFeedModeView> loadModes(Long userId, String binding, QishuiCredential credential) {
+        String key = userId + ":" + binding;
+        List<QishuiFeedModeView> modes = modeLists.getIfPresent(key);
+        if (modes != null) {
+            verifyCurrent(userId, binding, credential);
+            return modes;
+        }
+        modes = client.modes(credential);
+        verifyCurrent(userId, binding, credential);
+        modeLists.put(key, modes);
+        return modes;
+    }
+
+    private static List<QishuiFeedModeView> copyModes(List<QishuiFeedModeView> modes) {
+        List<QishuiFeedModeView> copy = new ArrayList<>();
+        for (QishuiFeedModeView mode : modes)
+            copy.add(new QishuiFeedModeView(mode.getId(), mode.getName(), mode.getGroup(), mode.getIconUrl(), mode.getToast()));
+        return copy;
     }
 
     private Session session(Long userId, String id) {
@@ -138,15 +163,9 @@ public class QishuiRoamingService {
     }
 
     private static QishuiRoamingPageView copyPage(QishuiRoamingPageView page) {
-        List<SongSearchItem> songs = new ArrayList<>();
-        for (SongSearchItem s : page.getList()) {
-            songs.add(new SongSearchItem(s.getId(), s.getSource(), s.getName(), s.getArtist(),
-                    s.getArtistId(), s.getArtistIds() == null ? null : new ArrayList<>(s.getArtistIds()),
-                    s.getAlbum(), s.getAlbumId(), s.getCoverUrl(), s.getDurationMs(), s.getDurationSec(),
-                    s.getAvailableQualities() == null ? null : new ArrayList<>(s.getAvailableQualities())));
-        }
         return new QishuiRoamingPageView(page.getSessionId(), page.getSource(), page.getModeId(),
-                page.getSequence(), page.getNextSequence(), page.isHasMore(), page.getExpiresAt(), songs);
+                page.getSequence(), page.getNextSequence(), page.isHasMore(), page.getExpiresAt(),
+                QishuiFeedClient.copySongs(page.getList()));
     }
 
     private QishuiCredentialStore.StoredCredential current(Long userId, String binding) {
@@ -158,17 +177,30 @@ public class QishuiRoamingService {
         return saved;
     }
 
+    private void verifyCurrent(Long userId, String binding, QishuiCredential credential) {
+        checkCredential(userId, credential);
+        if (!store.isCurrent(userId, binding)) {
+            sessions.invalidate(userId);
+            modeLists.invalidate(userId + ":" + binding);
+            throw new BusinessException(409, "Qishui binding changed; start a new roaming session");
+        }
+    }
+
     private QishuiCredentialStore.StoredCredential account(Long userId) {
         QishuiCredentialStore.StoredCredential saved = store.load(userId)
                 .orElseThrow(() -> new BusinessException(409, "Bind a Qishui account before roaming"));
         QishuiCredential c = saved.getCredential();
+        checkCredential(userId, c);
+        return saved;
+    }
+
+    private void checkCredential(Long userId, QishuiCredential c) {
         if (c.getExpiresAt() == null || !c.getExpiresAt().isAfter(Instant.now(clock))) {
             sessions.invalidate(userId);
             throw new BusinessException(409, "Qishui authorization expired; refresh or authorize again");
         }
         if (c.getUserId() == null || c.getUserId().isEmpty() || c.getDeviceId() == null || c.getDeviceId().isEmpty())
             throw new BusinessException(409, "Qishui account identity is incomplete; authorize again");
-        return saved;
     }
 
     private static String normalize(String mode) {

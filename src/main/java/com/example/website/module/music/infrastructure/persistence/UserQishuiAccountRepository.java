@@ -8,6 +8,10 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface UserQishuiAccountRepository extends JpaRepository<UserQishuiAccount, Long> {
+    /** Scalar projection bypasses a stale managed entity and avoids reading the credential LOB. */
+    @Query("select a.bindingId from UserQishuiAccount a where a.userId = :userId")
+    java.util.Optional<String> findBindingId(@Param("userId") Long userId);
+
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(
             "update UserQishuiAccount a set a.bindingId = :next, a.encryptedCredential ="

@@ -19,9 +19,15 @@ import com.example.website.module.music.api.dto.SongSearchItem;
 
 import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.Ticker;
+import com.example.website.shared.concurrent.PerformanceSingleFlight;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -38,6 +44,8 @@ public class QishuiMusicClient {
     private final String deviceId = UUID.randomUUID().toString().replace("-", "");
     private final ReentrantLock tokenLock = new ReentrantLock();
     private final AtomicReference<CatalogToken> clientToken = new AtomicReference<>();
+    private final Cache<String, JsonNode> mediaCache;
+    private final PerformanceSingleFlight mediaFlights = new PerformanceSingleFlight();
 
     private static final class CatalogToken {
         final String value;
@@ -46,9 +54,19 @@ public class QishuiMusicClient {
         boolean valid() { return System.currentTimeMillis() < expiresAt; }
     }
 
+    @Autowired
     public QishuiMusicClient(QishuiHttpClient http, ObjectMapper mapper) {
+        this(http, mapper, Ticker.systemTicker());
+    }
+
+    QishuiMusicClient(QishuiHttpClient http, ObjectMapper mapper, Ticker ticker) {
         this.http = http;
         this.mapper = mapper;
+        // /media/mget contains both song metadata and lyrics. Bound serialized payload weight
+        // as well as TTL; entries are public catalog data and are never returned as mutable JSON.
+        this.mediaCache = Caffeine.newBuilder().maximumWeight(16 * 1024 * 1024)
+                .weigher((String key, JsonNode value) -> value.toString().getBytes(StandardCharsets.UTF_8).length)
+                .expireAfterWrite(5, TimeUnit.MINUTES).ticker(ticker).build();
     }
 
     private CatalogToken token() {
@@ -195,6 +213,24 @@ public class QishuiMusicClient {
     }
 
     private JsonNode media(String id) {
+        try (MusicRequestBudget.Scope ignored = MusicRequestBudget.start(8, TimeUnit.SECONDS)) {
+            MusicRequestBudget.ensureRemaining();
+            JsonNode cached = mediaCache.getIfPresent(id);
+            if (cached != null) return cached;
+            return mediaFlights.execute(id, () -> {
+                JsonNode ready = mediaCache.getIfPresent(id);
+                if (ready != null) return ready;
+                JsonNode loaded = loadMedia(id);
+                MusicRequestBudget.ensureRemaining();
+                mediaCache.put(id, loaded);
+                return loaded;
+            }, MusicRequestBudget.remainingNanos(), TimeUnit.NANOSECONDS);
+        } catch (PerformanceSingleFlight.WaitTimeoutException ex) {
+            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_TIMEOUT);
+        }
+    }
+
+    private JsonNode loadMedia(String id) {
         ObjectNode b = mapper.createObjectNode();
         b.putArray("media_list").addObject().put("id", id).put("type", "track");
         b.set("card_context", mapper.createObjectNode());
@@ -212,10 +248,17 @@ public class QishuiMusicClient {
     }
 
     public LyricInfo fetchLyrics(String id) {
-        JsonNode entity = media(id).path("display_info").path("lyric_info").path("lyric_entity");
-        String content = entity.path("content").asText("");
-        if ("krc".equals(entity.path("type").asText())) return krc(content);
-        return new LyricInfo(content.isEmpty() ? null : content, null);
+        JsonNode snapshot = media(id);
+        try {
+            JsonNode entity = snapshot.path("display_info").path("lyric_info").path("lyric_entity");
+            String content = entity.path("content").asText("");
+            if ("krc".equals(entity.path("type").asText())) return krc(content);
+            return new LyricInfo(content.isEmpty() ? null : content, null);
+        } catch (MusicBusinessException ex) {
+            // A malformed lyric must not poison subsequent retries, nor remove a newer load.
+            mediaCache.asMap().remove(id, snapshot);
+            throw ex;
+        }
     }
 
     static LyricInfo krc(String content) {

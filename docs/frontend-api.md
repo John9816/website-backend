@@ -539,6 +539,8 @@ SSE 事件包括 `meta`、`delta`、`audio`、`audio_error`、`done` 和 `error`
 
 每个网站用户独立扫码绑定：`POST /api/v1/music/qishui/auth/qr` 创建二维码，`GET /api/v1/music/qishui/auth/qr/{sessionId}` 每2秒轮询；账户查询、刷新、解绑分别为 `GET /account`、`POST /account/refresh`、`DELETE /account`（同一 `/api/v1/music/qishui` 前缀）。响应均 no-store，私钥和上游票据不返回前端。
 
+**扫码绑定仅用于个人音乐漫游。** 搜索、歌单、榜单、歌词、发现推荐和播放都不要以汽水绑定状态作前置门禁，也不要在授权过期时禁用这些功能。普通接口仍需本站登录，播放另需本站有效会员和服务端独立TuneFree v1配置。
+
 新增发现页和个人音乐漫游，均需网站 Bearer 登录，响应 `Cache-Control: no-store`：
 
 | Method | Path | 说明 |
@@ -550,6 +552,8 @@ SSE 事件包括 `meta`、`delta`、`audio`、`audio_error`、`done` 和 `error`
 | DELETE | `/api/v1/music/qishui/roaming/sessions/{sessionId}` | 关闭本人会话 |
 
 POST参数在 query 中，无 JSON body。创建/续页的 `data` 包含 `sessionId,source,modeId,sequence,nextSequence,hasMore,expiresAt,list`；list为标准歌曲数组，最多20首。创建的sequence=0，之后使用上次nextSequence。最新一次续页可按相同序号重试，返回同一批结果；相同序号不能换模式，跳号/旧序号会报错。切换模式使用下个序号；从模式接口读取ID列表，默认模式为字符串 `recommended`。
+
+服务器将匿名发现推荐缓存30秒，因此连续刷新可能获得同一批歌；个人漫游的取歌不使用公共快照。漫游模式清单按用户及绑定版本缓存5分钟，缓存命中仍检查绑定状态。前端仍遵守 `no-store`，不共享个人结果。
 
 每个用户一个漫游会话，期限最多30分钟且不超过个人授权到期时间，续页不延长。失败保持原状态，可重试原请求；hasMore=false停止自动取歌。刷新、解绑或重新绑定后需新建会话；重启/淘汰会使会话丢失。JSON code=404表示会话不存在/过期，code=409表示账号或序号冲突（**沿用现有异常映射，HTTP为400**），429表示创建过快，1013表示忙，1004/1009表示上游失败/超时。不要让共享缓存保存个人结果。
 

@@ -79,6 +79,14 @@ public class QishuiCredentialStore {
         repository.findById(userId).ifPresent(repository::delete);
     }
 
+    /** Always query the database generation; never cache authorization revocation checks. */
+    @Transactional(readOnly = true)
+    public boolean isCurrent(Long userId, String bindingId) {
+        Objects.requireNonNull(userId, "Website user ID is required");
+        Objects.requireNonNull(bindingId, "Binding ID is required");
+        return repository.findBindingId(userId).filter(bindingId::equals).isPresent();
+    }
+
     @Transactional
     public boolean bindIfCurrent(
             Long userId, String expectedBindingId, QishuiCredential credential) {

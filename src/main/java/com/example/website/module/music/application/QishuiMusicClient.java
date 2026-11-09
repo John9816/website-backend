@@ -41,6 +41,9 @@ import java.util.stream.Collectors;
 public class QishuiMusicClient {
     private final QishuiHttpClient http;
     private final ObjectMapper mapper;
+    @Autowired private QishuiShareClient shares;
+    private final Cache<String, List<String>> suggestions = Caffeine.newBuilder()
+            .maximumSize(1000).expireAfterWrite(60, TimeUnit.SECONDS).build();
     private final String deviceId = UUID.randomUUID().toString().replace("-", "");
     private final ReentrantLock tokenLock = new ReentrantLock();
     private final AtomicReference<CatalogToken> clientToken = new AtomicReference<>();
@@ -140,6 +143,25 @@ public class QishuiMusicClient {
         if (code == 28001003 || code == 28001008) clientToken.compareAndSet(used, null);
         return QishuiHttpClient.checked(r);
     }
+
+    public List<String> searchSuggestions(String keyword) {
+        if (keyword == null || keyword.length() > 120) throw new BusinessException(400, "Search keyword is too long");
+        String q = keyword.trim();
+        if (q.isEmpty()) return Collections.emptyList();
+        return suggestions.get(q, key -> {
+            JsonNode result = post("/search/sug/", mapper.createObjectNode().put("q", key));
+            if (!result.path("sugs").isArray()) throw QishuiHttpClient.failure();
+            Set<String> unique = new LinkedHashSet<>();
+            for (JsonNode item : result.path("sugs")) {
+                String text = item.path("suggestion").asText("").trim();
+                if (!text.isEmpty() && text.length() <= 120) unique.add(text);
+                if (unique.size() == 10) break;
+            }
+            return Collections.unmodifiableList(new ArrayList<>(unique));
+        });
+    }
+
+    public String resolveShareUrl(String text) { return shares.resolve(text); }
 
     public List<SongSearchItem> search(String keyword, int page, int pageSize) {
         return searchEntities(keyword, "track", page, pageSize).stream()
@@ -355,6 +377,7 @@ public class QishuiMusicClient {
     }
 
     public PlaylistDetailView fetchPlaylistDetail(String id, int page, int size) {
+        if (id != null && id.startsWith("share:")) return shares.fetch(id, page, size);
         String[] parts = id.split(":", -1);
         if (parts.length != 3
                 || parts[0].trim().isEmpty()

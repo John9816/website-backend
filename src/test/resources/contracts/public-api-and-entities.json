@@ -2804,6 +2804,18 @@
         "source" : [ "MusicSource", false, true, true ]
       }
     },
+    "TtmlLyricsView" : {
+      "request" : {
+        "available" : [ "boolean", false, true, true ],
+        "content" : [ "java.lang.String", false, true, true ],
+        "provider" : [ "java.lang.String", false, true, true ]
+      },
+      "response" : {
+        "available" : [ "boolean", false, true, true ],
+        "content" : [ "java.lang.String", false, true, true ],
+        "provider" : [ "java.lang.String", false, true, true ]
+      }
+    },
     "UserCreditView" : {
       "request" : {
         "checkedInToday" : [ "boolean", false, true, true ],
@@ -3978,6 +3990,19 @@
       } ],
       "returns" : "ApiResponse<LyricView>"
     },
+    "{GET [/api/v1/music/lyrics/ttml]}" : {
+      "parameters" : [ {
+        "annotations" : [ ],
+        "type" : "javax.servlet.http.HttpServletRequest"
+      }, {
+        "annotations" : [ "org.springframework.web.bind.annotation.RequestParam{defaultValue=\n\t\t\n\t\t\n\n\t\t\t\t\n, name=, required=true, value=}" ],
+        "type" : "java.lang.String"
+      }, {
+        "annotations" : [ "org.springframework.web.bind.annotation.RequestParam{defaultValue=\n\t\t\n\t\t\n\n\t\t\t\t\n, name=, required=true, value=}" ],
+        "type" : "java.lang.String"
+      } ],
+      "returns" : "ApiResponse<TtmlLyricsView>"
+    },
     "{GET [/api/v1/music/new]}" : {
       "parameters" : [ {
         "annotations" : [ "org.springframework.web.bind.annotation.RequestParam{defaultValue=\n\t\t\n\t\t\n\n\t\t\t\t\n, name=, required=true, value=}" ],
@@ -4085,6 +4110,26 @@
         "type" : "javax.servlet.http.HttpServletRequest"
       } ],
       "returns" : "org.springframework.http.ResponseEntity<ApiResponse<java.util.List<QishuiFeedModeView>>>"
+    },
+    "{GET [/api/v1/music/qishui/search/suggestions]}" : {
+      "parameters" : [ {
+        "annotations" : [ ],
+        "type" : "javax.servlet.http.HttpServletRequest"
+      }, {
+        "annotations" : [ "org.springframework.web.bind.annotation.RequestParam{defaultValue=\n\t\t\n\t\t\n\n\t\t\t\t\n, name=, required=true, value=}" ],
+        "type" : "java.lang.String"
+      } ],
+      "returns" : "ApiResponse<java.util.List<java.lang.String>>"
+    },
+    "{GET [/api/v1/music/qishui/song]}" : {
+      "parameters" : [ {
+        "annotations" : [ ],
+        "type" : "javax.servlet.http.HttpServletRequest"
+      }, {
+        "annotations" : [ "org.springframework.web.bind.annotation.RequestParam{defaultValue=\n\t\t\n\t\t\n\n\t\t\t\t\n, name=, required=true, value=}" ],
+        "type" : "java.lang.String"
+      } ],
+      "returns" : "ApiResponse<SongSearchItem>"
     },
     "{GET [/api/v1/music/search]}" : {
       "parameters" : [ {

@@ -441,10 +441,17 @@ public class UserPlaylistService {
             url = urlExtract.group();
         }
 
+        if (QishuiShareClient.isShareHost(url)) {
+            return new PlaylistRef(MusicSource.QISHUI, qishui.resolveShareUrl(url));
+        }
         PlaylistRef ref = matchKnownHost(url);
         if (ref != null) return ref;
 
-        // Short-link: follow redirects and try again on the resolved URL.
+        HttpUrl candidate = HttpUrl.parse(url);
+        if (!trustedLegacyShare(candidate)) {
+            throw new MusicBusinessException(MusicErrorCode.INVALID_SOURCE, "unsupported playlist share host");
+        }
+        // Short-link: every hop is restricted to the supported public music hosts.
         String resolved = followRedirects(url);
         if (resolved != null && !resolved.equals(url)) {
             ref = matchKnownHost(resolved);
@@ -460,11 +467,11 @@ public class UserPlaylistService {
         // into the query so HttpUrl can see the params.
         String hashFlattened = url.replaceFirst("#/", "");
         HttpUrl parsed = HttpUrl.parse(hashFlattened);
-        if (parsed == null) return null;
+        if (!trustedLegacyShare(parsed)) return null;
         String host = parsed.host().toLowerCase();
         String path = parsed.encodedPath();
 
-        if (host.endsWith("163.com") || host.endsWith("163cn.tv")) {
+        if (isDomain(host, "163.com") || isDomain(host, "163cn.tv")) {
             String id = parsed.queryParameter("id");
             if (id != null && id.matches("\\d+")) {
                 return new PlaylistRef(MusicSource.NETEASE, id);
@@ -476,7 +483,7 @@ public class UserPlaylistService {
             return null;
         }
 
-        if (host.endsWith("y.qq.com") || host.endsWith("qq.com")) {
+        if (isDomain(host, "qq.com")) {
             Matcher m = QQ_PATH_ID.matcher(path);
             if (m.find()) {
                 return new PlaylistRef(MusicSource.QQ, m.group(1));
@@ -495,24 +502,34 @@ public class UserPlaylistService {
         return null;
     }
 
-    private String followRedirects(String url) {
-        if (okHttpClient == null) {
-            return null;
-        }
+    private static boolean isDomain(String host, String domain) {
+        return host.equals(domain) || host.endsWith("." + domain);
+    }
+
+    private static boolean trustedLegacyShare(HttpUrl url) {
+        if (url == null || !url.username().isEmpty() || !url.password().isEmpty()
+                || (url.port() != 443 && url.port() != 80)) return false;
+        String host = url.host();
+        return isDomain(host, "qq.com") || isDomain(host, "163.com") || isDomain(host, "163cn.tv");
+    }
+
+    private String followRedirects(String raw) {
+        if (okHttpClient == null) return null;
+        OkHttpClient client = okHttpClient.newBuilder().followRedirects(false).followSslRedirects(false)
+                .callTimeout(3, java.util.concurrent.TimeUnit.SECONDS).build();
+        HttpUrl url = HttpUrl.parse(raw);
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(8);
         try {
-            Request req = new Request.Builder()
-                    .url(url)
-                    .header("User-Agent", "Mozilla/5.0")
-                    .get()
-                    .build();
-            try (Response resp = okHttpClient.newCall(req).execute()) {
-                HttpUrl finalUrl = resp.request().url();
-                return finalUrl == null ? null : finalUrl.toString();
+            for (int hop = 0; hop < 5 && trustedLegacyShare(url) && System.nanoTime() < deadline; hop++) {
+                okhttp3.Call call = client.newCall(new Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").get().build());
+                call.timeout().timeout(Math.max(1, Math.min(java.util.concurrent.TimeUnit.SECONDS.toNanos(3), deadline - System.nanoTime())), java.util.concurrent.TimeUnit.NANOSECONDS);
+                try (Response response = call.execute()) {
+                    if (!response.isRedirect()) return response.isSuccessful() ? url.toString() : null;
+                    url = url.resolve(response.header("Location", ""));
+                }
             }
-        } catch (IOException | IllegalArgumentException ex) {
-            log.debug("Failed to resolve redirect for {}: {}", url, ex.getMessage());
-            return null;
-        }
+        } catch (IOException | IllegalArgumentException ignored) { }
+        return null;
     }
 
     private static String firstNonBlank(String first, String fallback) {

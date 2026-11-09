@@ -69,6 +69,17 @@ class UserPlaylistServiceTest {
     }
 
     @Test
+    void routesOfficialQishuiSharesWithoutLegacyRedirects() {
+        QishuiMusicClient client = org.mockito.Mockito.mock(QishuiMusicClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "qishui", client);
+        String url = "https://music.douyin.com/qishui/share/playlist?playlist_id=123456";
+        org.mockito.Mockito.when(client.resolveShareUrl(url)).thenReturn("share:123456");
+        UserPlaylistService.PlaylistRef ref = service.parseShareUrl(url);
+        assertEquals(MusicSource.QISHUI, ref.source);
+        assertEquals("share:123456", ref.externalId);
+    }
+
+    @Test
     void rejectsUnrelatedUrl() {
         assertThrows(MusicBusinessException.class,
                 () -> service.parseShareUrl("https://example.com/playlist?id=1"));

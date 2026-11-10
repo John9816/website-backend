@@ -120,6 +120,13 @@ app:
       # Caffeine cache stays at 64 MB; lossless tracks (~33 MB each) are persisted here instead.
       # Entries are bounded (1 GiB) and expire with the audio ticket.
       cache-dir: ${QISHUI_CACHE_DIR:/opt/website/cache/qishui-audio}
+      # Personal access code expires after 6 h upstream. Renew it automatically so the
+      # "刷新授权" button is only a manual fallback. Refresh rotates bindingId and would
+      # invalidate an in-flight roaming session, so users with a live session are skipped.
+      auth-refresh-enabled: ${QISHUI_AUTH_REFRESH_ENABLED:true}
+      auth-refresh-threshold-sec: ${QISHUI_AUTH_REFRESH_THRESHOLD_SEC:1800}
+      auth-refresh-interval-ms: ${QISHUI_AUTH_REFRESH_INTERVAL_MS:300000}
+      auth-refresh-initial-delay-ms: ${QISHUI_AUTH_REFRESH_INITIAL_DELAY_MS:60000}
     chksz:
       enabled: ${CHKSZ_ENABLED:true}
       base-url: ${CHKSZ_BASE_URL:https://api.chksz.com}

@@ -92,6 +92,17 @@ public class QishuiRoamingService {
         locked(userId, () -> { session(userId, sessionId); sessions.invalidate(userId); return null; });
     }
 
+    /**
+     * True while a roaming session is still alive. An auth refresh rotates the stored
+     * bindingId, which would invalidate this session mid-playback, so the auto-refresh
+     * service must skip these users.
+     */
+    public boolean hasActiveSession(Long userId) {
+        if (userId == null) return false;
+        Session s = sessions.getIfPresent(userId);
+        return s != null && s.expiresAt.isAfter(Instant.now(clock));
+    }
+
     private QishuiRoamingPageView fetch(Long userId, Session s, QishuiCredential c, long sequence) {
         List<SongSearchItem> songs = new ArrayList<>();
         for (int attempt = 0; attempt < 3 && s.hasMore && songs.isEmpty(); attempt++) {

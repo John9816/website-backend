@@ -107,6 +107,12 @@ public class QishuiCredentialStore {
         encryptionKey();
     }
 
+    /** Only user IDs, so the scheduled auth-refresh sweep never reads credential LOBs. */
+    @Transactional(readOnly = true)
+    public java.util.List<Long> allUserIds() {
+        return repository.findAllUserIds();
+    }
+
     @Transactional
     public boolean replaceIfCurrent(
             Long userId, String expectedBindingId, QishuiCredential credential) {

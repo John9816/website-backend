@@ -27,18 +27,37 @@ public class QishuiAccountService {
     private final Cache<Long, Long> lastStarts =
             Caffeine.newBuilder().maximumSize(10000).expireAfterWrite(10, TimeUnit.SECONDS).build();
     private final ReentrantLock[] locks = new ReentrantLock[64];
+    private final QishuiAuthAutoRefreshService autoRefresh;
 
     @org.springframework.beans.factory.annotation.Autowired
     public QishuiAccountService(
+            QishuiAuthClient client,
+            QishuiCredentialStore store,
+            ObjectMapper mapper,
+            QishuiAuthAutoRefreshService autoRefresh) {
+        this(client, store, java.time.Clock.systemUTC(), autoRefresh);
+    }
+
+    /** Test constructor: no upstream auto-refresh, so account views stay offline. */
+    QishuiAccountService(
             QishuiAuthClient client, QishuiCredentialStore store, ObjectMapper mapper) {
-        this(client, store, java.time.Clock.systemUTC());
+        this(client, store, java.time.Clock.systemUTC(), null);
     }
 
     QishuiAccountService(
             QishuiAuthClient client, QishuiCredentialStore store, java.time.Clock clock) {
+        this(client, store, clock, null);
+    }
+
+    QishuiAccountService(
+            QishuiAuthClient client,
+            QishuiCredentialStore store,
+            java.time.Clock clock,
+            QishuiAuthAutoRefreshService autoRefresh) {
         this.client = client;
         this.store = store;
         this.clock = clock;
+        this.autoRefresh = autoRefresh;
         for (int i = 0; i < locks.length; i++) locks[i] = new ReentrantLock();
     }
 
@@ -117,6 +136,10 @@ public class QishuiAccountService {
     }
 
     public QishuiAccountView account(Long userId) {
+        // Lazily renew a nearly-expired access code so the user does not have to press
+        // "refresh authorization" every six hours. Best-effort: a failed renewal simply
+        // falls through to the unchanged view, which still shows the real expiry status.
+        if (autoRefresh != null) autoRefresh.refreshIfExpiring(userId);
         return store.load(userId)
                 .map(s -> accountView(s.getCredential()))
                 .orElseGet(

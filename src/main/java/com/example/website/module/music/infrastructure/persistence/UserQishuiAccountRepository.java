@@ -22,4 +22,8 @@ public interface UserQishuiAccountRepository extends JpaRepository<UserQishuiAcc
             @Param("expected") String expected,
             @Param("next") String next,
             @Param("encrypted") String encrypted);
+
+    /** Scalar projection for the scheduled auth-refresh sweep; never loads the credential LOB. */
+    @Query("select a.userId from UserQishuiAccount a")
+    java.util.List<Long> findAllUserIds();
 }

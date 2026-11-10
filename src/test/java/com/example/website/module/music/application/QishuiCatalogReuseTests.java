@@ -9,6 +9,11 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -100,6 +105,46 @@ class QishuiCatalogReuseTests {
         browse(c, "search");
         assertEquals("[00:01.000]Hello", c.fetchLyrics("1").getLineLyrics());
         assertEquals(1, mediaCalls.get());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "[1000,500]<0,500,0>Old", "[9223372036854775807,1]<1,1,0>x"})
+    void lateMediaResponseCannotReplaceOrReturnOlderLyricsThanAConcurrentCatalogSnapshot(String oldLyrics)
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        QishuiMusicClient c = new QishuiMusicClient(new QishuiHttpClient(
+                new OkHttpClient.Builder().addInterceptor(chain -> {
+                    if (chain.request().url().encodedPath().endsWith("/token/get/"))
+                        return QishuiClientTests.response(chain,
+                                "{\"err_no\":0,\"client_token\":\"test\",\"expires_time\":4102444800}");
+                    assertTrue(chain.request().url().encodedPath().endsWith("/media/mget/"));
+                    mediaCalls.incrementAndGet();
+                    entered.countDown();
+                    try { assertTrue(release.await(3, TimeUnit.SECONDS)); }
+                    catch (InterruptedException ex) { Thread.currentThread().interrupt(); throw new AssertionError(ex); }
+                    String oldTrack = TRACK.replace("Original", "Old metadata")
+                            .replace("[1000,500]<0,500,0>Hello", oldLyrics);
+                    return QishuiClientTests.response(chain,
+                            "{\"err_no\":0,\"data\":{\"media_list\":[{\"track_entity\":" + oldTrack + "}]}}");
+                }).build(), mapper), mapper);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        Future<LyricInfo> pending = pool.submit(() -> c.fetchLyrics("1"));
+        try {
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            c.catalogTrack(mapper.readTree(TRACK));
+            assertEquals("[00:01.000]Hello", c.fetchLyrics("1").getLineLyrics());
+            release.countDown();
+            LyricInfo resolved = assertDoesNotThrow(() -> pending.get(3, TimeUnit.SECONDS),
+                    "an older malformed response must not discard the complete catalog snapshot");
+            assertEquals("[00:01.000]Hello", resolved.getLineLyrics());
+            assertEquals("Original", c.fetchSongInfo("1").getName());
+            assertEquals("[00:01.000]Hello", c.fetchLyrics("1").getLineLyrics());
+            assertEquals(1, mediaCalls.get(), "the completed request must retain the concurrent catalog snapshot");
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(3, TimeUnit.SECONDS));
+        }
     }
 
     @Test void malformedCatalogLyricsCannotBreakPlaybackOrPoisonTheNextRead() {

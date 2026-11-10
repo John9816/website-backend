@@ -260,8 +260,10 @@ public class QishuiMusicClient {
                 if (ready != null) return ready;
                 JsonNode loaded = loadMedia(id);
                 MusicRequestBudget.ensureRemaining();
-                mediaCache.put(id, loaded);
-                return loaded;
+                // A catalog response may have supplied a complete snapshot while this
+                // request was in flight. Keep it both in the cache and for waiting readers.
+                JsonNode concurrent = mediaCache.asMap().putIfAbsent(id, loaded);
+                return concurrent == null ? loaded : concurrent;
             }, MusicRequestBudget.remainingNanos(), TimeUnit.NANOSECONDS);
         } catch (PerformanceSingleFlight.WaitTimeoutException ex) {
             throw new MusicBusinessException(MusicErrorCode.UPSTREAM_TIMEOUT);

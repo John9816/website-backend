@@ -173,7 +173,10 @@ public class MusicPlaybackService {
 
         long deadlineNanos = MusicRequestBudget.deadlineNanos();
         SongMetaLookup meta = new SongMetaLookup(source, sid);
-        ExecutorCompletionService<PlayInfo> completions = new ExecutorCompletionService<>(musicResolverExecutor);
+        // Qishui's sole resolver signs a local stream ticket. Remote-source saturation
+        // must not queue or reject that work; keep the same budget and resolver handling.
+        Executor executor = source == MusicSource.QISHUI ? Runnable::run : musicResolverExecutor;
+        ExecutorCompletionService<PlayInfo> completions = new ExecutorCompletionService<>(executor);
         Map<Future<PlayInfo>, ActiveResolver> active = new HashMap<>();
         Map<PlayResolver, MusicBusinessException> errors = new EnumMap<>(PlayResolver.class);
         int nextResolver = 0;

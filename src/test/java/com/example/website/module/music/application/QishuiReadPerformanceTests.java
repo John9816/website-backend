@@ -94,7 +94,20 @@ class QishuiReadPerformanceTests {
         time.set(TimeUnit.SECONDS.toNanos(31)); feed.discovery();
         assertEquals(2,feedCalls.get());
         time.set(TimeUnit.SECONDS.toNanos(301)); catalog.fetchLyrics("track");
+        assertEquals(1,mediaCalls.get(), "complete public lyrics should survive normal playlist listening");
+        time.set(TimeUnit.HOURS.toNanos(6) + TimeUnit.SECONDS.toNanos(1)); catalog.fetchLyrics("track");
         assertEquals(2,mediaCalls.get());
+    }
+
+    @Test void missingLyricsExpireQuicklySoLaterAvailabilityCanRecover() {
+        AtomicLong time = new AtomicLong();
+        QishuiMusicClient catalog = catalog(time::get);
+        mediaReply.set(MEDIA.replace("[00:01]hello", ""));
+        assertNull(catalog.fetchLyrics("track").getLineLyrics());
+        mediaReply.set(MEDIA);
+        time.set(TimeUnit.SECONDS.toNanos(301));
+        assertEquals("[00:01]hello", catalog.fetchLyrics("track").getLineLyrics());
+        assertEquals(2, mediaCalls.get());
     }
 
     @Test void wrongMediaIdentityDoesNotPoisonTheCache() {

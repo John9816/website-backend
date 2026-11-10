@@ -117,7 +117,7 @@ public class QishuiFeedClient {
             JsonNode media = card.path("entity").path("media");
             if (!"track".equals(card.path("type").asText())
                     || !"track".equals(media.path("media_type").asText())) continue;
-            SongSearchItem song = QishuiMusicClient.track(media.path("track_entity"));
+            SongSearchItem song = catalog.catalogTrack(media.path("track_entity"));
             if (song != null) songs.putIfAbsent(song.getId(), song);
         }
         return new Page(new ArrayList<>(songs.values()), data.path("has_more").booleanValue());

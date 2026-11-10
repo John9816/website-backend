@@ -118,6 +118,7 @@ public class MusicPlaybackService {
             if (cached != null && acceptCachedPlayInfo(key, source, sid, cached)) {
                 PlayInfo response = copyWithFromCache(cached);
                 response.setRequestedQuality(quality.getRequestedValue());
+                if (source == MusicSource.QISHUI) qishui.enrichCachedPlayback(response);
                 logPlayResolution(source, quality, "cache", startedNanos, true, null);
                 return response;
             }
@@ -140,6 +141,7 @@ public class MusicPlaybackService {
                 // caller must receive its own requested value and mutable response.
                 PlayInfo response = copyPlayInfo(resolved);
                 response.setRequestedQuality(quality.getRequestedValue());
+                if (source == MusicSource.QISHUI) qishui.enrichCachedPlayback(response);
                 boolean cacheHit = Boolean.TRUE.equals(response.getFromCache());
                 logPlayResolution(source, quality, cacheHit ? "cache" : "upstream", startedNanos, cacheHit, null);
                 return response;

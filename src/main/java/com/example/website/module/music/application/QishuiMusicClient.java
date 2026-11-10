@@ -16,11 +16,13 @@ import com.example.website.module.music.api.dto.ToplistDetailView;
 import com.example.website.module.music.api.dto.ToplistItem;
 import com.example.website.module.music.api.dto.SearchCollectionItem;
 import com.example.website.module.music.api.dto.SongSearchItem;
+import com.example.website.module.music.api.dto.PlayInfo;
 
 import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.Expiry;
 import com.github.benmanes.caffeine.cache.Ticker;
 import com.example.website.shared.concurrent.PerformanceSingleFlight;
 
@@ -69,7 +71,21 @@ public class QishuiMusicClient {
         // as well as TTL; entries are public catalog data and are never returned as mutable JSON.
         this.mediaCache = Caffeine.newBuilder().maximumWeight(16 * 1024 * 1024)
                 .weigher((String key, JsonNode value) -> value.toString().getBytes(StandardCharsets.UTF_8).length)
-                .expireAfterWrite(5, TimeUnit.MINUTES).ticker(ticker).build();
+                .expireAfter(new Expiry<String, JsonNode>() {
+                    public long expireAfterCreate(String key, JsonNode value, long now) {
+                        // Public lyrics are stable. Missing lyrics remain briefly cached so
+                        // temporary upstream omissions can recover without a six-hour wait.
+                        return value.path("display_info").path("lyric_info").path("lyric_entity")
+                                .path("content").asText("").trim().isEmpty()
+                                ? TimeUnit.MINUTES.toNanos(5) : TimeUnit.HOURS.toNanos(6);
+                    }
+                    public long expireAfterUpdate(String key, JsonNode value, long now, long remaining) {
+                        return expireAfterCreate(key, value, now);
+                    }
+                    public long expireAfterRead(String key, JsonNode value, long now, long remaining) {
+                        return remaining;
+                    }
+                }).ticker(ticker).build();
     }
 
     private CatalogToken token() {
@@ -165,7 +181,7 @@ public class QishuiMusicClient {
 
     public List<SongSearchItem> search(String keyword, int page, int pageSize) {
         return searchEntities(keyword, "track", page, pageSize).stream()
-                .map(e -> track(e.path("track")))
+                .map(e -> catalogTrack(e.path("track")))
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
     }
@@ -272,14 +288,62 @@ public class QishuiMusicClient {
     public LyricInfo fetchLyrics(String id) {
         JsonNode snapshot = media(id);
         try {
-            JsonNode entity = snapshot.path("display_info").path("lyric_info").path("lyric_entity");
-            String content = entity.path("content").asText("");
-            if ("krc".equals(entity.path("type").asText())) return krc(content);
-            return new LyricInfo(content.isEmpty() ? null : content, null);
+            return lyrics(snapshot);
         } catch (MusicBusinessException ex) {
             // A malformed lyric must not poison subsequent retries, nor remove a newer load.
             mediaCache.asMap().remove(id, snapshot);
             throw ex;
+        }
+    }
+
+    private static LyricInfo lyrics(JsonNode snapshot) {
+        JsonNode entity = snapshot.path("display_info").path("lyric_info").path("lyric_entity");
+        String content = entity.path("content").asText("");
+        if ("krc".equals(entity.path("type").asText())) return krc(content);
+        return new LyricInfo(content.isEmpty() ? null : content, null);
+    }
+
+    /** Catalog responses already contain full lyrics; retain only public display fields. */
+    SongSearchItem catalogTrack(JsonNode node) {
+        SongSearchItem song = track(node);
+        if (song == null || node.path("base_info").path("name").asText("").trim().isEmpty()
+                || song.getArtistId() == null || song.getArtist().trim().isEmpty()
+                || song.getCoverUrl() == null || song.getDurationSec() == null || song.getDurationSec() <= 0
+                || node.path("display_info").path("lyric_info").path("lyric_entity")
+                        .path("content").asText("").trim().isEmpty()) return song;
+        ObjectNode snapshot = mapper.createObjectNode();
+        ObjectNode base = snapshot.putObject("base_info");
+        for (String field : Arrays.asList("id", "name", "duration_ms"))
+            if (node.path("base_info").has(field)) base.set(field, node.path("base_info").get(field).deepCopy());
+        ObjectNode related = snapshot.putObject("related_info");
+        for (String field : Arrays.asList("artist_links", "album_link"))
+            if (node.path("related_info").has(field)) related.set(field, node.path("related_info").get(field).deepCopy());
+        ObjectNode display = snapshot.putObject("display_info");
+        for (String field : Arrays.asList("cover_url", "lyric_info"))
+            if (node.path("display_info").has(field)) display.set(field, node.path("display_info").get(field).deepCopy());
+        // Partial cards must never replace a full snapshot. Repeated reads do not extend TTL.
+        JsonNode existing = mediaCache.asMap().putIfAbsent(song.getId(), snapshot);
+        if (existing != null && existing.path("display_info").path("lyric_info").path("lyric_entity")
+                .path("content").asText("").trim().isEmpty())
+            mediaCache.asMap().replace(song.getId(), existing, snapshot);
+        return song;
+    }
+
+    /** Cache-only enrichment: issuing a playback ticket must never wait for catalog I/O. */
+    void enrichCachedPlayback(PlayInfo info) {
+        JsonNode snapshot = mediaCache.getIfPresent(info.getId());
+        if (snapshot == null) return;
+        SongSearchItem song = track(snapshot);
+        if (song == null) return;
+        info.setName(song.getName());
+        info.setArtist(song.getArtist());
+        info.setAlbum(song.getAlbum());
+        info.setCoverUrl(song.getCoverUrl());
+        info.setDurationSec(song.getDurationSec());
+        try {
+            info.setLyric(lyrics(snapshot));
+        } catch (MusicBusinessException ex) {
+            mediaCache.asMap().remove(info.getId(), snapshot);
         }
     }
 
@@ -405,8 +469,8 @@ public class QishuiMusicClient {
         SearchCollectionItem summary = playlist(pl);
         List<SongSearchItem> tracks = new ArrayList<>();
         for (JsonNode e : data.path("media_entities")) {
-            SongSearchItem s = track(e.path("track"));
-            if (s == null) s = track(e.path("track_entity"));
+            SongSearchItem s = catalogTrack(e.path("track"));
+            if (s == null) s = catalogTrack(e.path("track_entity"));
             if (s != null) tracks.add(s);
         }
         return new PlaylistDetailView(
@@ -445,7 +509,7 @@ public class QishuiMusicClient {
         if (!"song".equals(type)) throw unsupported("unsupported artist works type");
         List<SongSearchItem> tracks = new ArrayList<>();
         for (JsonNode t : artistTracks(id, page, size).path("tracks")) {
-            SongSearchItem song = track(t);
+            SongSearchItem song = catalogTrack(t);
             if (song != null) tracks.add(song);
         }
         return new ArtistWorksView(
@@ -524,7 +588,7 @@ public class QishuiMusicClient {
         JsonNode b = info.path("base_info");
         List<SongSearchItem> songs = new ArrayList<>();
         for (JsonNode t : data.path("tracks")) {
-            SongSearchItem s = track(t);
+            SongSearchItem s = catalogTrack(t);
             if (s != null) songs.add(s);
         }
         String artist = null;

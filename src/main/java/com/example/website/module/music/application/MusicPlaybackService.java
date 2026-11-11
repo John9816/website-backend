@@ -780,6 +780,8 @@ public class MusicPlaybackService {
         p.setFileSize(src.getFileSize());
         p.setExpireSec(src.getExpireSec());
         p.setFromCache(src.getFromCache());
+        p.setDirectUrl(src.getDirectUrl());
+        p.setPlayAuth(src.getPlayAuth());
         p.setLyric(src.getLyric());
         return p;
     }

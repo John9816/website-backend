@@ -485,6 +485,42 @@ public class QishuiStreamService implements DisposableBean {
         }
     }
 
+    /**
+     * Resolve a Qishui track to its final (post-302) CDN URL plus the CENC play auth, so the
+     * browser can fetch the encrypted bytes directly and decrypt them client-side. This keeps the
+     * audio bytes off our ECS egress entirely — the backend only signs and points.
+     */
+    public QishuiResolvedPlayback resolveDirect(String trackId, String quality) throws Exception {
+        ParseResult parsed = parseWithRetry(trackId, quality);
+        String directUrl = resolveRedirect(parsed.playUrl);
+        return new QishuiResolvedPlayback(directUrl, parsed.playAuth);
+    }
+
+    /** Reads the 302 Location without downloading the body. */
+    private String resolveRedirect(String playUrl) throws IOException {
+        Request req = new Request.Builder().url(playUrl)
+                .header("User-Agent", "tunefree-next-bff/1.0").get().build();
+        OkHttpClient noFollow = http.newBuilder()
+                .followRedirects(false).followSslRedirects(false).build();
+        try (Response r = noFollow.newCall(req).execute()) {
+            if ((r.code() == 301 || r.code() == 302) && r.header("Location") != null) {
+                return r.header("Location");
+            }
+            return r.request().url().toString();
+        }
+    }
+
+    /** Final upstream CDN URL (post-redirect) and the CENC play auth needed to decrypt it. */
+    public static final class QishuiResolvedPlayback {
+        public final String directUrl;
+        public final String playAuth;
+
+        QishuiResolvedPlayback(String directUrl, String playAuth) {
+            this.directUrl = directUrl;
+            this.playAuth = playAuth;
+        }
+    }
+
     private ParseResult parseWithRetry(String trackId, String quality) {
         try {
             return parse(trackId, quality, auth.getToken());

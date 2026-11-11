@@ -3,6 +3,7 @@ package com.example.website.module.music.application;
 import com.example.website.common.MusicBusinessException;
 import com.example.website.common.MusicErrorCode;
 import com.example.website.module.music.api.dto.PlayInfo;
+import com.example.website.module.music.application.QishuiStreamService;
 import com.example.website.module.settings.application.SysConfigService;
 import org.junit.jupiter.api.Test;
 
@@ -27,7 +28,7 @@ class QishuiPlaybackIsolationTests {
                 mock(QqMusicClient.class), mock(NeteaseMusicClient.class), mock(KuwoMusicClient.class),
                 mock(ChkszNeteaseMusicClient.class), mock(TuneFreePayClient.class),
                 mock(QqTextFallbackClient.class), mock(PlayUrlVerifier.class), executor, 0L,
-                mock(QishuiMusicClient.class), new QishuiParseClient(tickets, ""));
+                mock(QishuiMusicClient.class), new QishuiParseClient(tickets, "", mock(QishuiStreamService.class)));
     }
 
     @Test void localTicketsRemainAvailableWhenTheSharedResolverExecutorRejectsWork() {

@@ -7,6 +7,7 @@ import com.example.website.module.music.api.dto.PlayInfo;
 import com.example.website.module.music.api.dto.SongSearchItem;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.mock;
 
 import com.example.website.common.BusinessException;
 import com.example.website.common.MusicBusinessException;
@@ -137,7 +138,8 @@ class QishuiClientTests {
     void parserReturnsSignedLocalStreamUrlInsteadOfRejectingEncryption() {
         QishuiStreamTicket tickets = new QishuiStreamTicket("test-signing-key".getBytes(
                 java.nio.charset.StandardCharsets.UTF_8));
-        QishuiParseClient parser = new QishuiParseClient(tickets, "https://api.example.test/");
+        QishuiParseClient parser = new QishuiParseClient(tickets, "https://api.example.test/",
+                mock(QishuiStreamService.class));
         PlayInfo info = parser.play("id", MusicQuality.K320);
 
         assertEquals(MusicSource.QISHUI, info.getSource());
@@ -161,7 +163,7 @@ class QishuiClientTests {
     void parserReturnsSameOriginRelativeStreamUrlWhenNoPublicBaseUrlIsConfigured() {
         QishuiStreamTicket tickets = new QishuiStreamTicket("test-signing-key".getBytes(
                 java.nio.charset.StandardCharsets.UTF_8));
-        QishuiParseClient parser = new QishuiParseClient(tickets, "");
+        QishuiParseClient parser = new QishuiParseClient(tickets, "", mock(QishuiStreamService.class));
         PlayInfo info = parser.play("track-1", MusicQuality.FLAC);
 
         assertTrue(info.getPlayUrl().startsWith("/api/public/music/qishui/stream?ticket="));

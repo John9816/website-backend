@@ -129,8 +129,9 @@ class QishuiAuthAutoRefreshTests {
     @Test
     void accountViewStillWorksWithoutAutoRefresh() throws Exception {
         when(store.load(1L)).thenReturn(Optional.of(binding("b1", 3600)));
-        QishuiAccountService accounts =
-                new QishuiAccountService(auth, store, new ObjectMapper());
+        // Use the fixed clock (not the real wall clock) so the seeded expiry stays in the
+        // future regardless of when the suite runs; autoRefresh stays null = no auto refresh.
+        QishuiAccountService accounts = new QishuiAccountService(auth, store, clock);
         assertEquals("bound", accounts.account(1L).getStatus());
     }
 }

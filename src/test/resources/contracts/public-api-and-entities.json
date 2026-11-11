@@ -2282,6 +2282,7 @@
         "album" : [ "java.lang.String", false, true, true ],
         "artist" : [ "java.lang.String", false, true, true ],
         "coverUrl" : [ "java.lang.String", false, true, true ],
+        "directUrl" : [ "java.lang.String", false, true, true ],
         "durationSec" : [ "java.lang.Integer", false, true, true ],
         "expireSec" : [ "java.lang.Integer", false, true, true ],
         "fileSize" : [ "java.lang.Long", false, true, true ],
@@ -2290,6 +2291,7 @@
         "lyric" : [ "LyricInfo", false, true, true ],
         "lyricMatch" : [ "java.lang.String", false, true, true ],
         "name" : [ "java.lang.String", false, true, true ],
+        "playAuth" : [ "java.lang.String", false, true, true ],
         "playUrl" : [ "java.lang.String", false, true, true ],
         "requestedQuality" : [ "java.lang.String", false, true, true ],
         "source" : [ "MusicSource", false, true, true ]
@@ -2301,6 +2303,7 @@
         "album" : [ "java.lang.String", false, true, true ],
         "artist" : [ "java.lang.String", false, true, true ],
         "coverUrl" : [ "java.lang.String", false, true, true ],
+        "directUrl" : [ "java.lang.String", false, true, true ],
         "durationSec" : [ "java.lang.Integer", false, true, true ],
         "expireSec" : [ "java.lang.Integer", false, true, true ],
         "fileSize" : [ "java.lang.Long", false, true, true ],
@@ -2309,6 +2312,7 @@
         "lyric" : [ "LyricInfo", false, true, true ],
         "lyricMatch" : [ "java.lang.String", false, true, true ],
         "name" : [ "java.lang.String", false, true, true ],
+        "playAuth" : [ "java.lang.String", false, true, true ],
         "playUrl" : [ "java.lang.String", false, true, true ],
         "requestedQuality" : [ "java.lang.String", false, true, true ],
         "source" : [ "MusicSource", false, true, true ]

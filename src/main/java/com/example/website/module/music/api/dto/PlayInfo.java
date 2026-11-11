@@ -27,6 +27,20 @@ public class PlayInfo {
     private String coverUrl;
     private Integer durationSec;
     private String playUrl;
+    /**
+     * Rich-client direct playback URL for Qishui (TuneFree v1) tracks. When present the browser
+     * fetches the CENC-encrypted bytes from this upstream CDN URL itself and decrypts them
+     * client-side, keeping the audio bytes off our ECS egress entirely. {@code null} for non-Qishui
+     * sources and for Qishui when direct resolution is unavailable — callers must fall back to
+     * {@link #playUrl}.
+     */
+    private String directUrl;
+    /**
+     * CENC play auth (content-key material) needed to decrypt {@link #directUrl} client-side.
+     * Short-lived and bound to the track/quality. Only ever populated together with
+     * {@link #directUrl}.
+     */
+    private String playAuth;
     private String requestedQuality;
     private String actualQuality;
     private Long fileSize;

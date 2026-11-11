@@ -26,8 +26,15 @@ public class UpstreamMetricsInterceptor implements Interceptor {
             metrics.recordUpstream(statusClass, System.nanoTime() - started);
             return response;
         } catch (IOException error) {
-            metrics.recordUpstreamError(error.getClass().getSimpleName());
-            metrics.recordUpstream("error", System.nanoTime() - started);
+            // A hedge winner cancels its losing siblings on purpose. Those StreamResetException /
+            // SocketException failures are not upstream faults, so keep them out of the error
+            // counter and alerting. Only real errors should be attributed to the provider.
+            boolean cancelled = chain.call().isCanceled();
+            metrics.recordUpstreamError(cancelled
+                    ? "cancelled/" + error.getClass().getSimpleName()
+                    : error.getClass().getSimpleName());
+            metrics.recordUpstream(cancelled ? "cancelled" : "error",
+                    System.nanoTime() - started);
             throw error;
         }
     }

@@ -21,7 +21,11 @@ import java.util.Base64;
  * without banning legitimate playback.
  *
  * <p>The signing key is derived from the application's JWT secret, so no extra credential needs
- * to be provisioned on the server.
+ * to be provisioned on the server. With a strong (non-default) JWT secret the key is stable
+ * across restarts and instances, so in-flight tickets survive a rolling deploy. If the site is
+ * still running with the published default secret, a process-random salt is kept as a safety
+ * net so tickets still cannot be forged offline. An explicit {@code app.music.qishui.ticket-salt}
+ * can be set to pin the key for multi-instance deployments without weakening this fallback.
  */
 @Component
 public class QishuiStreamTicket {
@@ -29,7 +33,8 @@ public class QishuiStreamTicket {
     private static final long TTL_SECONDS = 1200L; // matches upstream playUrl lifetime
     private static final String DEFAULT_JWT_SECRET =
             "Y2hhbmdlLXRoaXMtdG8tYS1zdHJvbmctc2VjcmV0LWtleS1hdC1sZWFzdC0zMi1ieXRlcw==";
-    /** Process-random salt: even with a default JWT secret, tickets cannot be forged offline. */
+    private static final byte[] DOMAIN = "|qishui-audio-stream-v1".getBytes(StandardCharsets.UTF_8);
+    /** Fallback for a weak/default JWT secret: tickets then cannot be forged offline. */
     private static final byte[] PROCESS_SALT = new byte[32];
     static {
         new java.security.SecureRandom().nextBytes(PROCESS_SALT);
@@ -38,17 +43,29 @@ public class QishuiStreamTicket {
     private final byte[] key;
 
     @Autowired
-    public QishuiStreamTicket(@Value("${app.jwt.secret}") String jwtSecret) {
+    public QishuiStreamTicket(
+            @Value("${app.jwt.secret}") String jwtSecret,
+            @Value("${app.music.qishui.ticket-salt:}") String ticketSalt) {
         String secret = (jwtSecret == null || jwtSecret.isEmpty()) ? "" : jwtSecret;
+        boolean weakSecret = secret.isEmpty() || DEFAULT_JWT_SECRET.equals(secret);
         try {
             MessageDigest sha = MessageDigest.getInstance("SHA-256");
             sha.update(secret.getBytes(StandardCharsets.UTF_8));
-            sha.update("|qishui-audio-stream-v1".getBytes(StandardCharsets.UTF_8));
-            sha.update(PROCESS_SALT); // keeps tickets valid only for this process lifetime
+            sha.update(DOMAIN);
+            if (ticketSalt != null && !ticketSalt.isEmpty()) {
+                sha.update(ticketSalt.getBytes(StandardCharsets.UTF_8));
+            } else if (weakSecret) {
+                sha.update(PROCESS_SALT);
+            }
             this.key = sha.digest();
         } catch (Exception e) {
             throw new IllegalStateException("SHA-256 unavailable", e);
         }
+    }
+
+    /** Visible for tests: treat the argument as the JWT secret with no explicit ticket salt. */
+    QishuiStreamTicket(String jwtSecret) {
+        this(jwtSecret, "");
     }
 
     /** Visible for tests. */

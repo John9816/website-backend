@@ -13,8 +13,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.Arrays;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 /**
  * Local, plain-audio endpoint for Qishui (TuneFree v1) playback.
@@ -22,7 +21,11 @@ import java.util.Arrays;
  * <p>Registered under {@code /api/public/**} which is {@code permitAll} for GET, because a
  * browser {@code <audio>} element cannot attach an Authorization header. Access is instead
  * gated by a short-lived HMAC ticket bound to one track/quality (see {@link QishuiStreamTicket}).
- * HTTP Range is supported so seeking works without re-resolving the whole track.
+ *
+ * <p>The response is a {@link StreamingResponseBody}: only the requested byte range is read
+ * from the on-disk cache in 64 KB chunks, and Spring MVC runs the body on the dedicated
+ * {@code mvcAsyncTaskExecutor} rather than a Tomcat request thread. A lossless track is ~33 MB,
+ * so this keeps both the heap and the control-plane thread pool free for JSON APIs.
  */
 @Slf4j
 @RestController
@@ -35,51 +38,50 @@ public class QishuiStreamController {
     private final QishuiStreamService streams;
 
     @GetMapping(value = "/stream", produces = "audio/mp4")
-    public ResponseEntity<byte[]> stream(
+    public ResponseEntity<StreamingResponseBody> stream(
             @RequestParam(value = "ticket", required = false) String ticket,
             @RequestHeader(value = HttpHeaders.RANGE, required = false) String rangeHeader) {
         // verify() handles null/empty as a 400 business error; a required @RequestParam would
         // instead raise MissingServletRequestParameterException -> generic 500.
         QishuiStreamTicket.Payload payload = tickets.verify(ticket);
-        byte[] audio = streams.plaintext(payload.getTrackId(), payload.getQuality());
+        QishuiStreamService.AudioFile audio = streams.open(payload.getTrackId(), payload.getQuality());
 
-        Range range = Range.parse(rangeHeader, audio.length);
+        Range range = Range.parse(rangeHeader, audio.length());
         if (range == null) {
             return ResponseEntity.status(HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
-                    .header(HttpHeaders.CONTENT_RANGE, "bytes */" + audio.length)
+                    .header(HttpHeaders.CONTENT_RANGE, "bytes */" + audio.length())
                     .header(HttpHeaders.ACCEPT_RANGES, "bytes")
                     .build();
         }
-        byte[] body = range.start == 0 && range.end == audio.length - 1
-                ? audio
-                : Arrays.copyOfRange(audio, range.start, range.end + 1);
+        long bodyLength = range.end - range.start + 1;
         HttpStatus status = range.partial ? HttpStatus.PARTIAL_CONTENT : HttpStatus.OK;
         ResponseEntity.BodyBuilder builder = ResponseEntity.status(status)
                 .contentType(AUDIO_MP4)
                 .header(HttpHeaders.ACCEPT_RANGES, "bytes")
                 .header(HttpHeaders.CACHE_CONTROL, "private, max-age=600")
-                .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(body.length));
+                .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(bodyLength));
         if (range.partial) {
             builder.header(HttpHeaders.CONTENT_RANGE,
-                    "bytes " + range.start + "-" + range.end + "/" + audio.length);
+                    "bytes " + range.start + "-" + range.end + "/" + audio.length());
         }
+        StreamingResponseBody body = out -> audio.writeRange(out, range.start, range.end);
         return builder.body(body);
     }
 
     private static final class Range {
-        final int start;
-        final int end;
+        final long start;
+        final long end;
         final boolean partial;
 
-        Range(int start, int end, boolean partial) {
+        Range(long start, long end, boolean partial) {
             this.start = start;
             this.end = end;
             this.partial = partial;
         }
 
         /** Returns null when the requested range is unsatisfiable. */
-        static Range parse(String header, int length) {
-            if (header == null || header.isEmpty()) {
+        static Range parse(String header, long length) {
+            if (header == null || header.isEmpty() || length <= 0) {
                 return new Range(0, length - 1, false);
             }
             String v = header.trim();
@@ -103,7 +105,7 @@ public class QishuiStreamController {
                 }
                 if (start >= length || start < 0 || end < start) return null;
                 end = Math.min(end, length - 1);
-                return new Range((int) start, (int) end, true);
+                return new Range(start, end, true);
             } catch (NumberFormatException e) {
                 return null;
             }

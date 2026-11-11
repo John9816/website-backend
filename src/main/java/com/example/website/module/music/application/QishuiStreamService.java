@@ -18,8 +18,15 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.GeneralSecurityException;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
@@ -33,10 +40,11 @@ import java.util.concurrent.TimeUnit;
  * (CORS), and encrypted. Instead {@link QishuiParseClient} returns a signed local stream URL,
  * and this service produces the bytes behind it.
  *
- * <p>Caching is two-tier. A small in-memory Caffeine cache (64 MB) serves hot tracks instantly;
- * a bounded on-disk cache (1 GiB) holds the rest, because a lossless track is ~33 MB and the API
- * only has a 768 MB heap. {@code Cache.get(key, loader)} makes the load atomic per key, so the
- * several concurrent HTTP Range requests a browser issues while starting playback cannot trigger
+ * <p>Caching is two-tier, but only the disk tier holds audio bytes. A small in-memory Caffeine
+ * cache stores lightweight {@link AudioFile} handles (path + length), so a Range request is
+ * served by positional {@code FileChannel} reads and never materialises the whole track in the
+ * 768 MB heap. {@code Cache.get(key, loader)} makes the load atomic per key, so the several
+ * concurrent HTTP Range requests a browser issues while starting playback cannot trigger
  * duplicate upstream downloads and decryptions.
  */
 @Slf4j
@@ -46,14 +54,13 @@ public class QishuiStreamService {
     private static final String PARSE_URL = "https://tunefree.sayqz.com/v1/parse";
     private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
     private static final long MAX_AUDIO_BYTES = 48L * 1024 * 1024;   // guard against runaway responses
-    private static final long CACHE_MAX_BYTES = 64L * 1024 * 1024;    // in-memory hot set; must stay small on a 768m heap
     private static final long DISK_CACHE_MAX_BYTES = 1024L * 1024 * 1024;
     private static final long CACHE_TTL_SEC = 1100L;
 
     private final TuneFreeV1AuthService auth;
     private final OkHttpClient http;
     private final ObjectMapper mapper;
-    private final Cache<String, byte[]> plainCache;
+    private final Cache<String, AudioFile> plainCache;
     private final QishuiDiskCache diskCache;
 
     public QishuiStreamService(
@@ -70,28 +77,53 @@ public class QishuiStreamService {
         this.mapper = mapper;
         this.diskCache = new QishuiDiskCache(cacheDir, DISK_CACHE_MAX_BYTES, CACHE_TTL_SEC);
         this.plainCache = Caffeine.newBuilder()
-                .maximumWeight(CACHE_MAX_BYTES)
-                .weigher((String k, byte[] v) -> v.length)
+                .maximumSize(256)
                 .expireAfterWrite(Duration.ofSeconds(CACHE_TTL_SEC))
                 .build();
     }
 
-    /** Returns plain MP4 bytes for the given track, using both cache tiers when possible. */
-    public byte[] plaintext(String trackId, String quality) {
+    /**
+     * Returns a lightweight handle to the decrypted track. The bytes live on disk; only when the
+     * disk cache is unavailable do we keep them in memory (preserving the existing fallback).
+     */
+    public AudioFile open(String trackId, String quality) {
         String key = cacheKey(trackId, quality);
-        // Atomic per-key load: concurrent Range requests share a single upstream resolve.
+        AudioFile cached = plainCache.getIfPresent(key);
+        if (cached != null && cached.isValid()) {
+            return cached;
+        }
+        if (cached != null) {
+            // The disk entry was evicted/trimmed while the handle stayed cached: force a reload.
+            plainCache.invalidate(key);
+        }
         return plainCache.get(key, k -> load(k, trackId, quality));
     }
 
-    private byte[] load(String key, String trackId, String quality) {
-        byte[] disk = diskCache.read(key);
+    private AudioFile load(String key, String trackId, String quality) {
+        Path disk = diskCache.resolve(key);
         if (disk != null) {
-            log.info("Qishui stream disk cache hit quality={} bytes={}", quality, disk.length);
-            return disk;
+            try {
+                long size = Files.size(disk);
+                log.info("Qishui stream disk cache hit quality={} bytes={}", quality, size);
+                return new AudioFile(disk, null, size);
+            } catch (IOException e) {
+                log.warn("Qishui disk cache stat failed key={}: {}", key, e.toString());
+            }
         }
         byte[] plain = resolvePlaintext(trackId, quality);
         diskCache.write(key, plain);
-        return plain;
+        Path written = diskCache.resolve(key);
+        if (written != null) {
+            try {
+                long size = Files.size(written);
+                if (size == plain.length) {
+                    return new AudioFile(written, null, size);
+                }
+            } catch (IOException ignored) {
+                // fall through to the in-memory fallback
+            }
+        }
+        return new AudioFile(null, plain, plain.length);
     }
 
     /**
@@ -223,6 +255,60 @@ public class QishuiStreamService {
         } catch (IOException e) {
             throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
                     "Qishui audio download failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * A handle to decrypted audio. When {@code path} is set the bytes stay on disk and only the
+     * requested Range is read into a small buffer; when the disk cache is unavailable the
+     * {@code bytes} fallback preserves the original in-memory behaviour. Either way the caller
+     * never needs the whole track as one contiguous heap allocation.
+     */
+    public static final class AudioFile {
+        private static final int BUFFER_SIZE = 64 * 1024;
+        private final Path path;
+        private final byte[] bytes;
+        private final long length;
+
+        private AudioFile(Path path, byte[] bytes, long length) {
+            this.path = path;
+            this.bytes = bytes;
+            this.length = length;
+        }
+
+        public long length() {
+            return length;
+        }
+
+        boolean isValid() {
+            return path == null ? bytes != null : Files.isRegularFile(path);
+        }
+
+        /** Writes the inclusive byte range [start, end] to the response stream. */
+        public void writeRange(OutputStream out, long start, long end) throws IOException {
+            long remaining = end - start + 1;
+            if (remaining <= 0) {
+                return;
+            }
+            if (bytes != null) {
+                out.write(bytes, (int) start, (int) remaining);
+                return;
+            }
+            try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
+                ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
+                long position = start;
+                while (remaining > 0) {
+                    buffer.clear();
+                    buffer.limit((int) Math.min(buffer.capacity(), remaining));
+                    int read = channel.read(buffer, position);
+                    if (read < 0) {
+                        throw new EOFException("Qishui audio cache truncated at " + position);
+                    }
+                    out.write(buffer.array(), 0, read);
+                    position += read;
+                    remaining -= read;
+                }
+            }
         }
     }
 

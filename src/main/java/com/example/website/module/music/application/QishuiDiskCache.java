@@ -65,6 +65,33 @@ final class QishuiDiskCache {
         return enabled;
     }
 
+    /**
+     * Returns a live, already-decrypted cache file for the key without loading its bytes into
+     * the heap, or null on miss / expiry / I/O error. The stream endpoint uses this to serve
+     * HTTP Range requests with positional reads instead of materialising the whole track.
+     */
+    Path resolve(String key) {
+        if (!enabled) {
+            return null;
+        }
+        Path f = file(key);
+        try {
+            if (!Files.isRegularFile(f)) {
+                return null;
+            }
+            long age = System.currentTimeMillis() - Files.getLastModifiedTime(f).toMillis();
+            if (age > ttlMillis) {
+                Files.deleteIfExists(f);
+                return null;
+            }
+            long size = Files.size(f);
+            return size == 0 ? null : f;
+        } catch (IOException e) {
+            log.warn("Qishui disk cache resolve failed key={}: {}", key, e.toString());
+            return null;
+        }
+    }
+
     /** Returns cached bytes, or null on miss / expiry / I/O error. */
     byte[] read(String key) {
         if (!enabled) {

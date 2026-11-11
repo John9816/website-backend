@@ -12,6 +12,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.Ticker;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
@@ -20,20 +21,39 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class QishuiFeedClient {
     static final String RECOMMENDED = "recommended";
+    private static final long DEFAULT_DISCOVERY_TTL_SEC = 300L;  // recommended feed is not second-fresh
+    private static final long DEFAULT_MODES_TTL_SEC = 900L;      // mode list is quasi-static
+    private static final long LEGACY_TTL_SEC = 30L;              // kept for the ticker-based unit tests
     private final QishuiMusicClient catalog;
     private final ObjectMapper mapper;
     private final Cache<String, Page> discoveryCache;
+    private final Cache<String, List<QishuiFeedModeView>> modesCache;
     private final PerformanceSingleFlight discoveryFlights = new PerformanceSingleFlight();
 
     @Autowired
-    public QishuiFeedClient(QishuiMusicClient catalog, ObjectMapper mapper) {
-        this(catalog, mapper, Ticker.systemTicker());
+    public QishuiFeedClient(QishuiMusicClient catalog, ObjectMapper mapper,
+            @Value("${app.music.qishui.discovery-ttl-sec:300}") long discoveryTtlSec,
+            @Value("${app.music.qishui.modes-ttl-sec:900}") long modesTtlSec) {
+        this(catalog, mapper, Ticker.systemTicker(), discoveryTtlSec, modesTtlSec);
     }
 
+    /** Test constructor used by the feed/catalog reuse tests. */
+    QishuiFeedClient(QishuiMusicClient catalog, ObjectMapper mapper) {
+        this(catalog, mapper, Ticker.systemTicker(), LEGACY_TTL_SEC, DEFAULT_MODES_TTL_SEC);
+    }
+
+    /** Test constructor: keeps the historical 30s discovery TTL asserted by the ticker tests. */
     QishuiFeedClient(QishuiMusicClient catalog, ObjectMapper mapper, Ticker ticker) {
+        this(catalog, mapper, ticker, LEGACY_TTL_SEC, DEFAULT_MODES_TTL_SEC);
+    }
+
+    private QishuiFeedClient(QishuiMusicClient catalog, ObjectMapper mapper, Ticker ticker,
+            long discoveryTtlSec, long modesTtlSec) {
         this.catalog = catalog; this.mapper = mapper;
         this.discoveryCache = Caffeine.newBuilder().maximumSize(1)
-                .expireAfterWrite(30, TimeUnit.SECONDS).ticker(ticker).build();
+                .expireAfterWrite(discoveryTtlSec, TimeUnit.SECONDS).ticker(ticker).build();
+        this.modesCache = Caffeine.newBuilder().maximumSize(64)
+                .expireAfterWrite(modesTtlSec, TimeUnit.SECONDS).ticker(ticker).build();
     }
 
     public QishuiDiscoveryView discovery() {
@@ -57,6 +77,20 @@ public class QishuiFeedClient {
     }
 
     List<QishuiFeedModeView> modes(QishuiCredential credential) {
+        // Mode cards are quasi-static but may be account-specific, so never share one entry
+        // across different upstream identities. An anonymous request gets its own key.
+        String userId = credential == null || credential.getUserId() == null
+                ? "anonymous" : credential.getUserId();
+        List<QishuiFeedModeView> cached = modesCache.getIfPresent(userId);
+        if (cached != null) {
+            return new ArrayList<>(cached);
+        }
+        List<QishuiFeedModeView> parsed = fetchModes(credential);
+        modesCache.put(userId, parsed);
+        return new ArrayList<>(parsed);
+    }
+
+    private List<QishuiFeedModeView> fetchModes(QishuiCredential credential) {
         JsonNode blocks = catalog.postFeed("/feed/mode/", mapper.createObjectNode(), credential)
                 .path("feed_mode_block");
         if (!blocks.isArray()) throw QishuiHttpClient.failure("invalid_feed_modes");

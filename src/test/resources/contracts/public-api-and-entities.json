@@ -3636,7 +3636,7 @@
         "annotations" : [ "org.springframework.web.bind.annotation.RequestHeader{defaultValue=\n\t\t\n\t\t\n\n\t\t\t\t\n, name=, required=false, value=Range}" ],
         "type" : "java.lang.String"
       } ],
-      "returns" : "org.springframework.http.ResponseEntity<byte[]>"
+      "returns" : "org.springframework.http.ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody>"
     },
     "{GET [/api/public/music/share/{token}]}" : {
       "parameters" : [ {

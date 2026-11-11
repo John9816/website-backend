@@ -183,19 +183,21 @@ public class QishuiStreamService implements DisposableBean {
 
         @Override
         public void run() {
+            long started = System.currentTimeMillis();
             try {
                 ParseResult parsed = parseWithRetry(trackId, quality);
-                streamInto(parsed);
+                streamInto(parsed, started, System.currentTimeMillis());
             } catch (Exception e) {
                 fail(e);
             }
         }
 
-        private void streamInto(ParseResult parsed) throws Exception {
+        private void streamInto(ParseResult parsed, long started, long parsedAt) throws Exception {
             Request req = new Request.Builder().url(parsed.playUrl)
                     .header("User-Agent", "tunefree-next-bff/1.0")
                     .get().build();
             try (Response resp = http.newCall(req).execute()) {
+                long connectedAt = System.currentTimeMillis();
                 ResponseBody rb = resp.body();
                 if (resp.code() < 200 || resp.code() >= 300 || rb == null) {
                     throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
@@ -234,6 +236,11 @@ public class QishuiStreamService implements DisposableBean {
                     return;
                 }
 
+                long headerReadAt = System.currentTimeMillis();
+                log.info("Qishui stream timing quality={} parse={}ms connect={}ms headerRead={}ms "
+                                + "headerBytes={} size={}",
+                        quality, parsedAt - started, connectedAt - parsedAt,
+                        headerReadAt - connectedAt, headerLen, declared);
                 QishuiCencDecryptor.StreamPlan plan = QishuiCencDecryptor.StreamPlan.parse(
                         header, headerLen, parsed.playAuth, mdat[0], mdat[1], declared);
                 int payloadStart = plan.mdatPayloadStart();

@@ -146,6 +146,38 @@ final class QishuiDiskCache {
         return dir.resolve(sha256Hex(key) + ".bin");
     }
 
+    /** Staging path for an in-progress streaming load. Excluded from trim() (no .bin suffix). */
+    Path staging(String key) {
+        return enabled ? file(key).resolveSibling(file(key).getFileName() + ".part") : null;
+    }
+
+    /** Final cache path, only published once the whole file is written. */
+    Path target(String key) {
+        return enabled ? file(key) : null;
+    }
+
+    /**
+     * Atomically publishes a completed staging file. Returns false when the disk cache is
+     * disabled or the move failed; the caller then simply keeps serving from staging.
+     */
+    boolean publish(String key, Path staging) {
+        if (!enabled || staging == null) return false;
+        Path f = file(key);
+        try {
+            try {
+                Files.move(staging, f, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(staging, f, StandardCopyOption.REPLACE_EXISTING);
+            }
+            trim();
+            return true;
+        } catch (IOException e) {
+            log.warn("Qishui disk cache publish failed key={}: {}", key, e.toString());
+            return false;
+        }
+    }
+
     /** Deletes expired entries first, then evicts oldest-first until the size bound is met. */
     private synchronized void trim() {
         if (!enabled) {

@@ -41,59 +41,15 @@ public final class QishuiCencDecryptor {
         if (fileData == null || fileData.length < 16) {
             throw new DecryptException("audio data too short");
         }
-        byte[] key = deriveContentKey(playAuth);
-
-        Box moov = findBox(fileData, "moov", 0, fileData.length);
-        if (moov == null) throw new DecryptException("moov box not found");
-
-        Box stbl = findBox(fileData, "stbl", moov.offset, moov.offset + moov.size);
-        if (stbl == null) {
-            Box trak = findBox(fileData, "trak", moov.offset + 8, moov.offset + moov.size);
-            Box mdia = trak == null ? null
-                    : findBox(fileData, "mdia", trak.offset + 8, trak.offset + trak.size);
-            Box minf = mdia == null ? null
-                    : findBox(fileData, "minf", mdia.offset + 8, mdia.offset + mdia.size);
-            stbl = minf == null ? null
-                    : findBox(fileData, "stbl", minf.offset + 8, minf.offset + minf.size);
-        }
-        if (stbl == null) throw new DecryptException("stbl box not found");
-
-        Box stsz = findBox(fileData, "stsz", stbl.offset + 8, stbl.offset + stbl.size);
-        if (stsz == null) throw new DecryptException("stsz box not found");
-        long[] sampleSizes = parseStsz(stsz.data);
-
-        Box senc = findBox(fileData, "senc", moov.offset + 8, moov.offset + moov.size);
-        if (senc == null) {
-            senc = findBox(fileData, "senc", stbl.offset + 8, stbl.offset + stbl.size);
-        }
-        if (senc == null) throw new DecryptException("senc box not found");
-        int ivSize = perSampleIvSize(fileData, stbl.offset, stbl.offset + stbl.size);
-        SampleEncryption[] samples = parseSenc(senc.data, ivSize);
-
         Box mdat = findBox(fileData, "mdat", 0, fileData.length);
         if (mdat == null) throw new DecryptException("mdat box not found");
 
-        Cipher cipher = Cipher.getInstance("AES/CTR/NoPadding");
+        // Whole-buffer and streaming paths share StreamPlan, so their output is byte-identical.
+        StreamPlan plan = new StreamPlan(fileData, fileData.length, playAuth,
+                mdat.offset, mdat.size, fileData.length);
         byte[] out = fileData.clone();
-        int readPtr = mdat.offset + 8;
-        int payloadLimit = Math.min(mdat.offset + mdat.size, out.length);
-        for (int i = 0; i < sampleSizes.length; i++) {
-            int size = (int) sampleSizes[i];
-            if (size <= 0 || readPtr + size > payloadLimit) break;
-            if (i < samples.length) {
-                decryptSample(cipher, key, out, readPtr, size, samples[i]);
-            }
-            readPtr += size;
-        }
-
-        Box stsd = findBox(fileData, "stsd", stbl.offset + 8, stbl.offset + stbl.size);
-        if (stsd != null) {
-            int idx = indexOf(out, stsd.offset, stsd.offset + stsd.size, "enca");
-            if (idx >= 0) {
-                byte[] original = originalFormat(out, stsd.offset, stsd.offset + stsd.size);
-                System.arraycopy(original, 0, out, idx, 4);
-            }
-        }
+        plan.patchHeader(out);
+        plan.decryptAll(out);
         return out;
     }
 
@@ -409,5 +365,161 @@ public final class QishuiCencDecryptor {
             if (asciiEquals(data, i, needle)) return i;
         }
         return -1;
+    }
+
+    /**
+     * Reusable metadata for a CENC MP4. Being a nested class it can reuse all the private
+     * ISO-BMFF helpers above without duplicating them. Both {@link #decrypt(byte[], String)}
+     * and the streaming loader go through here, which keeps the two paths byte-identical.
+     *
+     * <p>Not thread-safe: the {@link Cipher} is reused with a fresh IV per sample, so one
+     * instance belongs to one load task.
+     */
+    public static final class StreamPlan {
+        private final byte[] key;
+        private final long[] sampleSizes;
+        private final SampleEncryption[] samples;
+        private final int mdatPayloadStart;
+        private final int payloadLimit;
+        private final int encaIndex;
+        private final byte[] originalFormatBytes;
+        private final Cipher cipher;
+
+        private StreamPlan(byte[] data, int available, String playAuth,
+                           long mdatOffset, long mdatSize, long totalLength)
+                throws GeneralSecurityException {
+            Box moov = findBox(data, "moov", 0, available);
+            if (moov == null) throw new DecryptException("moov box not found");
+
+            Box stbl = findBox(data, "stbl", moov.offset, moov.offset + moov.size);
+            if (stbl == null) {
+                Box trak = findBox(data, "trak", moov.offset + 8, moov.offset + moov.size);
+                Box mdia = trak == null ? null
+                        : findBox(data, "mdia", trak.offset + 8, trak.offset + trak.size);
+                Box minf = mdia == null ? null
+                        : findBox(data, "minf", mdia.offset + 8, mdia.offset + mdia.size);
+                stbl = minf == null ? null
+                        : findBox(data, "stbl", minf.offset + 8, minf.offset + minf.size);
+            }
+            if (stbl == null) throw new DecryptException("stbl box not found");
+
+            Box stsz = findBox(data, "stsz", stbl.offset + 8, stbl.offset + stbl.size);
+            if (stsz == null) throw new DecryptException("stsz box not found");
+            Box senc = findBox(data, "senc", moov.offset + 8, moov.offset + moov.size);
+            if (senc == null) {
+                senc = findBox(data, "senc", stbl.offset + 8, stbl.offset + stbl.size);
+            }
+            if (senc == null) throw new DecryptException("senc box not found");
+            int ivSize = perSampleIvSize(data, stbl.offset, stbl.offset + stbl.size);
+
+            Box stsd = findBox(data, "stsd", stbl.offset + 8, stbl.offset + stbl.size);
+            int idx = stsd == null ? -1
+                    : indexOf(data, stsd.offset, stsd.offset + stsd.size, "enca");
+
+            this.key = deriveContentKey(playAuth);
+            this.sampleSizes = parseStsz(stsz.data);
+            this.samples = parseSenc(senc.data, ivSize);
+            this.mdatPayloadStart = (int) (mdatOffset + 8);
+            this.payloadLimit = (int) Math.min(mdatOffset + mdatSize, totalLength);
+            this.encaIndex = idx;
+            this.originalFormatBytes = idx >= 0 && stsd != null
+                    ? originalFormat(data, stsd.offset, stsd.offset + stsd.size)
+                    : new byte[] {'m', 'p', '4', 'a'};
+            this.cipher = Cipher.getInstance("AES/CTR/NoPadding");
+        }
+
+        /** Factory for the streaming path, which only has a prefix containing the full moov. */
+        public static StreamPlan parse(byte[] prefix, int available, String playAuth,
+                                       long mdatOffset, long mdatSize, long totalLength)
+                throws GeneralSecurityException {
+            if (prefix == null || available < 16 || prefix.length < available) {
+                throw new DecryptException("audio data too short");
+            }
+            return new StreamPlan(prefix, available, playAuth, mdatOffset, mdatSize, totalLength);
+        }
+
+        /**
+         * Finds the mdat box header in a partially downloaded prefix. Unlike findBox() this
+         * deliberately does not require the (multi-megabyte) mdat body to be present: only its
+         * 8-byte header is needed to learn where the encrypted samples start. Returns
+         * {offset, size}, or null while moov is still incomplete.
+         */
+        public static long[] locateMdat(byte[] data, int length) {
+            int pos = 0;
+            boolean moovComplete = false;
+            while (pos + 8 <= length) {
+                long size = readU32(data, pos);
+                if (size < 8) return null;
+                String type = ascii(data, pos + 4);
+                if ("moov".equals(type)) {
+                    if (pos + size > length) return null;
+                    moovComplete = true;
+                }
+                if ("mdat".equals(type)) {
+                    return moovComplete ? new long[] {pos, size} : null;
+                }
+                if (pos + size > length) return null;
+                pos += (int) size;
+            }
+            return null;
+        }
+
+        public int mdatPayloadStart() {
+            return mdatPayloadStart;
+        }
+
+        public int payloadLimit() {
+            return payloadLimit;
+        }
+
+        public long[] sampleSizes() {
+            return sampleSizes;
+        }
+
+        /** Restores the 'enca' sample entry to its original four-character format, in place. */
+        public void patchHeader(byte[] out) {
+            if (encaIndex >= 0 && encaIndex + 4 <= out.length) {
+                System.arraycopy(originalFormatBytes, 0, out, encaIndex, 4);
+            }
+        }
+
+        /** Decrypts sample {@code index} in place at [offset, offset+size). */
+        public void decryptSample(byte[] data, int offset, int size, int index)
+                throws GeneralSecurityException {
+            if (index >= samples.length || size <= 0) return;
+            SampleEncryption sample = samples[index];
+            byte[] iv = new byte[16];
+            System.arraycopy(sample.iv, 0, iv, 0, Math.min(sample.iv.length, 16));
+            cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"),
+                    new IvParameterSpec(iv));
+            if (sample.subsamples == null || sample.subsamples.length == 0) {
+                transform(cipher, data, offset, size);
+                return;
+            }
+            int pos = offset;
+            int end = offset + size;
+            for (int[] sub : sample.subsamples) {
+                int clear = Math.min(sub[0], end - pos);
+                pos += clear; // clear bytes are deliberately left untouched
+                if (pos >= end) break;
+                int encrypted = (int) Math.min(sub[1], (long) (end - pos));
+                transform(cipher, data, pos, encrypted);
+                pos += encrypted;
+                if (pos >= end) break;
+            }
+        }
+
+        /** Decrypts every sample of a complete buffer. */
+        public void decryptAll(byte[] out) throws GeneralSecurityException {
+            int readPtr = mdatPayloadStart;
+            for (int i = 0; i < sampleSizes.length; i++) {
+                int size = (int) sampleSizes[i];
+                if (size <= 0 || readPtr + size > payloadLimit) break;
+                if (i < samples.length) {
+                    decryptSample(out, readPtr, size, i);
+                }
+                readPtr += size;
+            }
+        }
     }
 }

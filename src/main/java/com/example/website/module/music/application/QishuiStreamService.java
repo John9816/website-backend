@@ -14,6 +14,8 @@ import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
+import okio.BufferedSource;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -29,6 +31,10 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.GeneralSecurityException;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -40,16 +46,22 @@ import java.util.concurrent.TimeUnit;
  * (CORS), and encrypted. Instead {@link QishuiParseClient} returns a signed local stream URL,
  * and this service produces the bytes behind it.
  *
- * <p>Caching is two-tier, but only the disk tier holds audio bytes. A small in-memory Caffeine
- * cache stores lightweight {@link AudioFile} handles (path + length), so a Range request is
- * served by positional {@code FileChannel} reads and never materialises the whole track in the
- * 768 MB heap. {@code Cache.get(key, loader)} makes the load atomic per key, so the several
- * concurrent HTTP Range requests a browser issues while starting playback cannot trigger
- * duplicate upstream downloads and decryptions.
+ * <p>First-play latency used to be dominated by waiting for the whole encrypted track to
+ * arrive before a single byte could be returned. The upstream MP4 is faststart (ftyp + moov
+ * at the head, ~90 KB here), and CENC uses AES-CTR with a per-sample IV, so a load now runs on a
+ * background task that downloads, decrypts sample-by-sample and writes the plain file as it
+ * goes. As soon as the header is written the request thread returns an {@link AudioFile}
+ * handle; {@link AudioFile#writeRange} waits only for the specific bytes it needs. Range reads
+ * are still positional {@code FileChannel} reads, so no track is ever materialised whole in the
+ * 768 MB heap. Concurrent requests for one key share a single load task.
+ *
+ * <p>Anything that breaks the faststart assumption (moov at the tail, unknown Content-Length,
+ * oversized header, I/O error) falls back to the original whole-track download + one-shot
+ * decrypt. Disk-caching-disabled deployments keep the original in-memory behaviour.
  */
 @Slf4j
 @Service
-public class QishuiStreamService {
+public class QishuiStreamService implements DisposableBean {
 
     private static final String PARSE_URL = "https://tunefree.sayqz.com/v1/parse";
     private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
@@ -57,11 +69,22 @@ public class QishuiStreamService {
     private static final long DISK_CACHE_MAX_BYTES = 1024L * 1024 * 1024;
     private static final long CACHE_TTL_SEC = 1100L;
 
+    private static final int MAX_HEADER_BYTES = 512 * 1024;  // faststart moov fits here comfortably
+    private static final int READ_CHUNK = 16 * 1024;
+    private static final long HEADER_TIMEOUT_MS = 45_000L;
+    private static final long READY_TIMEOUT_MS = 60_000L;
+
     private final TuneFreeV1AuthService auth;
     private final OkHttpClient http;
     private final ObjectMapper mapper;
     private final Cache<String, AudioFile> plainCache;
     private final QishuiDiskCache diskCache;
+    private final ConcurrentHashMap<String, LoadTask> loads = new ConcurrentHashMap<>();
+    private final ExecutorService loaders = Executors.newFixedThreadPool(2, r -> {
+        Thread t = new Thread(r, "qishui-stream-loader");
+        t.setDaemon(true);
+        return t;
+    });
 
     public QishuiStreamService(
             TuneFreeV1AuthService auth,
@@ -82,12 +105,18 @@ public class QishuiStreamService {
                 .build();
     }
 
+    @Override
+    public void destroy() {
+        loaders.shutdownNow();
+    }
+
     /**
-     * Returns a lightweight handle to the decrypted track. The bytes live on disk; only when the
-     * disk cache is unavailable do we keep them in memory (preserving the existing fallback).
+     * Returns a handle to the decrypted track. A cache hit is a complete on-disk file; a miss
+     * starts a single streaming load and returns as soon as the MP4 header is on disk.
      */
     public AudioFile open(String trackId, String quality) {
         String key = cacheKey(trackId, quality);
+
         AudioFile cached = plainCache.getIfPresent(key);
         if (cached != null && cached.isValid()) {
             return cached;
@@ -96,34 +125,326 @@ public class QishuiStreamService {
             // The disk entry was evicted/trimmed while the handle stayed cached: force a reload.
             plainCache.invalidate(key);
         }
-        return plainCache.get(key, k -> load(k, trackId, quality));
-    }
 
-    private AudioFile load(String key, String trackId, String quality) {
+        if (!diskCache.isEnabled()) {
+            // Preserve the original in-memory behaviour when there is no writable cache dir.
+            byte[] plain = resolvePlaintext(trackId, quality);
+            return new AudioFile(null, plain, plain.length);
+        }
+
         Path disk = diskCache.resolve(key);
         if (disk != null) {
             try {
-                long size = Files.size(disk);
-                log.info("Qishui stream disk cache hit quality={} bytes={}", quality, size);
-                return new AudioFile(disk, null, size);
+                AudioFile hit = new AudioFile(disk, null, Files.size(disk));
+                plainCache.put(key, hit);
+                return hit;
             } catch (IOException e) {
                 log.warn("Qishui disk cache stat failed key={}: {}", key, e.toString());
             }
         }
-        byte[] plain = resolvePlaintext(trackId, quality);
-        diskCache.write(key, plain);
-        Path written = diskCache.resolve(key);
-        if (written != null) {
+
+        LoadTask mine = new LoadTask(key, trackId, quality);
+        LoadTask task = loads.putIfAbsent(key, mine);
+        if (task == null) {
+            task = mine;
+            loaders.execute(mine);
+        }
+        try {
+            task.awaitHeader();
+        } catch (IOException e) {
+            throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
+                    "Qishui audio header not ready: " + e.getMessage(), e);
+        }
+        return new AudioFile(task.staging, null, task.totalBytes, task);
+    }
+
+    /** Streaming load task: one upstream connection, decrypt and write as bytes arrive. */
+    private final class LoadTask implements Runnable {
+        final String key;
+        final String trackId;
+        final String quality;
+        final Path staging;
+        final Object monitor = new Object();
+
+        volatile long totalBytes = -1L;
+        volatile long readyBytes = 0L;
+        volatile boolean headerReady = false;
+        volatile boolean done = false;
+        volatile IOException failure = null;
+        volatile Path livePath;
+
+        LoadTask(String key, String trackId, String quality) {
+            this.key = key;
+            this.trackId = trackId;
+            this.quality = quality;
+            this.staging = diskCache.staging(key);
+            this.livePath = staging;
+        }
+
+        @Override
+        public void run() {
             try {
-                long size = Files.size(written);
-                if (size == plain.length) {
-                    return new AudioFile(written, null, size);
-                }
-            } catch (IOException ignored) {
-                // fall through to the in-memory fallback
+                ParseResult parsed = parseWithRetry(trackId, quality);
+                streamInto(parsed);
+            } catch (Exception e) {
+                fail(e);
             }
         }
-        return new AudioFile(null, plain, plain.length);
+
+        private void streamInto(ParseResult parsed) throws Exception {
+            Request req = new Request.Builder().url(parsed.playUrl)
+                    .header("User-Agent", "tunefree-next-bff/1.0")
+                    .get().build();
+            try (Response resp = http.newCall(req).execute()) {
+                ResponseBody rb = resp.body();
+                if (resp.code() < 200 || resp.code() >= 300 || rb == null) {
+                    throw new MusicBusinessException(MusicErrorCode.UPSTREAM_PLAY_FAILED,
+                            "Qishui audio download returned HTTP " + resp.code());
+                }
+                long declared = rb.contentLength();
+                if (declared <= 0 || declared > MAX_AUDIO_BYTES) {
+                    // No trustworthy length -> Content-Range would be a guess. Use the old path.
+                    fallbackWhole(parsed);
+                    return;
+                }
+                totalBytes = declared;
+
+                BufferedSource source = rb.source();
+                byte[] header = new byte[READ_CHUNK];
+                int headerLen = 0;
+                long[] mdat = null;
+                while (mdat == null) {
+                    if (headerLen >= MAX_HEADER_BYTES) {
+                        fallbackWhole(parsed);
+                        return;
+                    }
+                    if (header.length < headerLen + READ_CHUNK) {
+                        header = Arrays.copyOf(header, headerLen + READ_CHUNK);
+                    }
+                    int n = source.read(header, headerLen, READ_CHUNK);
+                    if (n < 0) break;
+                    headerLen += n;
+                    mdat = QishuiCencDecryptor.StreamPlan.locateMdat(header, headerLen);
+                    if (mdat != null && mdat[0] + 8 > headerLen) {
+                        mdat = null; // the 8-byte mdat header itself is not complete yet
+                    }
+                }
+                if (mdat == null) {
+                    fallbackWhole(parsed);
+                    return;
+                }
+
+                QishuiCencDecryptor.StreamPlan plan = QishuiCencDecryptor.StreamPlan.parse(
+                        header, headerLen, parsed.playAuth, mdat[0], mdat[1], declared);
+                int payloadStart = plan.mdatPayloadStart();
+                int prefixEnd = Math.min(headerLen, payloadStart);
+                plan.patchHeader(header);
+
+                try (FileChannel channel = FileChannel.open(staging,
+                        StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                        StandardOpenOption.TRUNCATE_EXISTING)) {
+                    writeFully(channel, header, 0, prefixEnd);
+                    markReady(prefixEnd);
+                    markHeaderReady();
+                    log.info("Qishui stream header ready quality={} headerBytes={} total={}",
+                            quality, prefixEnd, declared);
+
+                    StreamInput in = new StreamInput(header, prefixEnd, headerLen, source);
+                    long readPtr = prefixEnd;
+                    long[] sizes = plan.sampleSizes();
+                    byte[] sampleBuf = new byte[READ_CHUNK];
+                    for (int i = 0; i < sizes.length; i++) {
+                        int size = (int) sizes[i];
+                        if (size <= 0 || readPtr + size > plan.payloadLimit()) break;
+                        if (sampleBuf.length < size) sampleBuf = new byte[size];
+                        if (!in.readFully(sampleBuf, 0, size)) break;
+                        plan.decryptSample(sampleBuf, 0, size, i);
+                        writeFully(channel, sampleBuf, 0, size);
+                        readPtr += size;
+                        markReady(readPtr);
+                    }
+                    // Any trailing bytes after the last sample are container padding: plain.
+                    byte[] rest = new byte[READ_CHUNK];
+                    int n;
+                    while ((n = in.readSome(rest)) > 0) {
+                        writeFully(channel, rest, 0, n);
+                        readPtr += n;
+                        markReady(readPtr);
+                    }
+                }
+
+                long written = Files.size(staging);
+                if (written != declared) {
+                    throw new IOException("Qishui streaming load truncated: wrote " + written
+                            + " of " + declared);
+                }
+                finish(declared);
+                log.info("Qishui stream ready quality={} bytes={} (streaming)", quality, written);
+            }
+        }
+
+        private void fallbackWhole(ParseResult parsed) throws Exception {
+            byte[] encrypted = download(parsed.playUrl);
+            byte[] plain = QishuiCencDecryptor.decrypt(encrypted, parsed.playAuth);
+            diskCache.write(key, plain);
+            totalBytes = plain.length;
+            livePath = diskCache.target(key);
+            if (livePath == null) livePath = staging;
+            synchronized (monitor) {
+                readyBytes = plain.length;
+                headerReady = true;
+                done = true;
+                monitor.notifyAll();
+            }
+            plainCache.put(key, new AudioFile(livePath, null, plain.length));
+            loads.remove(key, this);
+            log.info("Qishui stream ready quality={} bytes={} (whole-track fallback)",
+                    quality, plain.length);
+        }
+
+        private void finish(long length) {
+            boolean published = diskCache.publish(key, staging);
+            Path finalPath = published ? diskCache.target(key) : staging;
+            livePath = finalPath;
+            synchronized (monitor) {
+                readyBytes = length;
+                headerReady = true;
+                done = true;
+                monitor.notifyAll();
+            }
+            if (finalPath != null) {
+                plainCache.put(key, new AudioFile(finalPath, null, length));
+            }
+            loads.remove(key, this);
+        }
+
+        private void fail(Exception e) {
+            IOException io = e instanceof IOException ? (IOException) e
+                    : new IOException(e.toString(), e);
+            log.warn("Qishui streaming load failed key={}: {}", key, e.toString());
+            synchronized (monitor) {
+                failure = io;
+                done = true;
+                monitor.notifyAll();
+            }
+            if (staging != null) {
+                try {
+                    Files.deleteIfExists(staging);
+                } catch (IOException ignored) {
+                    // best effort
+                }
+            }
+            loads.remove(key, this);
+        }
+
+        private void markReady(long n) {
+            synchronized (monitor) {
+                if (n > readyBytes) {
+                    readyBytes = n;
+                    monitor.notifyAll();
+                }
+            }
+        }
+
+        private void markHeaderReady() {
+            synchronized (monitor) {
+                headerReady = true;
+                monitor.notifyAll();
+            }
+        }
+
+        void awaitHeader() throws IOException {
+            long deadline = System.currentTimeMillis() + HEADER_TIMEOUT_MS;
+            synchronized (monitor) {
+                while (!headerReady && !done && failure == null) {
+                    long left = deadline - System.currentTimeMillis();
+                    if (left <= 0) throw new IOException("timed out waiting for MP4 header");
+                    try {
+                        monitor.wait(Math.min(200L, left));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("interrupted waiting for MP4 header", e);
+                    }
+                }
+                if (failure != null && !headerReady) throw new IOException("audio load failed", failure);
+                if (totalBytes <= 0) throw new IOException("unknown audio length");
+            }
+        }
+
+        void awaitReady(long need) throws IOException {
+            long deadline = System.currentTimeMillis() + READY_TIMEOUT_MS;
+            synchronized (monitor) {
+                while (readyBytes < need && !done && failure == null) {
+                    long left = deadline - System.currentTimeMillis();
+                    if (left <= 0) {
+                        throw new IOException("timed out waiting for audio byte " + need);
+                    }
+                    try {
+                        monitor.wait(Math.min(200L, left));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("interrupted waiting for audio", e);
+                    }
+                }
+                if (failure != null && readyBytes < need) {
+                    throw new IOException("audio load failed", failure);
+                }
+            }
+        }
+
+        Path currentPath() {
+            return livePath;
+        }
+    }
+
+    /** Feeds bytes from the header prefix first, then from the still-open upstream stream. */
+    private static final class StreamInput {
+        private final byte[] prefix;
+        private final int prefixEnd;
+        private final BufferedSource source;
+        private int prefixPos;
+
+        StreamInput(byte[] prefix, int from, int end, BufferedSource source) {
+            this.prefix = prefix;
+            this.prefixPos = from;
+            this.prefixEnd = end;
+            this.source = source;
+        }
+
+        boolean readFully(byte[] dst, int off, int len) throws IOException {
+            int filled = 0;
+            while (filled < len) {
+                if (prefixPos < prefixEnd) {
+                    int n = Math.min(len - filled, prefixEnd - prefixPos);
+                    System.arraycopy(prefix, prefixPos, dst, off + filled, n);
+                    prefixPos += n;
+                    filled += n;
+                } else {
+                    int n = source.read(dst, off + filled, len - filled);
+                    if (n < 0) return false;
+                    filled += n;
+                }
+            }
+            return true;
+        }
+
+        int readSome(byte[] dst) throws IOException {
+            if (prefixPos < prefixEnd) {
+                int n = Math.min(dst.length, prefixEnd - prefixPos);
+                System.arraycopy(prefix, prefixPos, dst, 0, n);
+                prefixPos += n;
+                return n;
+            }
+            return source.read(dst);
+        }
+    }
+
+    private static void writeFully(FileChannel channel, byte[] data, int off, int len)
+            throws IOException {
+        ByteBuffer bb = ByteBuffer.wrap(data, off, len);
+        while (bb.hasRemaining()) {
+            channel.write(bb);
+        }
     }
 
     /**
@@ -261,19 +582,25 @@ public class QishuiStreamService {
     /**
      * A handle to decrypted audio. When {@code path} is set the bytes stay on disk and only the
      * requested Range is read into a small buffer; when the disk cache is unavailable the
-     * {@code bytes} fallback preserves the original in-memory behaviour. Either way the caller
-     * never needs the whole track as one contiguous heap allocation.
+     * {@code bytes} fallback preserves the original in-memory behaviour. A {@code task} means
+     * the file is still being written and Range reads wait only for the bytes they need.
      */
     public static final class AudioFile {
         private static final int BUFFER_SIZE = 64 * 1024;
         private final Path path;
         private final byte[] bytes;
         private final long length;
+        private final LoadTask task;
 
         private AudioFile(Path path, byte[] bytes, long length) {
+            this(path, bytes, length, null);
+        }
+
+        private AudioFile(Path path, byte[] bytes, long length, LoadTask task) {
             this.path = path;
             this.bytes = bytes;
             this.length = length;
+            this.task = task;
         }
 
         public long length() {
@@ -281,6 +608,10 @@ public class QishuiStreamService {
         }
 
         boolean isValid() {
+            if (task != null) {
+                Path p = task.currentPath();
+                return p != null && Files.isRegularFile(p);
+            }
             return path == null ? bytes != null : Files.isRegularFile(path);
         }
 
@@ -290,11 +621,22 @@ public class QishuiStreamService {
             if (remaining <= 0) {
                 return;
             }
-            if (bytes != null) {
+            if (bytes != null && task == null) {
                 out.write(bytes, (int) start, (int) remaining);
                 return;
             }
-            try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
+            Path source = task == null ? path : task.currentPath();
+            if (source == null) {
+                throw new IOException("Qishui audio file unavailable");
+            }
+            if (task != null) {
+                task.awaitReady(end + 1);
+                source = task.currentPath();
+                if (source == null) {
+                    throw new IOException("Qishui audio file unavailable");
+                }
+            }
+            try (FileChannel channel = FileChannel.open(source, StandardOpenOption.READ)) {
                 ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
                 long position = start;
                 while (remaining > 0) {

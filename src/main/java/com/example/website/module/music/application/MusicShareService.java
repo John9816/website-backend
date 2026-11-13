@@ -1,6 +1,7 @@
 package com.example.website.module.music.application;
 
 import com.example.website.common.BusinessException;
+import com.example.website.module.music.api.dto.MusicShareMetaView;
 import com.example.website.module.music.api.dto.MusicPublicShareView;
 import com.example.website.module.music.api.dto.MusicQuality;
 import com.example.website.module.music.api.dto.MusicShareRequest;
@@ -63,6 +64,20 @@ public class MusicShareService {
         MusicShare entity = shareRepository.findByUserIdAndSourceAndSongId(userId, source.getValue(), songId)
                 .orElseThrow(() -> new BusinessException(404, "Music share not found"));
         shareRepository.delete(entity);
+    }
+
+    /**
+     * Read-only lookup for social preview metadata. Deliberately avoids the upstream play
+     * resolution and the view counter so that link-preview crawlers stay cheap.
+     */
+    @Transactional(readOnly = true)
+    public MusicShareMetaView meta(String token) {
+        MusicShare share = shareRepository.findByToken(requireText(token, "token is required"))
+                .orElseThrow(() -> new BusinessException(404, "Share not found"));
+        if (share.getExpiresAt() != null && share.getExpiresAt().isBefore(LocalDateTime.now())) {
+            throw new BusinessException(410, "Share link expired");
+        }
+        return MusicShareMetaView.from(share);
     }
 
     public MusicPublicShareView view(String token) {

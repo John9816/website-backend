@@ -2186,6 +2186,28 @@
     },
     "MusicQuality" : [ "128k", "320k", "flac", "flac24bit" ],
     "MusicSearchType" : [ "SONG", "ALBUM", "ARTIST", "PLAYLIST" ],
+    "MusicShareMetaView" : {
+      "request" : {
+        "album" : [ "java.lang.String", false, true, true ],
+        "artist" : [ "java.lang.String", false, true, true ],
+        "coverUrl" : [ "java.lang.String", false, true, true ],
+        "durationSec" : [ "java.lang.Integer", false, true, true ],
+        "name" : [ "java.lang.String", false, true, true ],
+        "songId" : [ "java.lang.String", false, true, true ],
+        "source" : [ "MusicSource", false, true, true ],
+        "token" : [ "java.lang.String", false, true, true ]
+      },
+      "response" : {
+        "album" : [ "java.lang.String", false, true, true ],
+        "artist" : [ "java.lang.String", false, true, true ],
+        "coverUrl" : [ "java.lang.String", false, true, true ],
+        "durationSec" : [ "java.lang.Integer", false, true, true ],
+        "name" : [ "java.lang.String", false, true, true ],
+        "songId" : [ "java.lang.String", false, true, true ],
+        "source" : [ "MusicSource", false, true, true ],
+        "token" : [ "java.lang.String", false, true, true ]
+      }
+    },
     "MusicShareRequest" : {
       "request" : {
         "album" : [ "java.lang.String", false, true, true ],
@@ -3641,6 +3663,13 @@
         "type" : "java.lang.String"
       } ],
       "returns" : "org.springframework.http.ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody>"
+    },
+    "{GET [/api/public/music/share/{token}/meta]}" : {
+      "parameters" : [ {
+        "annotations" : [ "org.springframework.web.bind.annotation.PathVariable{name=, required=true, value=}" ],
+        "type" : "java.lang.String"
+      } ],
+      "returns" : "org.springframework.http.ResponseEntity<ApiResponse<?>>"
     },
     "{GET [/api/public/music/share/{token}]}" : {
       "parameters" : [ {

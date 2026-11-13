@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -30,4 +31,22 @@ public interface MusicPlayHistoryRepository extends JpaRepository<MusicPlayHisto
     @Modifying
     @Query("delete from MusicPlayHistory h where h.id in :ids")
     int deleteByIdIn(@Param("ids") List<Long> ids);
+
+    /**
+     * Cold-start fallback for listening-time leaderboards: the history table keeps one
+     * row per (user, song), so this estimates "length of distinct songs played" rather
+     * than real listened seconds. Only used when no heartbeat data exists for the period.
+     */
+    @Query("select h.userId, coalesce(sum(h.durationSec), 0) from MusicPlayHistory h "
+            + "where h.playedAt >= :from and h.playedAt < :to "
+            + "group by h.userId order by sum(h.durationSec) desc, h.userId asc")
+    List<Object[]> estimateDurationByUser(@Param("from") LocalDateTime from,
+                                          @Param("to") LocalDateTime to,
+                                          Pageable pageable);
+
+    @Query("select coalesce(sum(h.durationSec), 0) from MusicPlayHistory h "
+            + "where h.userId = :userId and h.playedAt >= :from and h.playedAt < :to")
+    Long estimateDurationForUser(@Param("userId") Long userId,
+                                 @Param("from") LocalDateTime from,
+                                 @Param("to") LocalDateTime to);
 }

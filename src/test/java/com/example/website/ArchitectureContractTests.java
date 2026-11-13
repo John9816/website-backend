@@ -103,7 +103,7 @@ class ArchitectureContractTests {
         assertEquals(mapper.readTree(snapshot.toFile()), mapper.valueToTree(actual));
         assertTrue(routes.size() > 100);
         assertTrue(models.size() > 100);
-        assertEquals(34, tables.size());
+        assertEquals(35, tables.size());
     }
 
     private static List<String> annotations(Annotation[] values) {

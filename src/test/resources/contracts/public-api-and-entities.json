@@ -356,6 +356,17 @@
         "userId" : [ "java.lang.Long", [ "javax.persistence.Column{columnDefinition=, insertable=true, length=255, name=user_id, nullable=false, precision=0, scale=0, table=, unique=false, updatable=true}" ] ]
       }
     },
+    "MusicListenStat" : {
+      "annotations" : [ "javax.persistence.Entity{name=}", "javax.persistence.Table{catalog=, indexes=[javax.persistence.Index{columnList=stat_date,total_sec, name=idx_listen_stat_date, unique=false}], name=music_listen_stat, schema=, uniqueConstraints=[javax.persistence.UniqueConstraint{columnNames=[user_id, stat_date], name=uk_listen_stat_user_date}]}" ],
+      "fields" : {
+        "createdAt" : [ "java.time.LocalDateTime", [ "javax.persistence.Column{columnDefinition=, insertable=true, length=255, name=created_at, nullable=false, precision=0, scale=0, table=, unique=false, updatable=false}" ] ],
+        "id" : [ "java.lang.Long", [ "javax.persistence.GeneratedValue{generator=, strategy=IDENTITY}", "javax.persistence.Id{}" ] ],
+        "statDate" : [ "java.time.LocalDate", [ "javax.persistence.Column{columnDefinition=, insertable=true, length=255, name=stat_date, nullable=false, precision=0, scale=0, table=, unique=false, updatable=true}" ] ],
+        "totalSec" : [ "long", [ "javax.persistence.Column{columnDefinition=, insertable=true, length=255, name=total_sec, nullable=false, precision=0, scale=0, table=, unique=false, updatable=true}" ] ],
+        "updatedAt" : [ "java.time.LocalDateTime", [ "javax.persistence.Column{columnDefinition=, insertable=true, length=255, name=updated_at, nullable=false, precision=0, scale=0, table=, unique=false, updatable=true}" ] ],
+        "userId" : [ "java.lang.Long", [ "javax.persistence.Column{columnDefinition=, insertable=true, length=255, name=user_id, nullable=false, precision=0, scale=0, table=, unique=false, updatable=true}" ] ]
+      }
+    },
     "MusicPlayHistory" : {
       "annotations" : [ "javax.persistence.EntityListeners{value=[org.springframework.data.jpa.domain.support.AuditingEntityListener]}", "javax.persistence.Entity{name=}", "javax.persistence.Table{catalog=, indexes=[javax.persistence.Index{columnList=user_id,played_at,id, name=idx_music_history_user_played, unique=false}], name=music_play_history, schema=, uniqueConstraints=[javax.persistence.UniqueConstraint{columnNames=[user_id, source, song_id], name=uk_music_history_user_song}]}" ],
       "fields" : {
@@ -1976,6 +1987,48 @@
         "url" : [ "java.lang.String", false, true, true ]
       }
     },
+    "ListenRankItemView" : {
+      "request" : {
+        "avatarUrl" : [ "java.lang.String", false, true, true ],
+        "rank" : [ "int", false, true, true ],
+        "seconds" : [ "long", false, true, true ],
+        "userId" : [ "java.lang.Long", false, true, true ],
+        "username" : [ "java.lang.String", false, true, true ]
+      },
+      "response" : {
+        "avatarUrl" : [ "java.lang.String", false, true, true ],
+        "rank" : [ "int", false, true, true ],
+        "seconds" : [ "long", false, true, true ],
+        "userId" : [ "java.lang.Long", false, true, true ],
+        "username" : [ "java.lang.String", false, true, true ]
+      }
+    },
+    "ListenRankingView" : {
+      "request" : {
+        "from" : [ "java.lang.String", false, true, true ],
+        "items" : [ "java.util.List<ListenRankItemView>", false, true, true ],
+        "participants" : [ "long", false, true, true ],
+        "period" : [ "java.lang.String", false, true, true ],
+        "source" : [ "java.lang.String", false, true, true ],
+        "to" : [ "java.lang.String", false, true, true ]
+      },
+      "response" : {
+        "from" : [ "java.lang.String", false, true, true ],
+        "items" : [ "java.util.List<ListenRankItemView>", false, true, true ],
+        "participants" : [ "long", false, true, true ],
+        "period" : [ "java.lang.String", false, true, true ],
+        "source" : [ "java.lang.String", false, true, true ],
+        "to" : [ "java.lang.String", false, true, true ]
+      }
+    },
+    "ListenTimeReportRequest" : {
+      "request" : {
+        "seconds" : [ "java.lang.Long", false, true, true ]
+      },
+      "response" : {
+        "seconds" : [ "java.lang.Long", false, true, true ]
+      }
+    },
     "LoginRequest" : {
       "request" : {
         "email" : [ "java.lang.String", false, true, true ],
@@ -2269,6 +2322,30 @@
       }
     },
     "MusicSource" : [ "qq", "netease", "kuwo", "qishui" ],
+    "MyListenTimeView" : {
+      "request" : {
+        "monthParticipants" : [ "long", false, true, true ],
+        "monthRank" : [ "int", false, true, true ],
+        "monthSec" : [ "long", false, true, true ],
+        "monthSource" : [ "java.lang.String", false, true, true ],
+        "totalSec" : [ "long", false, true, true ],
+        "weekParticipants" : [ "long", false, true, true ],
+        "weekRank" : [ "int", false, true, true ],
+        "weekSec" : [ "long", false, true, true ],
+        "weekSource" : [ "java.lang.String", false, true, true ]
+      },
+      "response" : {
+        "monthParticipants" : [ "long", false, true, true ],
+        "monthRank" : [ "int", false, true, true ],
+        "monthSec" : [ "long", false, true, true ],
+        "monthSource" : [ "java.lang.String", false, true, true ],
+        "totalSec" : [ "long", false, true, true ],
+        "weekParticipants" : [ "long", false, true, true ],
+        "weekRank" : [ "int", false, true, true ],
+        "weekSec" : [ "long", false, true, true ],
+        "weekSource" : [ "java.lang.String", false, true, true ]
+      }
+    },
     "NeteasePlaybackQuality" : [ "STANDARD", "EXHIGH", "LOSSLESS", "HIRES", "JYEFFECT", "SKY", "JYMASTER" ],
     "PageView" : {
       "request" : {
@@ -2840,6 +2917,16 @@
         "available" : [ "boolean", false, true, true ],
         "content" : [ "java.lang.String", false, true, true ],
         "provider" : [ "java.lang.String", false, true, true ]
+      }
+    },
+    "UserBriefView" : {
+      "request" : {
+        "avatarUrl" : [ "java.lang.String", false, true, true ],
+        "username" : [ "java.lang.String", false, true, true ]
+      },
+      "response" : {
+        "avatarUrl" : [ "java.lang.String", false, true, true ],
+        "username" : [ "java.lang.String", false, true, true ]
       }
     },
     "UserCreditView" : {
@@ -3654,6 +3741,16 @@
       "parameters" : [ ],
       "returns" : "ApiResponse<java.util.Map<java.lang.String, java.lang.Object>>"
     },
+    "{GET [/api/public/music/listening/ranking]}" : {
+      "parameters" : [ {
+        "annotations" : [ "org.springframework.web.bind.annotation.RequestParam{defaultValue=week, name=, required=true, value=}" ],
+        "type" : "java.lang.String"
+      }, {
+        "annotations" : [ "org.springframework.web.bind.annotation.RequestParam{defaultValue=20, name=, required=true, value=}" ],
+        "type" : "int"
+      } ],
+      "returns" : "ApiResponse<ListenRankingView>"
+    },
     "{GET [/api/public/music/qishui/stream], produces [audio/mp4]}" : {
       "parameters" : [ {
         "annotations" : [ "org.springframework.web.bind.annotation.RequestParam{defaultValue=\n\t\t\n\t\t\n\n\t\t\t\t\n, name=, required=false, value=ticket}" ],
@@ -3810,6 +3907,13 @@
         "type" : "int"
       } ],
       "returns" : "ApiResponse<PageView<MusicHistoryView>>"
+    },
+    "{GET [/api/user/music/listening/me]}" : {
+      "parameters" : [ {
+        "annotations" : [ ],
+        "type" : "javax.servlet.http.HttpServletRequest"
+      } ],
+      "returns" : "ApiResponse<MyListenTimeView>"
     },
     "{GET [/api/user/music/playlist-favorites/status]}" : {
       "parameters" : [ {
@@ -5032,6 +5136,16 @@
         "type" : "MusicFavoriteRequest"
       } ],
       "returns" : "ApiResponse<MusicFavoriteView>"
+    },
+    "{POST [/api/user/music/listening/heartbeat]}" : {
+      "parameters" : [ {
+        "annotations" : [ ],
+        "type" : "javax.servlet.http.HttpServletRequest"
+      }, {
+        "annotations" : [ "org.springframework.web.bind.annotation.RequestBody{required=false}" ],
+        "type" : "ListenTimeReportRequest"
+      } ],
+      "returns" : "ApiResponse<java.lang.Void>"
     },
     "{POST [/api/user/music/playlist-favorites]}" : {
       "parameters" : [ {

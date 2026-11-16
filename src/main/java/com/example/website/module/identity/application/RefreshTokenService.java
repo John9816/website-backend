@@ -6,6 +6,7 @@ import com.example.website.module.identity.infrastructure.persistence.RefreshTok
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -15,9 +16,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Base64;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class RefreshTokenService {
@@ -45,7 +48,9 @@ public class RefreshTokenService {
 
     /**
      * Rotates refresh: revokes the presented token and issues a replacement.
-     * If the old token was already revoked (possible reuse), revokes all of the user's tokens.
+     * A token replayed shortly after it was rotated (lost response, concurrent refresh from
+     * the same client) is re-issued instead of being treated as theft; only replays outside
+     * that grace window revoke every session of the user.
      *
      * @return user id and raw replacement token, or null when rotation is rejected
      */
@@ -62,8 +67,15 @@ public class RefreshTokenService {
             return null;
         }
 
-        // Reuse of a revoked/rotated token → treat as theft, kill the family.
         if (existing.getRevokedAt() != null) {
+            if (isReplayWithinGrace(existing, now)) {
+                log.warn("refresh token replayed {}s after rotation, re-issuing instead of "
+                                + "revoking the family (userId={}, tokenId={})",
+                        Duration.between(existing.getRevokedAt(), now).getSeconds(),
+                        existing.getUserId(), existing.getId());
+                return issueReplacement(existing, now);
+            }
+            // Reuse of a long-revoked token → treat as theft, kill the family.
             refreshTokenRepository.revokeAllActiveForUser(existing.getUserId(), now);
             return null;
         }
@@ -86,6 +98,38 @@ public class RefreshTokenService {
         next.setExpiresAt(now.plusDays(props.getJwt().getRefreshExpireDays()));
         refreshTokenRepository.save(next);
         return new RotationResult(existing.getUserId(), replacementRaw);
+    }
+
+    /**
+     * True when the token was revoked by a normal rotation a few minutes ago, i.e. the
+     * client most likely never received (or never stored) the replacement token.
+     * Tokens revoked by logout, password change or an earlier theft response keep
+     * {@code replacedByHash == null} and therefore never qualify.
+     */
+    private boolean isReplayWithinGrace(RefreshToken token, LocalDateTime now) {
+        if (token.getReplacedByHash() == null) {
+            return false;
+        }
+        long graceMinutes = Math.max(0, props.getJwt().getReuseGraceMinutes());
+        if (graceMinutes == 0) {
+            return false;
+        }
+        return !token.getRevokedAt().plusMinutes(graceMinutes).isBefore(now);
+    }
+
+    /** Issues a fresh replacement for a token replayed inside the grace window. */
+    private RotationResult issueReplacement(RefreshToken previous, LocalDateTime now) {
+        String raw = generateRawToken();
+        String replacementHash = hash(raw);
+        previous.setReplacedByHash(replacementHash);
+        refreshTokenRepository.save(previous);
+
+        RefreshToken next = new RefreshToken();
+        next.setUserId(previous.getUserId());
+        next.setTokenHash(replacementHash);
+        next.setExpiresAt(now.plusDays(props.getJwt().getRefreshExpireDays()));
+        refreshTokenRepository.save(next);
+        return new RotationResult(previous.getUserId(), raw);
     }
 
     @Transactional

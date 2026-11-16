@@ -37,9 +37,14 @@ public class AppProperties {
     public static class Jwt {
         private String secret;
         /** Access JWT lifetime (minutes). Keep relatively short; clients renew via refresh. */
-        private long expireMinutes = 120;
+        private long expireMinutes = 1440;
         /** Opaque refresh token lifetime (days). */
         private long refreshExpireDays = 30;
+        /**
+         * Minutes after a rotation during which the old refresh token may be replayed
+         * (lost response / concurrent refresh) without revoking every session. 0 disables.
+         */
+        private long reuseGraceMinutes = 10;
         /** Retain expired and revoked refresh-token rows for audit before cleanup. */
         private long cleanupRetentionDays = 7;
         private String header = "Authorization";

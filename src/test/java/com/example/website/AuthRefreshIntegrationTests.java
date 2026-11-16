@@ -15,6 +15,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -90,19 +91,63 @@ class AuthRefreshIntegrationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.username").value(username));
 
-        // Old refresh must be rejected (rotation).
+        // Replaying a just-rotated token inside the grace window re-issues a token instead of
+        // revoking the family: that is the lost-response / concurrent-refresh case.
+        MvcResult replayResult = mockMvc.perform(post("/api/auth/refresh")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refresh_token\":\"" + refresh + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andReturn();
+        String replayedRefresh = readJson(replayResult).path("data").path("refreshToken").asText();
+        assertNotEquals(newRefresh, replayedRefresh);
+
+        // The replacement handed out before the replay must survive.
+        mockMvc.perform(post("/api/auth/refresh")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refresh_token\":\"" + newRefresh + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
+    }
+
+    @Test
+    void replayOutsideGraceWindowRevokesEverySession() throws Exception {
+        String username = "refresh_user_theft";
+        register(username, "secret123");
+        String refresh = loginAndExtractRefresh(username, "secret123");
+
+        MvcResult rotated = mockMvc.perform(post("/api/auth/refresh")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refresh_token\":\"" + refresh + "\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String replacement = readJson(rotated).path("data").path("refreshToken").asText();
+
+        // Age the rotation past the grace window: the same replay now looks like theft.
+        User user = userRepository.findByUsername(username).orElseThrow(AssertionError::new);
+        refreshTokenRepository.findAll().stream()
+                .filter(t -> user.getId().equals(t.getUserId()) && t.getReplacedByHash() != null)
+                .forEach(t -> {
+                    t.setRevokedAt(LocalDateTime.now().minusHours(1));
+                    refreshTokenRepository.save(t);
+                });
+
         mockMvc.perform(post("/api/auth/refresh")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"refresh_token\":\"" + refresh + "\"}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(401));
 
-        // Reuse detection revokes the replacement token family as well.
+        // Family revocation: the live replacement is gone too.
         mockMvc.perform(post("/api/auth/refresh")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"refresh_token\":\"" + newRefresh + "\"}"))
+                        .content("{\"refresh_token\":\"" + replacement + "\"}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(401));
+
+        assertTrue(refreshTokenRepository.findAll().stream()
+                .filter(t -> user.getId().equals(t.getUserId()))
+                .allMatch(t -> t.getRevokedAt() != null));
     }
 
     @Test

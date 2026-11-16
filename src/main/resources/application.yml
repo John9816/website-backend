@@ -81,10 +81,14 @@ app:
     avatar-dir: ${AVATAR_UPLOAD_DIR:uploads/avatars}
   jwt:
     secret: ${JWT_SECRET:Y2hhbmdlLXRoaXMtdG8tYS1zdHJvbmctc2VjcmV0LWtleS1hdC1sZWFzdC0zMi1ieXRlcw==}
-    # Access token: short-lived; clients renew with /api/auth/refresh
-    expire-minutes: ${JWT_EXPIRE_MINUTES:120}
+    # Access token: renewed via /api/auth/refresh; 24h keeps cold starts from rotating
+    # the refresh token on every launch (which used to trip reuse detection).
+    expire-minutes: ${JWT_EXPIRE_MINUTES:1440}
     # Refresh token: long-lived opaque token stored hashed in DB
     refresh-expire-days: ${JWT_REFRESH_EXPIRE_DAYS:30}
+    # Replay of a just-rotated refresh token inside this window is re-issued instead of
+    # revoking every session of the user. 0 = strict (revoke the whole family).
+    reuse-grace-minutes: ${JWT_REFRESH_REUSE_GRACE_MINUTES:10}
     cleanup-retention-days: ${JWT_REFRESH_CLEANUP_RETENTION_DAYS:7}
     header: Authorization
     prefix: "Bearer "

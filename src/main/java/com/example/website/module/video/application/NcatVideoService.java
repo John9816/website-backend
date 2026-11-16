@@ -50,7 +50,7 @@ public class NcatVideoService {
     private static final Pattern DETAIL_ID = Pattern.compile("/detail/([^./?#]+)", Pattern.CASE_INSENSITIVE);
     private static final Pattern PLAY_ID = Pattern.compile("/play/([^/?#]+)-([^/?#]+)-([^./?#]+)(?:\\.html)?", Pattern.CASE_INSENSITIVE);
     private static final Pattern MEDIA_URL = Pattern.compile(
-            "https?://[^\\\"'<>\\s]+\\.(?:m3u8|mp4|mpd)(?:\\?[^\\\"'<>\\s]+)?",
+            "https?://[^\\\"'<>\\s]+\\.(?:" + MediaFormat.EXTENSION_PATTERN + ")(?![a-z0-9])(?:\\?[^\\\"'<>\\s]+)?",
             Pattern.CASE_INSENSITIVE);
     private static final List<VideoCategoryView> CATEGORIES = Arrays.asList(
             new VideoCategoryView("1", "电影", "/channel/1.html"),
@@ -297,8 +297,7 @@ public class NcatVideoService {
                 }
             }
         }
-        String format = media == null ? null : media.toLowerCase(Locale.ROOT).contains(".mp4") ? "mp4"
-                : media.toLowerCase(Locale.ROOT).contains(".mpd") ? "dash" : "hls";
+        String format = media == null ? null : MediaFormat.infer(media);
         boolean playable = media != null;
         String message = playable ? "ok" : embed == null ? "未找到可播放地址，请打开上游播放页" : "上游未暴露直链，请打开播放页";
         String upstream = absoluteAllowedUrl(base, base);
@@ -336,7 +335,7 @@ public class NcatVideoService {
     }
 
     private boolean isMedia(String url) {
-        return url != null && url.matches("(?i).+\\.(m3u8|mp4|mpd)(\\?.*)?$");
+        return MediaFormat.isMediaUrl(url);
     }
 
     private VideoCategoryView categoryById(String id) {

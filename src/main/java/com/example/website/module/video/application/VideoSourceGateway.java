@@ -333,8 +333,9 @@ public class VideoSourceGateway {
         String format = firstText(data, "format", "type");
         boolean playable = Boolean.TRUE.equals(data.get("playable")) && !media.isEmpty();
         if (!playable && !media.isEmpty()) playable = true;
+        String container = media.isEmpty() ? null : format.isEmpty() ? MediaFormat.infer(media) : format;
         return new VideoPlayView(videoId, episodeId == null ? "" : episodeId, lineId == null ? "" : lineId,
-                media.isEmpty() ? null : media, format.isEmpty() ? inferFormat(media) : format,
+                media.isEmpty() ? null : media, container,
                 firstText(data, "embedUrl", "embed"), firstText(data, "upstreamUrl", "pageUrl", "webUrl"),
                 playable, firstText(data, "message", "error"));
     }
@@ -349,11 +350,6 @@ public class VideoSourceGateway {
             return !(address.isAnyLocalAddress() || address.isLoopbackAddress() || address.isLinkLocalAddress()
                     || address.isSiteLocalAddress());
         } catch (UnknownHostException ignored) { return false; }
-    }
-
-    private String inferFormat(String media) {
-        String lower = media.toLowerCase(Locale.ROOT);
-        return lower.contains(".mp4") ? "mp4" : lower.contains(".mpd") ? "dash" : "hls";
     }
 
     private Object first(Map<String, Object> map, String... keys) {

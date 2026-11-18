@@ -72,6 +72,9 @@ spring:
     default-property-inclusion: non_null
 
 app:
+  editor:
+    file-dir: ${EDITOR_FILE_DIR:./data/editor/files}
+    public-base: ${EDITOR_PUBLIC_BASE:/api/public/editor}
   membership:
     free-lifetime-enabled: ${APP_MEMBERSHIP_FREE_LIFETIME_ENABLED:true}
   storage:

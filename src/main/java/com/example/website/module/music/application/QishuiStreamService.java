@@ -257,26 +257,43 @@ public class QishuiStreamService implements DisposableBean {
                             quality, prefixEnd, declared);
 
                     StreamInput in = new StreamInput(header, prefixEnd, headerLen, source);
-                    long readPtr = prefixEnd;
+                    long writePos = prefixEnd;   // absolute file offset already written
+                    long linearPtr = prefixEnd;  // fallback cursor when no chunk table exists
                     long[] sizes = plan.sampleSizes();
                     byte[] sampleBuf = new byte[READ_CHUNK];
+                    byte[] gapBuf = new byte[READ_CHUNK];
+                    sampleLoop:
                     for (int i = 0; i < sizes.length; i++) {
                         int size = (int) sizes[i];
-                        if (size <= 0 || readPtr + size > plan.payloadLimit()) break;
+                        if (size <= 0) break;
+                        int resolved = plan.sampleOffset(i);
+                        long target = resolved >= 0 ? resolved : linearPtr;
+                        if (target + size > plan.payloadLimit()) break;
+                        // Copy any plain gap verbatim: a prefix 'encd' box between the mdat header
+                        // and first sample, or padding between non-contiguous chunks. These bytes
+                        // are not encrypted and must not be fed to AES-CTR.
+                        while (writePos < target) {
+                            int gap = (int) Math.min(gapBuf.length, target - writePos);
+                            if (!in.readFully(gapBuf, 0, gap)) break sampleLoop;
+                            writeFully(channel, gapBuf, 0, gap);
+                            writePos += gap;
+                            markReady(writePos);
+                        }
                         if (sampleBuf.length < size) sampleBuf = new byte[size];
                         if (!in.readFully(sampleBuf, 0, size)) break;
                         plan.decryptSample(sampleBuf, 0, size, i);
                         writeFully(channel, sampleBuf, 0, size);
-                        readPtr += size;
-                        markReady(readPtr);
+                        writePos += size;
+                        linearPtr = writePos;
+                        markReady(writePos);
                     }
                     // Any trailing bytes after the last sample are container padding: plain.
                     byte[] rest = new byte[READ_CHUNK];
                     int n;
                     while ((n = in.readSome(rest)) > 0) {
                         writeFully(channel, rest, 0, n);
-                        readPtr += n;
-                        markReady(readPtr);
+                        writePos += n;
+                        markReady(writePos);
                     }
                 }
 

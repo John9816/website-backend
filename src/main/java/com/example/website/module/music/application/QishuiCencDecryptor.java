@@ -266,6 +266,98 @@ public final class QishuiCencDecryptor {
         return sizes;
     }
 
+    /**
+     * Expand chunk tables into one absolute file offset per sample. stsc gives
+     * (first_chunk, samples_per_chunk) runs; stco/co64 gives each chunk's byte offset; stsz gives
+     * each sample's size. Walking chunks in order and accumulating sample sizes yields the exact
+     * position of every sample — including when an 'encd' or other prefix box sits between the
+     * mdat header and the first sample, which is the case that broke playback.
+     *
+     * @return null when any required table is missing or inconsistent, so callers can fall back
+     *         to the legacy contiguous-from-mdatPayloadStart behaviour.
+     */
+    private static int[] resolveSampleOffsets(byte[] data, Box stbl, long[] sampleSizes,
+                                              int mdatPayloadStart, int payloadLimit) {
+        Box stcoBox = findBox(data, "stco", stbl.offset + 8, stbl.offset + stbl.size);
+        Box co64Box = stcoBox == null
+                ? findBox(data, "co64", stbl.offset + 8, stbl.offset + stbl.size) : null;
+        Box stscBox = findBox(data, "stsc", stbl.offset + 8, stbl.offset + stbl.size);
+        if (stscBox == null || sampleSizes.length == 0
+                || (stcoBox == null && co64Box == null)) {
+            return null;
+        }
+
+        long[] chunkOffsets = stcoBox != null
+                ? parseStco(stcoBox.data) : parseCo64(co64Box.data);
+        int[][] stsc = parseStsc(stscBox.data);
+        if (chunkOffsets.length == 0 || stsc.length == 0) return null;
+
+        // samplesPerChunk[c] (1-based) from the (first_chunk, samples_per_chunk) runs.
+        int[] samplesPerChunk = new int[chunkOffsets.length + 1];
+        for (int j = 0; j < stsc.length; j++) {
+            int first = stsc[j][0];
+            int per = stsc[j][1];
+            int last = (j + 1 < stsc.length) ? stsc[j + 1][0] - 1 : chunkOffsets.length;
+            if (first < 1 || per <= 0) return null;
+            for (int c = first; c <= last && c <= chunkOffsets.length; c++) {
+                samplesPerChunk[c] = per;
+            }
+        }
+
+        int[] offsets = new int[sampleSizes.length];
+        int sample = 0;
+        for (int c = 1; c <= chunkOffsets.length && sample < sampleSizes.length; c++) {
+            long cursor = chunkOffsets[c - 1];
+            int count = samplesPerChunk[c];
+            for (int k = 0; k < count && sample < sampleSizes.length; k++) {
+                long size = sampleSizes[sample];
+                if (size < 0 || size > Integer.MAX_VALUE) return null;
+                offsets[sample] = (int) cursor;
+                cursor += size;
+                sample++;
+            }
+        }
+        if (sample != sampleSizes.length) return null; // table/size mismatch: do not risk it
+
+        // Sanity: the resolved first sample must lie inside the mdat payload, not before it.
+        int first = offsets[0];
+        if (first < mdatPayloadStart || first >= payloadLimit) return null;
+        return offsets;
+    }
+
+    /** stco body: version/flags(4) + entry_count(4) + N x uint32 chunk offset. */
+    private static long[] parseStco(byte[] d) {
+        if (d.length < 8) return new long[0];
+        long count = readU32(d, 4);
+        if (count < 0 || count > (d.length - 8) / 4) count = (d.length - 8) / 4;
+        long[] offs = new long[(int) count];
+        for (int i = 0; i < offs.length; i++) offs[i] = readU32(d, 8 + i * 4);
+        return offs;
+    }
+
+    /** co64 body: version/flags(4) + entry_count(4) + N x uint64 chunk offset. */
+    private static long[] parseCo64(byte[] d) {
+        if (d.length < 8) return new long[0];
+        long count = readU32(d, 4);
+        if (count < 0 || count > (d.length - 8) / 8) count = (d.length - 8) / 8;
+        long[] offs = new long[(int) count];
+        for (int i = 0; i < offs.length; i++) offs[i] = readU64(d, 8 + i * 8);
+        return offs;
+    }
+
+    /** stsc body: version/flags(4) + entry_count(4) + N x (first_chunk, samples_per_chunk, desc). */
+    private static int[][] parseStsc(byte[] d) {
+        if (d.length < 8) return new int[0][];
+        long count = readU32(d, 4);
+        if (count < 0 || count > (d.length - 8) / 12) count = (d.length - 8) / 12;
+        int[][] out = new int[(int) count][2];
+        for (int i = 0; i < out.length; i++) {
+            out[i][0] = (int) readU32(d, 8 + i * 12);
+            out[i][1] = (int) readU32(d, 12 + i * 12);
+        }
+        return out;
+    }
+
     private static int perSampleIvSize(byte[] data, int start, int end) {
         Box tenc = findBoxDeep(data, "tenc", start, end);
         if (tenc == null || tenc.data.length < 8) return 8;
@@ -379,6 +471,10 @@ public final class QishuiCencDecryptor {
         private final byte[] key;
         private final long[] sampleSizes;
         private final SampleEncryption[] samples;
+        /** Absolute file offset of every sample, resolved from stco/co64 + stsc + stsz. Null when
+         *  the chunk tables are missing (legacy/simple files), in which case the caller falls back
+         *  to the contiguous mdatPayloadStart assumption. */
+        private final int[] sampleOffsets;
         private final int mdatPayloadStart;
         private final int payloadLimit;
         private final int encaIndex;
@@ -421,6 +517,13 @@ public final class QishuiCencDecryptor {
             this.samples = parseSenc(senc.data, ivSize);
             this.mdatPayloadStart = (int) (mdatOffset + 8);
             this.payloadLimit = (int) Math.min(mdatOffset + mdatSize, totalLength);
+
+            // Resolve the true absolute offset of each sample from the chunk tables. Qishui files
+            // may carry a prefix box (e.g. 'encd') between the mdat header and the first sample,
+            // so assuming samples start at mdat+8 shifts every AES-CTR block and corrupts audio.
+            this.sampleOffsets = resolveSampleOffsets(data, stbl, this.sampleSizes,
+                    this.mdatPayloadStart, this.payloadLimit);
+
             this.encaIndex = idx;
             this.originalFormatBytes = idx >= 0 && stsd != null
                     ? originalFormat(data, stsd.offset, stsd.offset + stsd.size)
@@ -476,6 +579,17 @@ public final class QishuiCencDecryptor {
             return sampleSizes;
         }
 
+        /** True when exact per-sample offsets were resolved from the chunk tables. */
+        public boolean hasSampleOffsets() {
+            return sampleOffsets != null;
+        }
+
+        /** Absolute file offset of sample {@code index}, or -1 when unavailable. */
+        public int sampleOffset(int index) {
+            return sampleOffsets != null && index >= 0 && index < sampleOffsets.length
+                    ? sampleOffsets[index] : -1;
+        }
+
         /** Restores the 'enca' sample entry to its original four-character format, in place. */
         public void patchHeader(byte[] out) {
             if (encaIndex >= 0 && encaIndex + 4 <= out.length) {
@@ -509,16 +623,21 @@ public final class QishuiCencDecryptor {
             }
         }
 
-        /** Decrypts every sample of a complete buffer. */
+        /** Decrypts every sample of a complete buffer, using exact chunk offsets when available. */
         public void decryptAll(byte[] out) throws GeneralSecurityException {
-            int readPtr = mdatPayloadStart;
             for (int i = 0; i < sampleSizes.length; i++) {
                 int size = (int) sampleSizes[i];
-                if (size <= 0 || readPtr + size > payloadLimit) break;
-                if (i < samples.length) {
-                    decryptSample(out, readPtr, size, i);
+                int offset = sampleOffsets != null ? sampleOffsets[i] : -1;
+                // Fallback keeps legacy fixtures (no chunk tables) working: contiguous from mdat+8.
+                if (offset < 0) {
+                    offset = mdatPayloadStart;
+                    for (int j = 0; j < i; j++) offset += (int) sampleSizes[j];
                 }
-                readPtr += size;
+                if (size <= 0 || offset + size > out.length) break;
+                if (offset + size > payloadLimit && sampleOffsets == null) break;
+                if (i < samples.length) {
+                    decryptSample(out, offset, size, i);
+                }
             }
         }
     }

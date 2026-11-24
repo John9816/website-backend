@@ -37,8 +37,8 @@ public class MusicPlaybackService {
     private static final long PLAY_TTL_SEC = 1200L;
     private static final long PLAY_EXPIRY_SAFETY_SEC = 30L;
     private static final long PLAY_REQUEST_BUDGET_SEC = 8L;
-    private static final long DEFAULT_HEDGE_DELAY_MILLIS = 1200L;
-    private static final long NETEASE_HEDGE_DELAY_MILLIS = 650L;
+    private static final long DEFAULT_HEDGE_DELAY_MILLIS = 600L;
+    private static final long NETEASE_HEDGE_DELAY_MILLIS = 400L;
     public static final String CFG_PLAY_RESOLVER_ORDER = "music.play.resolverOrder";
     public static final String CFG_CROSS_SOURCE_ORDER = "music.play.crossSourceOrder";
     public static final String DEFAULT_PLAY_RESOLVER_ORDER = "primary,qq_text,cross_source";
@@ -459,10 +459,10 @@ public class MusicPlaybackService {
 
     private boolean acceptCachedPlayInfo(String key, MusicSource requestedSource, String requestedId, PlayInfo cached) {
         if (cached == null) return false;
-        if (!shouldVerifyQqPlayUrl(cached)) return true;
+        if (!shouldVerifyRemotePlayUrl(cached)) return true;
         if (playUrlVerifier.isPlayable(cached.getPlayUrl())) return true;
         cache.invalidate(key);
-        log.info("Discarding cached QQ play URL after failed probe: {}/{}",
+        log.info("Discarding cached play URL after failed probe: {}/{}",
                 requestedSource.getValue(), requestedId);
         return false;
     }
@@ -593,9 +593,9 @@ public class MusicPlaybackService {
             throw new MusicBusinessException(MusicErrorCode.NO_PLAYABLE_URL,
                     "no playable url for " + requestedSource.getValue() + ":" + requestedId);
         }
-        if (!shouldVerifyQqPlayUrl(info)) return info;
+        if (!shouldVerifyRemotePlayUrl(info)) return info;
         if (playUrlVerifier.isPlayable(info.getPlayUrl())) return info;
-        log.info("QQ play URL probe failed for stage={} song={}/{}",
+        log.info("Play URL probe failed for stage={} song={}/{}",
                 stage, requestedSource.getValue(), requestedId);
         throw new MusicBusinessException(MusicErrorCode.NO_PLAYABLE_URL,
                 "validated unplayable url for " + requestedSource.getValue() + ":" + requestedId);
@@ -664,16 +664,76 @@ public class MusicPlaybackService {
         return s.toLowerCase().replaceAll("\\s*[\\(\\[].*?[\\)\\]]", "").trim();
     }
 
-    private boolean shouldVerifyQqPlayUrl(PlayInfo info) {
-        if (info == null || info.getActualSource() != MusicSource.QQ || isEmpty(info.getPlayUrl())) {
+    /**
+     * Decide whether a resolved play URL should be Range-probed before it is handed
+     * to the browser. This is the server-side counterpart of ios.25pan.com's
+     * "probe before play" mechanism: a dead direct link is detected here and the
+     * hedge/fallback resolver picks another source, so the listener never sees a
+     * stalled <audio> element.
+     *
+     * <p>Scope is deliberately limited to the three remote "plaintext" catalogs and
+     * their known CDN hosts. Two hard exclusions protect correctness and security:
+     * <ul>
+     *   <li>Qishui is never probed — its playUrl is a same-origin stream path; a
+     *       probe would trigger a full download + CENC decrypt on the server.</li>
+     *   <li>Private/loopback/link-local hosts are rejected so a compromised upstream
+     *       cannot turn this into an SSRF primitive (the probe runs inside our network).</li>
+     * </ul>
+     */
+    boolean shouldVerifyRemotePlayUrl(PlayInfo info) {
+        if (info == null || isEmpty(info.getPlayUrl())) return false;
+        MusicSource effective = info.getActualSource() != null
+                ? info.getActualSource() : info.getSource();
+        // Qishui uses a local stream (or an encrypted directUrl handled client-side);
+        // probing it would force a full server-side decrypt and is never meaningful.
+        if (effective == null || effective == MusicSource.QISHUI) return false;
+        // Only remote plaintext sources produce an absolute http(s) CDN URL worth probing.
+        if (effective != MusicSource.QQ && effective != MusicSource.NETEASE
+                && effective != MusicSource.KUWO) {
             return false;
         }
         HttpUrl url = HttpUrl.parse(info.getPlayUrl());
         if (url == null) return false;
-        String host = url.host().toLowerCase();
+        String scheme = url.scheme().toLowerCase(Locale.ROOT);
+        if (!"http".equals(scheme) && !"https".equals(scheme)) return false;
+        String host = url.host().toLowerCase(Locale.ROOT);
+        if (host.isEmpty() || isPrivateOrLocalHost(host)) return false;
+        return isKnownCdnHost(host);
+    }
+
+    /** Hosts we know serve the plaintext catalogs. Whitelisting keeps the probe bounded. */
+    private static boolean isKnownCdnHost(String host) {
         return host.equals("wx.music.tc.qq.com")
                 || host.endsWith(".tc.qq.com")
-                || host.endsWith(".qqmusic.qq.com");
+                || host.endsWith(".qqmusic.qq.com")
+                || host.endsWith(".music.126.net")
+                || host.equals("music.126.net")
+                || host.endsWith(".kuwo.cn")
+                || host.equals("kuwo.cn");
+    }
+
+    /** Reject loopback, private, link-local and metadata hosts to prevent SSRF. */
+    private static boolean isPrivateOrLocalHost(String host) {
+        if (host.equals("localhost") || host.endsWith(".localhost")
+                || host.equals("::1") || host.endsWith(".local") || host.endsWith(".internal")) {
+            return true;
+        }
+        // IPv4 literal (OkHttp normalises IPv6 literals to bracketed form, handled above).
+        String[] parts = host.split("\\.");
+        if (parts.length == 4) {
+            try {
+                int a = Integer.parseInt(parts[0]);
+                int b = Integer.parseInt(parts[1]);
+                if (a == 10 || a == 127 || a == 0 || a >= 224) return true;       // private/loopback/reserved/multicast
+                if (a == 169 && b == 254) return true;                             // link-local / cloud metadata
+                if (a == 172 && b >= 16 && b <= 31) return true;                   // private
+                if (a == 192 && b == 168) return true;                             // private
+                if (a == 100 && b >= 64 && b <= 127) return true;                  // CGNAT
+            } catch (NumberFormatException ignored) {
+                // Not a dotted IPv4 literal; continue with hostname checks.
+            }
+        }
+        return false;
     }
 
     private SongSearchItem ensureMeta(MusicSource source, String id, SongSearchItem current) {

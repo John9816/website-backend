@@ -89,7 +89,7 @@ class EditorAccessGrantTests {
 
         // ownerName 走 jdbc，取不到会回退 id 字符串；测试不依赖具体名称，不 stub（走 catch）
 
-        service = new EditorService(store, shareRepo, presenceRepo, mapper, jdbcTemplate);
+        service = new EditorService(store, shareRepo, presenceRepo, mapper, jdbcTemplate, mock(com.example.website.module.assets.application.R2ImageClient.class));
     }
 
     void put(long uid, String coll, List<Object> v) {

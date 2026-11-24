@@ -78,7 +78,11 @@ app:
   membership:
     free-lifetime-enabled: ${APP_MEMBERSHIP_FREE_LIFETIME_ENABLED:true}
   storage:
+    # 自建 CF R2 图床：worker 上传接口 + Bearer token（替代旧 xunhuisi 第三方图床）
+    # image-upload-url 保留仅为兼容历史配置；实际上传走 r2-image-upload-url
     image-upload-url: ${IMAGE_UPLOAD_URL:https://api.xunhuisi.store/API/Tuchuang/Tc.php}
+    r2-image-upload-url: ${R2_IMAGE_UPLOAD_URL:https://km.751152.xyz/editor/api/upload}
+    r2-image-token: ${R2_IMAGE_TOKEN:}
     shared-dir: ${WEBSITE_SHARED_DIR:}
     image-dir: ${IMAGE_UPLOAD_DIR:uploads/images}
     avatar-dir: ${AVATAR_UPLOAD_DIR:uploads/avatars}

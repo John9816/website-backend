@@ -1,25 +1,15 @@
 package com.example.website.module.assets.application;
 
 import com.example.website.common.BusinessException;
-import com.example.website.config.OkHttpConfig;
 import com.example.website.module.assets.domain.ImageAsset;
 import com.example.website.module.assets.infrastructure.persistence.ImageAssetRepository;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import okhttp3.FormBody;
 import okhttp3.HttpUrl;
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.Response;
 import okio.ByteString;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.io.IOException;
 import java.util.Base64;
 import java.util.Optional;
 
@@ -29,18 +19,12 @@ public class ImageStorageService {
 
     private static final int MAX_IMAGE_BYTES = 12 * 1024 * 1024;
     private final ImageAssetRepository repository;
-    private final OkHttpClient httpClient;
-    private final ObjectMapper objectMapper;
-    private final String uploadUrl;
+    private final R2ImageClient r2ImageClient;
 
     public ImageStorageService(ImageAssetRepository repository,
-                               @Qualifier(OkHttpConfig.CLIENT_IMAGE_UPSTREAM) OkHttpClient httpClient,
-                               ObjectMapper objectMapper,
-                               @Value("${app.storage.image-upload-url:https://api.xunhuisi.store/API/Tuchuang/Tc.php}") String uploadUrl) {
+                               R2ImageClient r2ImageClient) {
         this.repository = repository;
-        this.httpClient = httpClient;
-        this.objectMapper = objectMapper;
-        this.uploadUrl = uploadUrl;
+        this.r2ImageClient = r2ImageClient;
     }
 
     public ImageAsset storeReference(String reference) {
@@ -95,36 +79,21 @@ public class ImageStorageService {
     }
 
     private ImageAsset upload(String photo, String contentType, Long byteSize) {
-        if (!isHttpUrl(uploadUrl)) {
-            throw new BusinessException(500, "Invalid image upload endpoint");
+        // photo 有两种来源：storeBytes 传入的 base64（contentType 非空），
+        // 或 storeReference 传入的远程 HTTP URL（contentType 为 null，需先下载再转存）。
+        String url;
+        if (contentType != null && !contentType.isBlank()) {
+            url = r2ImageClient.upload(photo, contentType);
+        } else {
+            url = r2ImageClient.uploadFromUrl(photo);
         }
-        // The provider's live form uses photo/type, despite the catalog listing image.
-        FormBody body = new FormBody.Builder().add("photo", photo).add("type", "json").build();
-        Request request = new Request.Builder().url(uploadUrl).post(body).build();
         ImageAsset asset = new ImageAsset();
-        try (Response response = httpClient.newCall(request).execute()) {
-            if (!response.isSuccessful() || response.body() == null) {
-                throw new BusinessException(502, "Image upload failed: HTTP " + response.code());
-            }
-            String raw = response.body().string();
-            JsonNode json = objectMapper.readTree(raw);
-            JsonNode code = json == null ? null : json.get("code");
-            String url = json == null ? "" : json.path("purl").asText("").trim();
-            if (code == null || !code.isIntegralNumber() || !code.canConvertToInt() || code.intValue() != 0
-                    || !isHttpUrl(url) || url.length() > 1000) {
-                throw new BusinessException(502, "Image upload returned an invalid result");
-            }
-            asset.setImageUrl(url);
-            asset.setUrlHash(hash(url));
-            asset.setHost(json.path("host").asText(null));
-            asset.setDeleteUrl(json.path("delete_url").asText(null));
-            asset.setSource(json.path("source").asText(null));
-            asset.setResponseJson(raw);
-            asset.setContentType(contentType);
-            asset.setByteSize(byteSize);
-        } catch (IOException e) {
-            throw new BusinessException(502, "Image upload failed or returned invalid JSON");
-        }
+        asset.setImageUrl(url);
+        asset.setUrlHash(hash(url));
+        asset.setHost("r2");
+        asset.setSource("r2");
+        asset.setContentType(contentType);
+        asset.setByteSize(byteSize);
         // Repository.save opens a short transaction only after the upload has completed.
         return repository.save(asset);
     }

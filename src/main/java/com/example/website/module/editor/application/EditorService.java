@@ -1,6 +1,7 @@
 package com.example.website.module.editor.application;
 
 import com.example.website.common.BusinessException;
+import com.example.website.module.assets.application.R2ImageClient;
 import com.example.website.module.editor.domain.EditorPresence;
 import com.example.website.module.editor.domain.EditorShare;
 import com.example.website.module.editor.infrastructure.persistence.EditorPresenceRepository;
@@ -33,6 +34,7 @@ public class EditorService {
     private final EditorPresenceRepository presenceRepo;
     private final ObjectMapper mapper;
     private final JdbcTemplate jdbcTemplate;
+    private final R2ImageClient r2ImageClient;
 
     @Value("${app.editor.file-dir:./data/editor/files}")
     private String fileDir;
@@ -927,15 +929,23 @@ public class EditorService {
             ext = map.getOrDefault(mime, mime);
         }
         String name = UUID.randomUUID().toString().replace("-", "") + UUID.randomUUID().toString().replace("-", "").substring(0, 12) + "." + ext;
-        try {
-            Path dir = Paths.get(fileDir);
-            Files.createDirectories(dir);
-            Files.write(dir.resolve(name), bytes);
-        } catch (Exception e) {
-            throw new BusinessException(500, "文件保存失败");
+        String url;
+        if (audio) {
+            // 音频仍落本地磁盘（走 /api/public/editor/files 读取，media.js 另有一套 R2 音频通道）
+            try {
+                Path dir = Paths.get(fileDir);
+                Files.createDirectories(dir);
+                Files.write(dir.resolve(name), bytes);
+            } catch (Exception e) {
+                throw new BusinessException(500, "文件保存失败");
+            }
+            url = publicBase + "/files/" + name;
+        } else {
+            // 图片走自建 CF R2 图床，返回匿名可读外链
+            url = r2ImageClient.upload(Base64.getEncoder().encodeToString(bytes), "image/" + mime);
         }
         Map<String, Object> r = new LinkedHashMap<>();
-        r.put("url", publicBase + "/files/" + name);
+        r.put("url", url);
         r.put("name", name);
         return r;
     }

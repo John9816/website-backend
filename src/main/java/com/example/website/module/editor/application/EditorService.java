@@ -17,6 +17,7 @@ import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.*;
 import java.util.stream.Collectors;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * 学城文档业务服务。完整复刻原 Node 版 server/xuecheng 的行为：
@@ -31,6 +32,7 @@ public class EditorService {
     private final EditorShareRepository shareRepo;
     private final EditorPresenceRepository presenceRepo;
     private final ObjectMapper mapper;
+    private final JdbcTemplate jdbcTemplate;
 
     @Value("${app.editor.file-dir:./data/editor/files}")
     private String fileDir;
@@ -75,26 +77,77 @@ public class EditorService {
     }
 
     // ================================================================== 文档
-    /** 列表：返回摘要卡片 */
+
+    /**
+     * 我当前持有的有效授权记录（kind=grant 且 status=active）。
+     * 授权记录写在被授权者自己的 access_requests 集合里，随用户隔离。
+     */
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> myActiveGrants(Long userId) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Object o : store.readColl(userId, EditorStore.Coll.ACCESS_REQUESTS)) {
+            Map<String, Object> r = asMap(o);
+            if ("grant".equals(str(r.get("kind"))) && "active".equals(str(r.get("status")))) out.add(r);
+        }
+        return out;
+    }
+
+    /** 按授权记录，从所有者行里取出原文档；文档被删或授权失效返回 null。 */
+    private Map<String, Object> grantedDoc(Map<String, Object> grant) {
+        Long owner = parseLong(grant.get("ownerId"));
+        String docId = str(grant.get("docId"));
+        if (owner == null || docId == null) return null;
+        for (Object o : store.readColl(owner, EditorStore.Coll.DOCS)) {
+            Map<String, Object> d = asMap(o);
+            if (docId.equals(str(d.get("id")))) return d;
+        }
+        return null;
+    }
+
+    private static Long parseLong(Object v) {
+        if (v == null) return null;
+        try { return Long.valueOf(String.valueOf(v)); } catch (Exception e) { return null; }
+    }
+
+    /** 列表：返回摘要卡片（自己的文档 + 别人授权给我的只读文档） */
     public List<Object> listDocs(Long userId) {
         List<Object> docs = store.readColl(userId, EditorStore.Coll.DOCS);
         List<Object> out = new ArrayList<>();
         for (Object o : docs) {
             Map<String, Object> d = asMap(o);
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("id", d.get("id"));
-            item.put("title", d.get("title"));
-            item.put("parentId", d.get("parentId") != null ? d.get("parentId") : null);
-            item.put("updatedAt", d.get("updatedAt"));
-            item.put("createdAt", d.get("createdAt"));
-            item.put("favorite", bool(d.get("favorite")));
-            item.put("lastVisitedAt", d.get("lastVisitedAt") != null ? d.get("lastVisitedAt") : null);
-            Map<String, Object> share = asMap(d.get("share"));
-            item.put("shared", bool(share.get("enabled")));
-            item.put("excerpt", excerptOf(d.get("content"), 120));
+            Map<String, Object> item = docCard(d);
+            item.put("permission", "owner");
+            out.add(item);
+        }
+        // 被授权给我的文档
+        for (Map<String, Object> grant : myActiveGrants(userId)) {
+            Map<String, Object> d = grantedDoc(grant);
+            if (d == null) continue;
+            Map<String, Object> item = docCard(d);
+            String role = str(grant.get("role"));
+            item.put("permission", role == null ? "viewer" : role);
+            item.put("readOnly", !"editor".equals(role));
+            item.put("granted", true);
+            item.put("ownerName", str(grant.get("ownerName")));
             out.add(item);
         }
         return out;
+    }
+
+    /** 单篇文档 -> 列表摘要卡片 */
+    private Map<String, Object> docCard(Map<String, Object> d) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("id", d.get("id"));
+        item.put("title", d.get("title"));
+        item.put("parentId", d.get("parentId") != null ? d.get("parentId") : null);
+        item.put("updatedAt", d.get("updatedAt"));
+        item.put("createdAt", d.get("createdAt"));
+        item.put("favorite", bool(d.get("favorite")));
+        item.put("lastVisitedAt", d.get("lastVisitedAt") != null ? d.get("lastVisitedAt") : null);
+        Map<String, Object> share = asMap(d.get("share"));
+        item.put("shared", bool(share.get("enabled")));
+        item.put("excerpt", excerptOf(d.get("content"), 120));
+        return item;
     }
 
     /** 新建 */
@@ -122,9 +175,30 @@ public class EditorService {
         return doc;
     }
 
-    /** 单篇读取 */
+    /** 单篇读取：自己的文档，或别人授权给我的文档（只读） */
     public Map<String, Object> getDoc(Long userId, String id) {
-        return findDoc(userId, id);
+        for (Object o : store.readColl(userId, EditorStore.Coll.DOCS)) {
+            Map<String, Object> d = asMap(o);
+            if (id.equals(str(d.get("id")))) {
+                Map<String, Object> r = new LinkedHashMap<>(d);
+                r.put("permission", "owner");
+                return r;
+            }
+        }
+        for (Map<String, Object> grant : myActiveGrants(userId)) {
+            if (!id.equals(str(grant.get("docId")))) continue;
+            Map<String, Object> d = grantedDoc(grant);
+            if (d != null) {
+                Map<String, Object> r = new LinkedHashMap<>(d);
+                String role = str(grant.get("role"));
+                r.put("permission", role == null ? "viewer" : role);
+                r.put("readOnly", !"editor".equals(role));
+                r.put("granted", true);
+                r.put("ownerName", str(grant.get("ownerName")));
+                return r;
+            }
+        }
+        throw new BusinessException(404, "文档不存在");
     }
 
     private Map<String, Object> findDoc(Long userId, String id) {
@@ -142,7 +216,15 @@ public class EditorService {
         for (int i = 0; i < list.size(); i++) {
             if (id.equals(str(asMap(list.get(i)).get("id")))) { idx = i; break; }
         }
-        if (idx < 0) throw new BusinessException(404, "文档不存在");
+        if (idx < 0) {
+            // 文档不在自己名下：若是被授权的只读文档，明确拒绝修改；否则不存在。
+            for (Map<String, Object> grant : myActiveGrants(userId)) {
+                if (id.equals(str(grant.get("docId"))) && grantedDoc(grant) != null) {
+                    throw new BusinessException(403, "这是别人分享给你的只读文档，无法修改");
+                }
+            }
+            throw new BusinessException(404, "文档不存在");
+        }
         Map<String, Object> doc = asMap(list.get(idx));
         boolean edited = false;
         if (body.get("title") instanceof String) {
@@ -507,61 +589,224 @@ public class EditorService {
         Map<String, Object> r = new LinkedHashMap<>(); r.put("ok", true); r.put("total", list.size()); return r;
     }
 
-    // ================================================================== 权限申请 / 审批
+    // ================================================================== 权限申请 / 审批（跨用户）
+    /**
+     * 收件箱：我收到的访问申请（别人发给我、待我审批的）。
+     * 授权记录（kind=grant）不在这里展示；申请人查自己的状态走「我的申请」。
+     */
     public List<Object> listAccessRequests(Long userId, boolean inbox) {
         List<Object> list = store.readColl(userId, EditorStore.Coll.ACCESS_REQUESTS);
-        if (inbox) list = list.stream().filter(r -> "pending".equals(str(asMap(r).get("status")))).collect(Collectors.toList());
-        list.sort((a, b) -> str(asMap(b).get("createdAt")).compareTo(str(asMap(a).get("createdAt"))));
-        return list;
+        List<Object> out = new ArrayList<>();
+        for (Object o : list) {
+            Map<String, Object> r = asMap(o);
+            if ("request".equals(str(r.get("kind")))) {
+                // owner 视角：别人发给我的申请
+                out.add(r);
+            }
+        }
+        out.sort((a, b) -> str(asMap(b).get("createdAt")).compareTo(str(asMap(a).get("createdAt"))));
+        return out;
     }
 
+    /** 我发起的申请及其状态（含通过/拒绝/已授权），供申请者查看进度。 */
+    public List<Object> listMyAccessRequests(Long userId) {
+        List<Object> out = new ArrayList<>();
+        for (Object o : store.readColl(userId, EditorStore.Coll.ACCESS_REQUESTS)) {
+            Map<String, Object> r = asMap(o);
+            if ("my_request".equals(str(r.get("kind")))) out.add(r);
+        }
+        out.sort((a, b) -> str(asMap(b).get("createdAt")).compareTo(str(asMap(a).get("createdAt"))));
+        return out;
+    }
+
+    /** 文档元信息（供申请页展示标题与所有者；不含正文，不判断是否已授权）。 */
+    public Map<String, Object> docMeta(String docId) {
+        if (docId == null) throw new BusinessException(400, "缺少文档 id");
+        Long owner = store.findOwnerOfDoc(docId);
+        if (owner == null) throw new BusinessException(404, "文档不存在或链接已失效");
+        String title = "";
+        for (Object o : store.readColl(owner, EditorStore.Coll.DOCS)) {
+            Map<String, Object> d = asMap(o);
+            if (docId.equals(str(d.get("id")))) { title = str(d.get("title")) == null ? "" : str(d.get("title")); break; }
+        }
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("id", docId); r.put("title", title); r.put("ownerId", owner);
+        return r;
+    }
+
+    /**
+     * 发起访问申请：按 docId 全局定位文档所有者，把申请写进所有者的收件箱。
+     * 同时给申请者写一条 my_request 便于跟踪状态。
+     */
     public Map<String, Object> addAccessRequest(Long userId, Map<String, Object> body, String username) {
         String docId = str(body.get("docId"));
         if (docId == null) throw new BusinessException(400, "缺少文档 id");
-        String docTitle = str(body.get("docTitle"));
-        if (docTitle == null) {
-            for (Object o : store.readColl(userId, EditorStore.Coll.DOCS)) {
-                Map<String, Object> d = asMap(o);
-                if (docId.equals(str(d.get("id")))) { docTitle = str(d.get("title")); break; }
+        Long owner = store.findOwnerOfDoc(docId);
+        if (owner == null) throw new BusinessException(404, "文档不存在或链接已失效");
+        if (owner.longValue() == userId.longValue()) throw new BusinessException(400, "这是你自己的文档，无需申请");
+
+        // 已经拥有访问权限（自己是 owner 或已有 grant）则无需申请
+        for (Map<String, Object> grant : myActiveGrants(userId)) {
+            if (docId.equals(str(grant.get("docId")))) throw new BusinessException(400, "你已拥有该文档的访问权限");
+        }
+
+        // 取文档标题
+        String docTitle = "";
+        for (Object o : store.readColl(owner, EditorStore.Coll.DOCS)) {
+            Map<String, Object> d = asMap(o);
+            if (docId.equals(str(d.get("id")))) { docTitle = str(d.get("title")) == null ? "" : str(d.get("title")); break; }
+        }
+        String role = body.get("role") != null ? str(body.get("role")) : "viewer";
+        if (!"editor".equals(role)) role = "viewer";
+        String msg = str(body.get("message"));
+        msg = msg == null ? "" : (msg.length() > 300 ? msg.substring(0, 300) : msg);
+
+        // 防重复：所有者收件箱里是否已有该申请人对该文档的待处理申请
+        String applicantKey = String.valueOf(userId);
+        for (Object o : store.readColl(owner, EditorStore.Coll.ACCESS_REQUESTS)) {
+            Map<String, Object> r = asMap(o);
+            if ("request".equals(str(r.get("kind"))) && docId.equals(str(r.get("docId")))
+                    && applicantKey.equals(str(r.get("applicantId"))) && "pending".equals(str(r.get("status")))) {
+                throw new BusinessException(400, "你已申请过，请等待文档所有者审批");
             }
         }
-        List<Object> list = store.readColl(userId, EditorStore.Coll.ACCESS_REQUESTS);
+
+        String reqId = newId();
+        String now = nowISO();
+        String ownerName = ownerName(owner);
+
+        // 1) 写进所有者的收件箱
+        List<Object> ownerReqs = store.readColl(owner, EditorStore.Coll.ACCESS_REQUESTS);
         Map<String, Object> item = new LinkedHashMap<>();
-        item.put("id", newId()); item.put("docId", docId);
-        item.put("docTitle", docTitle != null ? docTitle : "");
-        item.put("applicant", username != null ? username : ""); item.put("applicantId", userId);
-        item.put("role", body.get("role") != null ? body.get("role") : "viewer");
-        String msg = str(body.get("message"));
-        item.put("message", msg == null ? "" : (msg.length() > 300 ? msg.substring(0, 300) : msg));
+        item.put("kind", "request");
+        item.put("id", reqId); item.put("docId", docId); item.put("docTitle", docTitle);
+        item.put("applicant", username != null ? username : applicantKey);
+        item.put("applicantId", userId); item.put("ownerId", owner); item.put("ownerName", ownerName);
+        item.put("role", role); item.put("message", msg);
         item.put("status", "pending"); item.put("handledBy", null); item.put("handledAt", null);
-        item.put("createdAt", nowISO());
-        list.add(item);
-        store.writeColl(userId, EditorStore.Coll.ACCESS_REQUESTS, list);
+        item.put("createdAt", now);
+        ownerReqs.add(item);
+        store.writeColl(owner, EditorStore.Coll.ACCESS_REQUESTS, ownerReqs);
+
+        // 2) 给申请者写一条状态跟踪记录
+        List<Object> myReqs = store.readColl(userId, EditorStore.Coll.ACCESS_REQUESTS);
+        Map<String, Object> mine = new LinkedHashMap<>();
+        mine.put("kind", "my_request");
+        mine.put("id", reqId); mine.put("docId", docId); mine.put("docTitle", docTitle);
+        mine.put("ownerId", owner); mine.put("ownerName", ownerName);
+        mine.put("applicantId", userId); mine.put("applicant", username != null ? username : applicantKey);
+        mine.put("role", role); mine.put("message", msg);
+        mine.put("status", "pending"); mine.put("createdAt", now);
+        myReqs.add(mine);
+        store.writeColl(userId, EditorStore.Coll.ACCESS_REQUESTS, myReqs);
+
+        // 3) 通知所有者
         Map<String, Object> note = new LinkedHashMap<>();
         note.put("type", "access_request"); note.put("docId", docId);
         note.put("docTitle", docTitle); note.put("actor", username);
-        note.put("text", "收到一条文档访问申请");
-        addNotification(userId, note);
+        note.put("text", (username != null ? username : "有人") + " 申请访问《" + docTitle + "》");
+        addNotification(owner, note);
+
         return item;
     }
 
+    /** 从 users 表取用户名（尽力而为，取不到回退为 id 字符串）。 */
+    private String ownerName(Long ownerId) {
+        try {
+            org.springframework.jdbc.core.JdbcTemplate jdbc = jdbcTemplate;
+            if (jdbc != null) {
+                List<String> names = jdbc.queryForList(
+                        "SELECT username FROM users WHERE id=?", String.class, ownerId);
+                if (!names.isEmpty()) return names.get(0);
+            }
+        } catch (Exception ignore) {}
+        return String.valueOf(ownerId);
+    }
+
+    /**
+     * 审批：只有文档所有者（收到申请的一方）能处理。
+     * 通过时给申请者写入授权记录（kind=grant，status=active），此后申请者可读写守门内的文档。
+     */
     public Map<String, Object> decideAccessRequest(Long userId, String id, boolean approve, String username) {
         List<Object> list = store.readColl(userId, EditorStore.Coll.ACCESS_REQUESTS);
+        Map<String, Object> target = null;
         for (Object o : list) {
             Map<String, Object> r = asMap(o);
-            if (id.equals(str(r.get("id"))) && "pending".equals(str(r.get("status")))) {
-                r.put("status", approve ? "approved" : "rejected");
-                r.put("handledBy", username); r.put("handledAt", nowISO());
-                store.writeColl(userId, EditorStore.Coll.ACCESS_REQUESTS, list);
-                Map<String, Object> note = new LinkedHashMap<>();
-                note.put("type", "access_decision"); note.put("docId", r.get("docId"));
-                note.put("docTitle", r.get("docTitle")); note.put("actor", username);
-                note.put("text", approve ? "你的访问申请已通过" : "你的访问申请被拒绝");
-                addNotification(userId, note);
-                return r;
+            if (id.equals(str(r.get("id"))) && "request".equals(str(r.get("kind")))
+                    && "pending".equals(str(r.get("status")))) { target = r; break; }
+        }
+        if (target == null) throw new BusinessException(404, "申请不存在或已处理");
+
+        String decision = approve ? "approved" : "rejected";
+        String now = nowISO();
+        target.put("status", decision);
+        target.put("handledBy", username); target.put("handledAt", now);
+        store.writeColl(userId, EditorStore.Coll.ACCESS_REQUESTS, list);
+
+        Long applicantId = parseLong(target.get("applicantId"));
+        String docId = str(target.get("docId"));
+        String docTitle = str(target.get("docTitle"));
+        String role = str(target.get("role"));
+        if (role == null) role = "viewer";
+
+        if (applicantId != null) {
+            List<Object> applicantReqs = store.readColl(applicantId, EditorStore.Coll.ACCESS_REQUESTS);
+
+            // 同步申请者的状态跟踪记录
+            for (Object o : applicantReqs) {
+                Map<String, Object> mine = asMap(o);
+                if ("my_request".equals(str(mine.get("kind"))) && id.equals(str(mine.get("id")))) {
+                    mine.put("status", decision); mine.put("handledAt", now); mine.put("handledBy", username);
+                    break;
+                }
+            }
+
+            if (approve) {
+                // 写入授权记录：申请者可用此记录读取所有者的文档
+                Map<String, Object> grant = new LinkedHashMap<>();
+                grant.put("kind", "grant");
+                grant.put("id", newId());
+                grant.put("docId", docId); grant.put("docTitle", docTitle);
+                grant.put("ownerId", userId); grant.put("ownerName", username != null ? username : String.valueOf(userId));
+                grant.put("granteeId", applicantId);
+                grant.put("role", role);
+                grant.put("status", "active");
+                grant.put("grantedAt", now); grant.put("requestId", id);
+                applicantReqs.add(grant);
+            }
+            store.writeColl(applicantId, EditorStore.Coll.ACCESS_REQUESTS, applicantReqs);
+
+            // 通知申请者
+            Map<String, Object> note = new LinkedHashMap<>();
+            note.put("type", "access_decision"); note.put("docId", docId); note.put("docTitle", docTitle);
+            note.put("actor", username);
+            note.put("text", approve ? "你申请访问的《" + docTitle + "》已获批准" : "你申请访问的《" + docTitle + "》被拒绝");
+            addNotification(applicantId, note);
+        }
+
+        return target;
+    }
+
+    /** 所有者撤销授权：清理自己收件箱里的申请 + 申请者名下的 grant。 */
+    public Map<String, Object> revokeAccess(Long userId, String grantOrDocId, String applicantIdStr) {
+        Long applicantId = parseLong(applicantIdStr);
+        if (applicantId == null) throw new BusinessException(400, "缺少被授权用户");
+        List<Object> applicantReqs = store.readColl(applicantId, EditorStore.Coll.ACCESS_REQUESTS);
+        boolean changed = false;
+        Iterator<Object> it = applicantReqs.iterator();
+        while (it.hasNext()) {
+            Map<String, Object> r = asMap(it.next());
+            if ("grant".equals(str(r.get("kind"))) && userId.longValue() == parseLongDefault(r.get("ownerId"))
+                    && (grantOrDocId.equals(str(r.get("id"))) || grantOrDocId.equals(str(r.get("docId"))))) {
+                it.remove(); changed = true;
             }
         }
-        throw new BusinessException(404, "申请不存在或已处理");
+        if (changed) store.writeColl(applicantId, EditorStore.Coll.ACCESS_REQUESTS, applicantReqs);
+        Map<String, Object> r = new LinkedHashMap<>(); r.put("ok", true); r.put("revoked", changed); return r;
+    }
+
+    private static long parseLongDefault(Object v) {
+        Long l = parseLong(v); return l == null ? -1L : l;
     }
 
     // ================================================================== 在线 / 心跳

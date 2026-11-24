@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 用户文档集合访问层。等价于原 Node 的 userStore：
@@ -37,17 +38,26 @@ public class EditorStore {
     @SuppressWarnings("unchecked")
     public List<Object> readColl(Long userId, Coll coll) {
         EditorUserData d = row(userId);
-        String raw;
+        return parseRaw(rawOf(d, coll));
+    }
+
+    /** 从一行数据里取某集合的原始 JSON 字符串。 */
+    private String rawOf(EditorUserData d, Coll coll) {
+        if (d == null) return null;
         switch (coll) {
-            case DOCS: raw = d.getDocs(); break;
-            case TEMPLATES: raw = d.getTemplates(); break;
-            case TRASH: raw = d.getTrash(); break;
-            case NOTIFICATIONS: raw = d.getNotifications(); break;
-            case COMMENTS: raw = d.getComments(); break;
-            case MENTIONS: raw = d.getMentions(); break;
-            case ACCESS_REQUESTS: raw = d.getAccessRequests(); break;
-            default: raw = null;
+            case DOCS: return d.getDocs();
+            case TEMPLATES: return d.getTemplates();
+            case TRASH: return d.getTrash();
+            case NOTIFICATIONS: return d.getNotifications();
+            case COMMENTS: return d.getComments();
+            case MENTIONS: return d.getMentions();
+            case ACCESS_REQUESTS: return d.getAccessRequests();
+            default: return null;
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Object> parseRaw(String raw) {
         if (raw == null || raw.trim().isEmpty() || "null".equalsIgnoreCase(raw.trim())) {
             return new ArrayList<>();
         }
@@ -58,6 +68,33 @@ public class EditorStore {
         } catch (Exception e) {
             return new ArrayList<>();
         }
+    }
+
+    /** 读指定数据行的集合（跨用户场景用，不经 row(userId) 自动建行）。 */
+    public List<Object> readCollOf(EditorUserData d, Coll coll) {
+        return parseRaw(rawOf(d, coll));
+    }
+
+    /** 列出全部用户数据行（用于按 docId 全局定位文档所有者）。 */
+    public List<EditorUserData> allRows() {
+        return repository.findAll();
+    }
+
+    /**
+     * 全局按文档 id 定位所属用户。docId 为随机全局唯一值，用户量级很小（个位数），
+     * 遍历所有行寻找包含该 id 的文档，返回 ownerId；找不到返回 null。
+     */
+    @SuppressWarnings("unchecked")
+    public Long findOwnerOfDoc(String docId) {
+        if (docId == null || docId.isEmpty()) return null;
+        for (EditorUserData d : allRows()) {
+            for (Object o : parseRaw(rawOf(d, Coll.DOCS))) {
+                if (o instanceof Map && docId.equals(String.valueOf(((Map<String, Object>) o).get("id")))) {
+                    return d.getUserId();
+                }
+            }
+        }
+        return null;
     }
 
     public void writeColl(Long userId, Coll coll, List<?> value) {

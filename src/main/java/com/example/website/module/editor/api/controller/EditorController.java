@@ -158,10 +158,20 @@ public class EditorController {
         return ResponseEntity.ok(ApiResponse.ok(service.addMention(uid(r), body, uname(r))));
     }
 
-    // ---------------- 权限申请 / 审批 ----------------
+    // ---------------- 权限申请 / 审批（跨用户） ----------------
     @GetMapping("/access-requests")
     public ResponseEntity<?> listAccess(HttpServletRequest r, @RequestParam(defaultValue = "false") boolean inbox) {
         return ResponseEntity.ok(ApiResponse.ok(service.listAccessRequests(uid(r), inbox)));
+    }
+    /** 我发起的申请及其审批状态 */
+    @GetMapping("/my-access-requests")
+    public ResponseEntity<?> listMyAccess(HttpServletRequest r) {
+        return ResponseEntity.ok(ApiResponse.ok(service.listMyAccessRequests(uid(r))));
+    }
+    /** 文档元信息（申请页展示标题/所有者，不含正文） */
+    @GetMapping("/doc-meta/{id}")
+    public ResponseEntity<?> docMeta(@PathVariable String id) {
+        return ResponseEntity.ok(ApiResponse.ok(service.docMeta(id)));
     }
     @PostMapping("/access-request")
     public ResponseEntity<?> addAccess(HttpServletRequest r, @RequestBody Map<String, Object> body) {
@@ -176,6 +186,12 @@ public class EditorController {
     public ResponseEntity<?> decideAccessPatch(HttpServletRequest r, @PathVariable String id, @RequestBody Map<String, Object> body) {
         boolean approve = Boolean.TRUE.equals(body.get("approve")) || "true".equals(String.valueOf(body.get("approve")));
         return ResponseEntity.ok(ApiResponse.ok(service.decideAccessRequest(uid(r), id, approve, uname(r))));
+    }
+    /** 撤销授权：body 带 applicantId，路径 id 为 grant id 或 docId */
+    @DeleteMapping("/access-requests/{id}")
+    public ResponseEntity<?> revokeAccess(HttpServletRequest r, @PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
+        String applicantId = body == null ? null : str(body.get("applicantId"));
+        return ResponseEntity.ok(ApiResponse.ok(service.revokeAccess(uid(r), id, applicantId)));
     }
 
     // ---------------- 在线 / 心跳 ----------------

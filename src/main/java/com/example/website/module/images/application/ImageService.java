@@ -47,8 +47,6 @@ public class ImageService {
     public static final String CFG_MODEL       = "image.api.model";
     public static final String CFG_EDIT_BASE_URL = "image.edit.api.baseUrl";
     public static final String CFG_UPLOAD_DIR  = "image.upload.dir";
-    public static final String CFG_GOFILE_URL  = "image.gofile.url";
-    public static final String CFG_GOFILE_TOKEN = "image.gofile.token";
     public static final String CFG_REMOTE_URL_MODE = "image.persist.remote-url-mode";
 
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");

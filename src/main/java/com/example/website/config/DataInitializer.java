@@ -56,7 +56,9 @@ public class DataInitializer implements CommandLineRunner {
             "content.cover.fallback.url",
             "content.cover.fallback.model",
             "content.cover.fallback.ratio",
-            "content.cover.fallback.resolution"
+            "content.cover.fallback.resolution",
+            "image.gofile.url",
+            "image.gofile.token"
     ));
 
     private final UserRepository userRepository;
@@ -226,12 +228,6 @@ public class DataInitializer implements CommandLineRunner {
         all.add(new SeedEntry(ImageService.CFG_EDIT_BASE_URL,
                 "",
                 "Optional upstream image edits endpoint. Leave empty to derive /images/edits from image.api.baseUrl."));
-        all.add(new SeedEntry(ImageService.CFG_GOFILE_URL,
-                "",
-                "go-file server base URL. Leave empty to use local disk."));
-        all.add(new SeedEntry(ImageService.CFG_GOFILE_TOKEN,
-                "",
-                "go-file API token. Leave empty if upload permission is open."));
 
         all.add(new SeedEntry(AiConversationService.CFG_BASE_URL,
                 "https://fufu.iqach.top/v1",

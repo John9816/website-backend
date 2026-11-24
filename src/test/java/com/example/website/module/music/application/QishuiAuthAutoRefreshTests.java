@@ -19,10 +19,9 @@ class QishuiAuthAutoRefreshTests {
     private final Clock clock = Clock.fixed(now, ZoneOffset.UTC);
     private final QishuiCredentialStore store = mock(QishuiCredentialStore.class);
     private final QishuiAuthClient auth = mock(QishuiAuthClient.class);
-    private final QishuiRoamingService roaming = mock(QishuiRoamingService.class);
 
     private QishuiAuthAutoRefreshService service(long thresholdSec, boolean enabled) {
-        return new QishuiAuthAutoRefreshService(store, auth, roaming, clock, thresholdSec, enabled);
+        return new QishuiAuthAutoRefreshService(store, auth, clock, thresholdSec, enabled);
     }
 
     private QishuiCredentialStore.StoredCredential binding(String id, long expiresInSec)
@@ -43,7 +42,7 @@ class QishuiAuthAutoRefreshTests {
         when(store.load(1L)).thenReturn(Optional.of(binding("b1", 3600)));
         assertFalse(service(1800, true).refreshIfExpiring(1L));
         verify(auth, never()).refresh(any());
-        verify(store, never()).replaceIfCurrent(anyLong(), anyString(), any());
+        verify(store, never()).updateIfCurrent(anyLong(), anyString(), any());
     }
 
     @Test
@@ -52,18 +51,24 @@ class QishuiAuthAutoRefreshTests {
         QishuiCredential updated = new QishuiCredential();
         when(store.load(1L)).thenReturn(Optional.of(saved));
         when(auth.refresh(saved.getCredential())).thenReturn(updated);
-        when(store.replaceIfCurrent(1L, "b1", updated)).thenReturn(true);
+        when(store.updateIfCurrent(1L, "b1", updated)).thenReturn(true);
         assertTrue(service(1800, true).refreshIfExpiring(1L));
         verify(auth, times(1)).refresh(saved.getCredential());
-        verify(store).replaceIfCurrent(1L, "b1", updated);
+        verify(store).updateIfCurrent(1L, "b1", updated);
     }
 
     @Test
-    void liveRoamingSessionIsSkipped() throws Exception {
-        when(store.load(1L)).thenReturn(Optional.of(binding("b1", 60)));
-        when(roaming.hasActiveSession(1L)).thenReturn(true);
-        assertFalse(service(1800, true).refreshIfExpiring(1L));
-        verify(auth, never()).refresh(any());
+    void liveRoamingSessionIsRefreshedInPlace() throws Exception {
+        // 刷新不再轮换 bindingId，所以直播中的漫游会话不会被 409 打断。
+        QishuiCredentialStore.StoredCredential saved = binding("b1", 60);
+        QishuiCredential updated = new QishuiCredential();
+        when(store.load(1L)).thenReturn(Optional.of(saved));
+        when(auth.refresh(saved.getCredential())).thenReturn(updated);
+        when(store.updateIfCurrent(1L, "b1", updated)).thenReturn(true);
+        assertTrue(service(1800, true).refreshIfExpiring(1L));
+        verify(store).updateIfCurrent(1L, "b1", updated);
+        // 关键断言：刷新走的是"原地更新"，不会轮换 bindingId 打断会话。
+        verify(store, never()).replaceIfCurrent(anyLong(), anyString(), any());
     }
 
     @Test
@@ -71,7 +76,7 @@ class QishuiAuthAutoRefreshTests {
         when(store.load(1L)).thenReturn(Optional.of(binding("b1", 60)));
         when(auth.refresh(any())).thenThrow(new IllegalStateException("secret-access-code"));
         assertFalse(service(1800, true).refreshIfExpiring(1L));
-        verify(store, never()).replaceIfCurrent(anyLong(), anyString(), any());
+        verify(store, never()).updateIfCurrent(anyLong(), anyString(), any());
     }
 
     @Test
@@ -79,7 +84,7 @@ class QishuiAuthAutoRefreshTests {
         QishuiCredentialStore.StoredCredential saved = binding("b1", 60);
         when(store.load(1L)).thenReturn(Optional.of(saved));
         when(auth.refresh(any())).thenReturn(new QishuiCredential());
-        when(store.replaceIfCurrent(eq(1L), eq("b1"), any())).thenReturn(false);
+        when(store.updateIfCurrent(eq(1L), eq("b1"), any())).thenReturn(false);
         assertFalse(service(1800, true).refreshIfExpiring(1L));
     }
 
@@ -89,7 +94,7 @@ class QishuiAuthAutoRefreshTests {
         saved.getCredential().setExpiresAt(null);
         when(store.load(1L)).thenReturn(Optional.of(saved));
         when(auth.refresh(any())).thenReturn(new QishuiCredential());
-        when(store.replaceIfCurrent(eq(1L), eq("b1"), any())).thenReturn(true);
+        when(store.updateIfCurrent(eq(1L), eq("b1"), any())).thenReturn(true);
         assertTrue(service(1800, true).refreshIfExpiring(1L));
     }
 
@@ -102,18 +107,19 @@ class QishuiAuthAutoRefreshTests {
     }
 
     @Test
-    void scheduledSweepSkipsActiveUsers() throws Exception {
-        QishuiCredentialStore.StoredCredential expiring = binding("b2", 60);
+    void scheduledSweepRefreshesEveryExpiringAccount() throws Exception {
+        QishuiCredentialStore.StoredCredential first = binding("b1", 60);
+        QishuiCredentialStore.StoredCredential second = binding("b2", 60);
         when(store.allUserIds()).thenReturn(Arrays.asList(1L, 2L));
-        when(store.load(1L)).thenReturn(Optional.of(binding("b1", 60)));
-        when(store.load(2L)).thenReturn(Optional.of(expiring));
-        when(roaming.hasActiveSession(1L)).thenReturn(true);
+        when(store.load(1L)).thenReturn(Optional.of(first));
+        when(store.load(2L)).thenReturn(Optional.of(second));
         when(auth.refresh(any())).thenReturn(new QishuiCredential());
-        when(store.replaceIfCurrent(eq(2L), eq("b2"), any())).thenReturn(true);
+        when(store.updateIfCurrent(eq(1L), eq("b1"), any())).thenReturn(true);
+        when(store.updateIfCurrent(eq(2L), eq("b2"), any())).thenReturn(true);
         service(1800, true).refreshExpiringAccounts();
-        verify(auth, times(1)).refresh(expiring.getCredential());
-        verify(store).replaceIfCurrent(eq(2L), eq("b2"), any());
-        verify(store, never()).replaceIfCurrent(eq(1L), anyString(), any());
+        verify(auth, times(2)).refresh(any());
+        verify(store).updateIfCurrent(eq(1L), eq("b1"), any());
+        verify(store).updateIfCurrent(eq(2L), eq("b2"), any());
     }
 
     @Test

@@ -37,30 +37,30 @@ class QishuiRoamingServiceTests {
 
     @Test void paginationIsIdempotentAndDeduplicatesAcrossPages() throws Exception {
         QishuiCredential c = bind(7, "b1").getCredential();
-        when(feed.songs(eq(c), eq("recommended"), anyLong(), anyLong(), isNull()))
+        when(feed.songs(eq(c), eq("recommended"), anyLong(), anyLong(), isNull(), anyInt()))
                 .thenReturn(page(true,"a","b"), page(true,"b","c"));
         QishuiRoamingPageView first = service.start(7L, null);
         QishuiRoamingPageView next = service.next(7L, first.getSessionId(), 1, null);
         assertEquals(0, first.getSequence()); assertEquals(1, first.getNextSequence());
         assertEquals(1, next.getList().size()); assertEquals("c", next.getList().get(0).getId());
         assertEquals(next, service.next(7L, first.getSessionId(), 1, null));
-        verify(feed, times(2)).songs(eq(c), eq("recommended"), anyLong(), anyLong(), isNull());
+        verify(feed, times(2)).songs(eq(c), eq("recommended"), anyLong(), anyLong(), isNull(), anyInt());
         assertThrows(BusinessException.class, () -> service.next(7L, first.getSessionId(), 3, null));
     }
 
     @Test void sessionOwnershipAndBindingGenerationAreCheckedOnReplay() throws Exception {
         QishuiCredential c = bind(7, "b1").getCredential(); bind(8, "b8");
-        when(feed.songs(any(), anyString(), anyLong(), anyLong(), any())).thenReturn(page(true,"a"));
+        when(feed.songs(any(), anyString(), anyLong(), anyLong(), any(), anyInt())).thenReturn(page(true,"a"));
         QishuiRoamingPageView first = service.start(7L, null);
         assertThrows(BusinessException.class, () -> service.next(8L, first.getSessionId(), 1, null));
         bind(7, "b2");
         assertThrows(BusinessException.class, () -> service.next(7L, first.getSessionId(), 1, null));
-        verify(feed, times(1)).songs(eq(c), eq("recommended"), anyLong(), anyLong(), isNull());
+        verify(feed, times(1)).songs(eq(c), eq("recommended"), anyLong(), anyLong(), isNull(), anyInt());
     }
 
     @Test void bindingChangedDuringRequestDiscardsTheResponse() throws Exception {
         bind(7, "b1");
-        when(feed.songs(any(), anyString(), anyLong(), anyLong(), any())).thenAnswer(inv -> {
+        when(feed.songs(any(), anyString(), anyLong(), anyLong(), any(), anyInt())).thenAnswer(inv -> {
             when(store.load(7L)).thenReturn(Optional.empty());
             when(store.isCurrent(eq(7L),anyString())).thenReturn(false);
             return page(true,"private");
@@ -74,9 +74,9 @@ class QishuiRoamingServiceTests {
             bind(7,"b2");
             return Collections.singletonList(new QishuiFeedModeView("2","运动","场景",null,null));
         });
-        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any())).thenReturn(page(true,"a"));
+        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any(),anyInt())).thenReturn(page(true,"a"));
         assertThrows(BusinessException.class, () -> service.start(7L,"2"));
-        verify(feed,never()).songs(any(),anyString(),anyLong(),anyLong(),any());
+        verify(feed,never()).songs(any(),anyString(),anyLong(),anyLong(),any(),anyInt());
     }
 
     @Test void unboundAndExpiredAccountsCannotSendFeedRequests() throws Exception {
@@ -90,26 +90,26 @@ class QishuiRoamingServiceTests {
     @Test void switchingModeResetsModeCounterAndUsesServerSelectionTime() throws Exception {
         QishuiCredential c = bind(7,"b1").getCredential();
         when(feed.modes(c)).thenReturn(Arrays.asList(new QishuiFeedModeView("2","运动","场景",null,null)));
-        when(feed.songs(any(), anyString(), anyLong(), anyLong(), any())).thenReturn(page(false,"a"),page(true,"b"));
+        when(feed.songs(any(), anyString(), anyLong(), anyLong(), any(), anyInt())).thenReturn(page(false,"a"),page(true,"b"));
         QishuiRoamingPageView first = service.start(7L, null);
         QishuiRoamingPageView next = service.next(7L, first.getSessionId(), 1, "2");
         assertEquals("2",next.getModeId());
-        verify(feed).songs(c,"2",2,1,now.getEpochSecond());
+        verify(feed).songs(c,"2",2,1,now.getEpochSecond(),QishuiRoamingService.PAGE_SIZE);
         assertThrows(BusinessException.class, () -> service.next(7L,first.getSessionId(),1,"recommended"));
         assertThrows(BusinessException.class, () -> service.next(7L,first.getSessionId(),2,"999"));
     }
 
     @Test void emptyAndDuplicateBatchesHaveABoundedRetryBudget() throws Exception {
         bind(7,"b1");
-        when(feed.songs(any(), anyString(), anyLong(), anyLong(), any()))
+        when(feed.songs(any(), anyString(), anyLong(), anyLong(), any(), anyInt()))
                 .thenReturn(page(true,"a"),page(true,"a"),page(true,"a"),page(true,"a"));
         QishuiRoamingPageView first = service.start(7L, null);
         assertThrows(MusicBusinessException.class, () -> service.next(7L,first.getSessionId(),1,null));
-        verify(feed,times(4)).songs(any(), anyString(), anyLong(), anyLong(), any());
+        verify(feed,times(3)).songs(any(), anyString(), anyLong(), anyLong(), any(), anyInt());
     }
 
     @Test void closedSessionsCannotBeContinued() throws Exception {
-        bind(7,"b1"); when(feed.songs(any(),anyString(),anyLong(),anyLong(),any())).thenReturn(page(true,"a"));
+        bind(7,"b1"); when(feed.songs(any(),anyString(),anyLong(),anyLong(),any(),anyInt())).thenReturn(page(true,"a"));
         QishuiRoamingPageView first = service.start(7L,null);
         service.close(7L,first.getSessionId());
         assertThrows(BusinessException.class, () -> service.next(7L,first.getSessionId(),1,null));
@@ -118,7 +118,7 @@ class QishuiRoamingServiceTests {
     @Test void browsingModesThenStartingRoamingReusesOnlyTheSameBindingModes() throws Exception {
         QishuiCredential first = bind(7,"b1").getCredential();
         when(feed.modes(first)).thenReturn(Collections.singletonList(new QishuiFeedModeView("2","运动","场景",null,null)));
-        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any())).thenReturn(page(true,"a"));
+        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any(),anyInt())).thenReturn(page(true,"a"));
         service.modes(7L).get(0).setName("changed by caller");
         assertEquals("运动",service.modes(7L).get(0).getName());
         service.start(7L,"2");
@@ -148,7 +148,7 @@ class QishuiRoamingServiceTests {
 
     @Test void eachRoamingPageDecryptsOnceButReplayStillChecksLiveBinding() throws Exception {
         bind(7,"b1");
-        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any())).thenReturn(page(true,"a"),page(true,"b"));
+        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any(),anyInt())).thenReturn(page(true,"a"),page(true,"b"));
         QishuiRoamingPageView first = service.start(7L,null);
         clearInvocations(store);
         assertEquals("b",service.next(7L,first.getSessionId(),1,null).getList().get(0).getId());
@@ -163,21 +163,21 @@ class QishuiRoamingServiceTests {
     @Test void failedModeSwitchDoesNotChangeTheCurrentModeOrConsumeSequence() throws Exception {
         QishuiCredential c = bind(7,"b1").getCredential();
         when(feed.modes(c)).thenReturn(Collections.singletonList(new QishuiFeedModeView("2","运动","场景",null,null)));
-        when(feed.songs(eq(c),eq("recommended"),anyLong(),anyLong(),isNull()))
+        when(feed.songs(eq(c),eq("recommended"),anyLong(),anyLong(),isNull(),anyInt()))
                 .thenReturn(page(true,"a"), page(true,"b"));
-        when(feed.songs(eq(c),eq("2"),anyLong(),anyLong(),any()))
+        when(feed.songs(eq(c),eq("2"),anyLong(),anyLong(),any(),anyInt()))
                 .thenThrow(QishuiHttpClient.failure("test_failure"));
         QishuiRoamingPageView first = service.start(7L,null);
         assertThrows(MusicBusinessException.class, () -> service.next(7L,first.getSessionId(),1,"2"));
         QishuiRoamingPageView retried = service.next(7L,first.getSessionId(),1,null);
         assertEquals("recommended",retried.getModeId());
         assertEquals("b",retried.getList().get(0).getId());
-        verify(feed).songs(c,"recommended",2,2,null);
+        verify(feed).songs(c,"recommended",2,2,null,QishuiRoamingService.PAGE_SIZE);
     }
 
     @Test void replayCannotBeMutatedByAConsumer() throws Exception {
         bind(7,"b1");
-        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any())).thenReturn(page(true,"a"),page(false,"b"));
+        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any(),anyInt())).thenReturn(page(true,"a"),page(false,"b"));
         QishuiRoamingPageView first = service.start(7L,null);
         QishuiRoamingPageView next = service.next(7L,first.getSessionId(),1,null);
         next.getList().get(0).setId("modified");
@@ -189,14 +189,14 @@ class QishuiRoamingServiceTests {
 
     @Test void endedFeedDoesNotFetchAgainAndAuthorizationIsCheckedOnReplay() throws Exception {
         QishuiCredential c = bind(7,"b1").getCredential();
-        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any())).thenReturn(page(false,"a"));
+        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any(),anyInt())).thenReturn(page(false,"a"));
         QishuiRoamingPageView first = service.start(7L,null);
         QishuiRoamingPageView end = service.next(7L,first.getSessionId(),1,null);
         assertFalse(end.isHasMore()); assertTrue(end.getList().isEmpty());
         c.setExpiresAt(now);
         assertEquals(409,assertThrows(BusinessException.class,
                 () -> service.next(7L,first.getSessionId(),1,null)).getCode());
-        verify(feed,times(1)).songs(any(),anyString(),anyLong(),anyLong(),any());
+        verify(feed,times(1)).songs(any(),anyString(),anyLong(),anyLong(),any(),anyInt());
     }
 
     @Test void absoluteExpiryIsEnforcedEvenWhenItPassesDuringHttp() throws Exception {
@@ -205,10 +205,10 @@ class QishuiRoamingServiceTests {
         Clock clock = mock(Clock.class); when(clock.instant()).thenAnswer(inv -> time.get());
         when(clock.millis()).thenAnswer(inv -> time.get().toEpochMilli());
         QishuiRoamingService timed = new QishuiRoamingService(feed,store,clock);
-        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any())).thenReturn(page(true,"a"));
+        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any(),anyInt())).thenReturn(page(true,"a"));
         QishuiRoamingPageView first = timed.start(7L,null);
         time.set(now.plusSeconds(1799));
-        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any())).thenAnswer(inv -> {
+        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any(),anyInt())).thenAnswer(inv -> {
             time.set(now.plusSeconds(1801)); return page(true,"late");
         });
         assertEquals(404,assertThrows(BusinessException.class,
@@ -217,19 +217,19 @@ class QishuiRoamingServiceTests {
                 () -> timed.next(7L,first.getSessionId(),1,null)).getCode());
     }
 
-    @Test void overlappingRequestsFailPromptlyWithoutDuplicatingUpstreamWork() throws Exception {
+    @Test void overlappingRequestsQueueThenRejectWithoutDuplicatingUpstreamWork() throws Exception {
         bind(7,"b1");
         CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
-        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any())).thenAnswer(inv -> {
+        when(feed.songs(any(),anyString(),anyLong(),anyLong(),any(),anyInt())).thenAnswer(inv -> {
             entered.countDown(); assertTrue(release.await(3,TimeUnit.SECONDS)); return page(true,"a");
         });
         ExecutorService executor = Executors.newSingleThreadExecutor();
         Future<QishuiRoamingPageView> first = executor.submit(() -> service.start(7L,null));
         try {
             assertTrue(entered.await(3,TimeUnit.SECONDS));
-            assertTimeoutPreemptively(Duration.ofSeconds(1),
+            assertTimeoutPreemptively(Duration.ofSeconds(4),
                     () -> assertThrows(MusicBusinessException.class, () -> service.start(7L,null)));
-            verify(feed,times(1)).songs(any(),anyString(),anyLong(),anyLong(),any());
+            verify(feed,times(1)).songs(any(),anyString(),anyLong(),anyLong(),any(),anyInt());
         } finally { release.countDown(); executor.shutdown(); }
         assertEquals(1,first.get(3,TimeUnit.SECONDS).getList().size());
     }

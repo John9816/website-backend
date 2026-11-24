@@ -9,6 +9,7 @@ import com.example.website.module.reading.api.dto.BookSourceCatalogView;
 import com.example.website.module.reading.api.dto.BookView;
 import com.example.website.module.reading.application.BookSourceService;
 import com.example.website.module.reading.application.ImportedBookSourceReader;
+import com.example.website.module.reading.domain.UserBookSource;
 import com.example.website.module.identity.application.UserScopeService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import javax.servlet.http.HttpServletRequest;
 
+import java.util.ArrayList;
 import java.util.List;
 
 @RestController
@@ -30,7 +32,22 @@ public class BookSourceController {
 
     @GetMapping("/sources")
     public ApiResponse<List<BookSourceCatalogView>> sources() {
-        return ApiResponse.ok(bookSourceService.listCatalogs());
+        List<BookSourceCatalogView> result = new ArrayList<>(bookSourceService.listCatalogs());
+        // Append site-wide built-in sources that the CSS engine can execute,
+        // so clients can discover and select them by sourceId like any other source.
+        for (UserBookSource source : importedReader.listSystemSources()) {
+            result.add(new BookSourceCatalogView(
+                    source.getSourceKey(),
+                    source.getSourceName(),
+                    "book",
+                    "系统内置书源，服务端可直接解析。",
+                    source.getSourceUrl(),
+                    null,
+                    true,
+                    "ready",
+                    true));
+        }
+        return ApiResponse.ok(result);
     }
 
     @GetMapping("/search")

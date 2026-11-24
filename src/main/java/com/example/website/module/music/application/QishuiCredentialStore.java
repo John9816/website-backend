@@ -121,6 +121,19 @@ public class QishuiCredentialStore {
         return repository.replaceIfCurrent(userId, expectedBindingId, nextBinding, encrypted) == 1;
     }
 
+    /**
+     * Same optimistic-concurrency guarantee as {@link #replaceIfCurrent}, but keeps the
+     * binding identity. Used by the access-code refresh, which must not invalidate running
+     * roaming sessions that still hold the old bindingId.
+     */
+    @Transactional
+    public boolean updateIfCurrent(
+            Long userId, String bindingId, QishuiCredential credential) {
+        Objects.requireNonNull(bindingId, "Binding ID is required");
+        String encrypted = encrypt(userId, bindingId, credential, encryptionKey());
+        return repository.updateIfCurrent(userId, bindingId, encrypted) == 1;
+    }
+
     private SecretKeySpec encryptionKey() {
         if (encryptionKey == null || encryptionKey.trim().isEmpty()) {
             throw unavailable("Qishui credential encryption is not configured");

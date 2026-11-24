@@ -9,6 +9,7 @@ import com.example.website.module.reading.infrastructure.persistence.UserBookSou
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
@@ -17,6 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class UserBookSourceService {
     private static final int MAX_DEFINITION_LENGTH = 512 * 1024;
@@ -35,7 +37,28 @@ public class UserBookSourceService {
         JsonNode json;
         try { json = objectMapper.readTree(definition); }
         catch (Exception ex) { throw new BusinessException("书源 JSON 格式无效"); }
-        if (!json.isObject()) throw new BusinessException("书源必须是 JSON 对象");
+        // 支持批量：粘贴书源数组时逐个导入，返回第一条（API 契约保持不变）
+        if (json.isArray()) {
+            if (json.size() == 0) throw new BusinessException("书源列表为空");
+            BookUserSourceView first = null;
+            int imported = 0;
+            for (JsonNode item : json) {
+                try {
+                    BookUserSourceView view = importOne(userId, item);
+                    if (first == null) first = view;
+                    imported++;
+                } catch (BusinessException ignored) {}
+            }
+            if (first == null) throw new BusinessException("未能导入任何书源，请检查规则格式");
+            log.info("Imported {} book sources for user {}", imported, userId);
+            return first;
+        }
+        if (!json.isObject()) throw new BusinessException("书源必须是 JSON 对象或数组");
+        return importOne(userId, json);
+    }
+
+    private BookUserSourceView importOne(Long userId, JsonNode json) {
+        String definition = json.toString();
         String name = text(json, "bookSourceName");
         String url = text(json, "bookSourceUrl");
         if (name.isEmpty() || url.isEmpty()) throw new BusinessException("书源缺少 bookSourceName 或 bookSourceUrl");
@@ -51,10 +74,15 @@ public class UserBookSourceService {
         source.setSourceType(type.length() > 20 ? type.substring(0, 20) : type);
         source.setDefinitionJson(definition);
         boolean hasRules = json.has("ruleSearch") && json.has("ruleBookInfo") && json.has("ruleToc") && json.has("ruleContent");
-        boolean hasScript = definition.contains("@js:") || definition.contains("java.") || definition.contains("Packages.");
+        // 服务端 DSL 引擎支持 class./id./tag./索引/链式/@text等/##正则替换/||回退，
+        // 但仍不执行 JavaScript 与 JSONPath 这类需要脚本引擎的规则。
+        String lower = definition.toLowerCase();
+        boolean hasScript = lower.contains("@js:") || lower.contains("@js") || lower.contains("jsonpath")
+                || lower.contains("js:") || lower.contains("java.") || lower.contains("packages.")
+                || definition.contains("JSon") || definition.contains("JS:");
         source.setEnabled(!hasScript && hasRules);
         source.setStatus(!hasRules ? "unsupported" : (hasScript ? "unsupported-js" : "ready"));
-        source.setMessage(!hasRules ? "缺少完整书籍规则" : (hasScript ? "包含脚本规则，服务器不会执行" : "已导入，可在书源列表启用"));
+        source.setMessage(!hasRules ? "缺少完整书籍规则" : (hasScript ? "包含脚本规则，服务器不会执行" : "已导入，标准阅读规则可直接执行"));
         return view(repository.save(source));
     }
 

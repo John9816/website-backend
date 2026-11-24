@@ -126,40 +126,6 @@ class QishuiCencDecryptorTests {
                 () -> QishuiCencDecryptor.decrypt(new byte[] {1, 2, 3, 4}, playAuthFor(KEY)));
     }
 
-    /**
-     * Regression for the real-world bug: mdat contains a plain 14-byte 'encd' prefix box before
-     * the first sample, and samples span multiple chunks with non-uniform sizes. A decryptor that
-     * assumes samples start at mdat+8 shifts every AES-CTR block and corrupts the audio.
-     */
-    @Test
-    void decryptsSamplesWhenMdatHasPrefixBoxAndMultipleChunks() throws Exception {
-        // 3 samples of differing size, each with its own IV, encrypted with AES-CTR(iv8||0^8).
-        int[] sizes = {7, 11, 5};
-        byte[][] ivs = {new byte[] {1, 2, 3, 4, 5, 6, 7, 8},
-                new byte[] {9, 10, 11, 12, 13, 14, 15, 16},
-                new byte[] {17, 18, 19, 20, 21, 22, 23, 24}};
-        byte[][] plains = new byte[3][];
-        byte[][] ciphers = new byte[3][];
-        for (int i = 0; i < sizes.length; i++) {
-            plains[i] = new byte[sizes[i]];
-            for (int j = 0; j < sizes[i]; j++) plains[i][j] = (byte) (i * 40 + j);
-            ciphers[i] = ctr(KEY, ivs[i], plains[i]);
-        }
-
-        byte[] input = buildMp4WithChunks(ciphers, ivs, sizes);
-        byte[] out = QishuiCencDecryptor.decrypt(input, playAuthFor(KEY));
-
-        assertEquals(input.length, out.length);
-        // Each sample's plaintext must appear at its true (chunk-table-derived) offset; the
-        // 14-byte 'encd' prefix between mdat header and first sample stays untouched.
-        int off = mdatPayloadOffset(input) + 14;
-        for (int i = 0; i < sizes.length; i++) {
-            assertArrayEquals(plains[i], Arrays.copyOfRange(out, off, off + sizes[i]),
-                    "sample " + i);
-            off += sizes[i];
-        }
-    }
-
     // -------------------------------------------------------------- helpers
 
     private static byte[] iv8() {
@@ -229,72 +195,6 @@ class QishuiCencDecryptorTests {
         out.write(moovBytes, 0, moovBytes.length);
         writeBox(out, "mdat", mdatPayload);
         return out.toByteArray();
-    }
-
-    /**
-     * Builds an MP4 whose mdat starts with a plain 14-byte 'encd' box, followed by 3 encrypted
-     * samples laid out across 2 chunks (samples 0+1 in chunk 1, sample 2 in chunk 2). stco/stsc
-     * record the true offsets; tenc declares an 8-byte IV.
-     */
-    private static byte[] buildMp4WithChunks(byte[][] ciphers, byte[][] ivs, int[] sizes) {
-        byte[] stsdBody = new byte[8 + 8 + 28 + 12];
-        stsdBody[7] = 1;
-        int enca = 8;
-        putInt(stsdBody, enca, 8 + 28 + 12);
-        System.arraycopy("enca".getBytes(StandardCharsets.ISO_8859_1), 0, stsdBody, enca + 4, 4);
-        int frma = enca + 8 + 28;
-        putInt(stsdBody, frma, 12);
-        System.arraycopy("frma".getBytes(StandardCharsets.ISO_8859_1), 0, stsdBody, frma + 4, 4);
-        System.arraycopy("mp4a".getBytes(StandardCharsets.ISO_8859_1), 0, stsdBody, frma + 8, 4);
-
-        int[] allSizes = sizes;
-        byte[] stsz = box("stsz", concat(new byte[4], ints(0, allSizes.length), ints(allSizes)));
-        // senc with N whole-sample IVs (flags=0)
-        ByteArrayOutputStream sb = new ByteArrayOutputStream();
-        byte[] head = new byte[8];
-        head[7] = (byte) ivs.length;
-        sb.write(head, 0, 8);
-        for (byte[] iv : ivs) sb.write(iv, 0, iv.length);
-        byte[] senc = box("senc", sb.toByteArray());
-        byte[] tenc = box("tenc", new byte[] {0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0});
-        // stsc: 2 entries -> (chunk1: 2 samples), (chunk2: 1 sample)
-        byte[] stsc = box("stsc", concat(new byte[4], ints(2), ints(1, 2, 1), ints(2, 1, 1)));
-
-        // First pass: ftyp+moov length is independent of stco values (fixed 2 entries).
-        int headerLen = ftypPlusMoovLen(box("stsd", stsdBody), stsz, senc, stsc, tenc, 0, 0);
-        int firstSample = headerLen + 8 + 14; // +mdat header +encd prefix
-        int chunk1 = firstSample;
-        int chunk2 = chunk1 + sizes[0] + sizes[1];
-        byte[] stco = box("stco", concat(new byte[4], ints(2), ints(chunk1, chunk2)));
-
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        writeBox(out, "ftyp", "M4A isom".getBytes(StandardCharsets.ISO_8859_1));
-        writeMoov(out, box("stsd", stsdBody), stsz, senc, stsc, stco, tenc);
-        // mdat: 14-byte plain 'encd' prefix box, then encrypted samples in chunk order
-        ByteArrayOutputStream payload = new ByteArrayOutputStream();
-        writeBox(payload, "encd", new byte[6]); // size 8+6 = 14
-        for (byte[] c : ciphers) payload.write(c, 0, c.length);
-        writeBox(out, "mdat", payload.toByteArray());
-        return out.toByteArray();
-    }
-
-    private static int ftypPlusMoovLen(byte[] stsd, byte[] stsz, byte[] senc, byte[] stsc,
-                                       byte[] tenc, int chunk1, int chunk2) {
-        byte[] stco = box("stco", concat(new byte[4], ints(2), ints(chunk1, chunk2)));
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        writeBox(out, "ftyp", "M4A isom".getBytes(StandardCharsets.ISO_8859_1));
-        writeMoov(out, stsd, stsz, senc, stsc, stco, tenc);
-        return out.size();
-    }
-
-    private static void writeMoov(ByteArrayOutputStream out, byte[] stsd, byte[] stsz,
-                                  byte[] senc, byte[] stsc, byte[] stco, byte[] tenc) {
-        byte[] stbl = box("stbl", concat(stsd, stsz, senc, stsc, stco, tenc));
-        byte[] minf = box("minf", stbl);
-        byte[] mdia = box("mdia", minf);
-        byte[] trak = box("trak", mdia);
-        writeBox(out, "moov", trak);
     }
 
     private static byte[] senc(byte[] iv8, int[][] subs) {

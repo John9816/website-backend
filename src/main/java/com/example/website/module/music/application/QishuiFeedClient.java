@@ -24,6 +24,8 @@ public class QishuiFeedClient {
     private static final long DEFAULT_DISCOVERY_TTL_SEC = 300L;  // recommended feed is not second-fresh
     private static final long DEFAULT_MODES_TTL_SEC = 900L;      // mode list is quasi-static
     private static final long LEGACY_TTL_SEC = 30L;              // kept for the ticker-based unit tests
+    /** Cards per feed request when the caller does not ask for a specific page size. */
+    private static final int DEFAULT_PAGE_COUNT = 20;
     private final QishuiMusicClient catalog;
     private final ObjectMapper mapper;
     private final Cache<String, Page> discoveryCache;
@@ -114,8 +116,18 @@ public class QishuiFeedClient {
     }
 
     Page songs(QishuiCredential credential, String mode, long total, long modeCount, Long selectedAt) {
+        return songs(credential, mode, total, modeCount, selectedAt, DEFAULT_PAGE_COUNT);
+    }
+
+    /**
+     * Asks upstream for {@code count} cards. Roaming requests a larger page than the
+     * discovery view so that a repeat-deduplicated round is less likely to be needed.
+     */
+    Page songs(QishuiCredential credential, String mode, long total, long modeCount, Long selectedAt,
+            int count) {
         if (credential == null) throw new IllegalArgumentException("Personal feed requires a binding");
-        return parse(catalog.postFeed("/feed/song-tab/", body(20, mode, total, modeCount, selectedAt), credential));
+        if (count < 1 || count > 100) throw new IllegalArgumentException("count out of range");
+        return parse(catalog.postFeed("/feed/song-tab/", body(count, mode, total, modeCount, selectedAt), credential));
     }
 
     private ObjectNode body(int count, String mode, long total, long modeCount, Long selectedAt) {

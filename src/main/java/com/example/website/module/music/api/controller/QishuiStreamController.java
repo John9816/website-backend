@@ -44,7 +44,21 @@ public class QishuiStreamController {
         // verify() handles null/empty as a 400 business error; a required @RequestParam would
         // instead raise MissingServletRequestParameterException -> generic 500.
         QishuiStreamTicket.Payload payload = tickets.verify(ticket);
-        QishuiStreamService.AudioFile audio = streams.open(payload.getTrackId(), payload.getQuality());
+        final QishuiStreamService.AudioFile audio;
+        try {
+            audio = streams.open(payload.getTrackId(), payload.getQuality());
+        } catch (Exception openError) {
+            // This endpoint declares produces="audio/mp4". If an exception escapes to the global
+            // handler, Spring tries to serialize the JSON ApiResponse as audio/mp4, which throws
+            // HttpMessageNotWritableException and then a Broken pipe — the browser sees a corrupt
+            // stream and reports a media error. Return a clean 503 instead: the <audio> element
+            // fires onError, and the client silently falls back to another source or the CDN URL.
+            log.warn("Qishui stream open failed, returning 503 for silent client fallback: {}",
+                    openError.getMessage());
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .header(HttpHeaders.RETRY_AFTER, "1")
+                    .build();
+        }
 
         Range range = Range.parse(rangeHeader, audio.length());
         if (range == null) {

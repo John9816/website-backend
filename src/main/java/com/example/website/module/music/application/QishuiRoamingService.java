@@ -5,6 +5,8 @@ import com.example.website.common.MusicBusinessException;
 import com.example.website.common.MusicErrorCode;
 import com.example.website.module.music.api.dto.*;
 import com.github.benmanes.caffeine.cache.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import java.time.*;
@@ -16,6 +18,19 @@ import java.util.function.Supplier;
 /** Per-website-user feed state; never placed in the shared music result cache. */
 @Service
 public class QishuiRoamingService {
+    private static final Logger log = LoggerFactory.getLogger(QishuiRoamingService.class);
+
+    /** Cards per upstream request. Bigger pages cut the number of repeat rounds. */
+    static final int PAGE_SIZE = 30;
+    /** Upstream rounds per page before giving up; each round is one /feed/song-tab/ POST. */
+    private static final int MAX_FETCH_ROUNDS = 2;
+    /** A full page is one mode lookup plus up to two feed rounds. */
+    private static final long PAGE_BUDGET_SECONDS = 12L;
+    /** Mode cards are a single cached read, so they get a tighter budget. */
+    private static final long MODE_BUDGET_SECONDS = 8L;
+    /** Queue instead of failing: a mode-list fetch must never abort a session start. */
+    private static final long LOCK_WAIT_SECONDS = 2L;
+
     private final QishuiFeedClient client;
     private final QishuiCredentialStore store;
     private final Clock clock;
@@ -25,6 +40,8 @@ public class QishuiRoamingService {
     private final Cache<Long, Long> lastStarts = Caffeine.newBuilder()
             .maximumSize(10000).expireAfterWrite(10, TimeUnit.SECONDS).build();
     private final ReentrantLock[] locks = new ReentrantLock[64];
+    /** Mode cards are read-only, so they get their own pool instead of blocking sessions. */
+    private final ReentrantLock[] modeLocks = new ReentrantLock[64];
 
     @Autowired
     public QishuiRoamingService(QishuiFeedClient client, QishuiCredentialStore store) {
@@ -38,10 +55,11 @@ public class QishuiRoamingService {
         this.modeLists = Caffeine.newBuilder().maximumSize(1000)
                 .expireAfterWrite(5, TimeUnit.MINUTES).ticker(ticker).build();
         for (int i = 0; i < locks.length; i++) locks[i] = new ReentrantLock();
+        for (int i = 0; i < modeLocks.length; i++) modeLocks[i] = new ReentrantLock();
     }
 
     public List<QishuiFeedModeView> modes(Long userId) {
-        return locked(userId, () -> {
+        return lockedOn(modeLocks, userId, MODE_BUDGET_SECONDS, () -> {
             QishuiCredentialStore.StoredCredential account = account(userId);
             return copyModes(loadModes(userId, account.getBindingId(), account.getCredential()));
         });
@@ -92,39 +110,52 @@ public class QishuiRoamingService {
         locked(userId, () -> { session(userId, sessionId); sessions.invalidate(userId); return null; });
     }
 
-    /**
-     * True while a roaming session is still alive. An auth refresh rotates the stored
-     * bindingId, which would invalidate this session mid-playback, so the auto-refresh
-     * service must skip these users.
-     */
-    public boolean hasActiveSession(Long userId) {
-        if (userId == null) return false;
-        Session s = sessions.getIfPresent(userId);
-        return s != null && s.expiresAt.isAfter(Instant.now(clock));
+    private QishuiRoamingPageView fetch(Long userId, Session s, QishuiCredential c, long sequence) {
+        long startedAt = System.nanoTime();
+        int upstreamCalls = 0;
+        List<SongSearchItem> songs = new ArrayList<>();
+        try {
+            // One binding check per page is enough: a concurrent rebinding is caught by the
+            // next request, and re-reading the row on every round only added DB round trips.
+            verifyCurrent(userId, s.binding, c);
+            for (int round = 0; round < MAX_FETCH_ROUNDS && s.hasMore && songs.isEmpty(); round++) {
+                MusicRequestBudget.ensureRemaining();
+                ensureAlive(s);
+                checkCredential(userId, c);
+                QishuiFeedClient.Page page = client.songs(
+                        c, s.mode, ++s.total, ++s.modeCount, s.selectedAt, PAGE_SIZE);
+                upstreamCalls++;
+                checkCredential(userId, c);
+                ensureAlive(s);
+                s.hasMore = page.hasMore;
+                for (SongSearchItem song : page.songs) {
+                    if (songs.size() == PAGE_SIZE) break;
+                    if (s.seen.add(song.getId())) songs.add(song);
+                }
+                while (s.seen.size() > 1000) s.seen.remove(s.seen.iterator().next());
+            }
+            ensureAlive(s);
+            // Close the page with the authoritative check: a rebinding that happened while
+            // upstream was responding must still discard the response.
+            verifyCurrent(userId, s.binding, c);
+            if (songs.isEmpty() && s.hasMore) throw QishuiHttpClient.failure("no_new_roaming_tracks");
+            s.last = new QishuiRoamingPageView(s.id, MusicSource.QISHUI, s.mode, sequence,
+                    sequence + 1, s.hasMore, s.expiresAt, songs);
+            log.info("Qishui roaming page userId={} mode={} sequence={} upstream={} songs={}"
+                            + " elapsedMs={} outcome=success",
+                    userId, s.mode, sequence, upstreamCalls, songs.size(), elapsedMs(startedAt));
+            return copyPage(s.last);
+        } catch (RuntimeException ex) {
+            log.warn("Qishui roaming page userId={} mode={} sequence={} upstream={} elapsedMs={}"
+                            + " outcome=failure reason={}",
+                    userId, s.mode, sequence, upstreamCalls, elapsedMs(startedAt),
+                    ex.getClass().getSimpleName());
+            throw ex;
+        }
     }
 
-    private QishuiRoamingPageView fetch(Long userId, Session s, QishuiCredential c, long sequence) {
-        List<SongSearchItem> songs = new ArrayList<>();
-        for (int attempt = 0; attempt < 3 && s.hasMore && songs.isEmpty(); attempt++) {
-            MusicRequestBudget.ensureRemaining();
-            ensureAlive(s);
-            verifyCurrent(userId, s.binding, c);
-            QishuiFeedClient.Page page = client.songs(c, s.mode, ++s.total, ++s.modeCount, s.selectedAt);
-            verifyCurrent(userId, s.binding, c);
-            ensureAlive(s);
-            s.hasMore = page.hasMore;
-            for (SongSearchItem song : page.songs) {
-                if (songs.size() == 20) break;
-                if (s.seen.add(song.getId())) songs.add(song);
-            }
-            while (s.seen.size() > 1000) s.seen.remove(s.seen.iterator().next());
-        }
-        verifyCurrent(userId, s.binding, c);
-        ensureAlive(s);
-        if (songs.isEmpty() && s.hasMore) throw QishuiHttpClient.failure("no_new_roaming_tracks");
-        s.last = new QishuiRoamingPageView(s.id, MusicSource.QISHUI, s.mode, sequence,
-                sequence + 1, s.hasMore, s.expiresAt, songs);
-        return copyPage(s.last);
+    private static long elapsedMs(long startedAt) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
 
     private void selectMode(Long userId, Session s, String mode, QishuiCredential c) {
@@ -223,12 +254,28 @@ public class QishuiRoamingService {
     }
 
     private <T> T locked(Long userId, Supplier<T> action) {
+        return lockedOn(locks, userId, PAGE_BUDGET_SECONDS, action);
+    }
+
+    private <T> T lockedOn(ReentrantLock[] pool, Long userId, long budgetSeconds, Supplier<T> action) {
         if (userId == null) throw new BusinessException(401, "Authentication required");
-        ReentrantLock lock = locks[Math.floorMod(userId.hashCode(), locks.length)];
-        if (!lock.tryLock()) throw new MusicBusinessException(MusicErrorCode.SERVICE_BUSY);
-        try (MusicRequestBudget.Scope ignored = MusicRequestBudget.start(8, TimeUnit.SECONDS)) {
+        ReentrantLock lock = pool[Math.floorMod(userId.hashCode(), pool.length)];
+        // Queue briefly instead of failing outright: mode cards and session starts for the
+        // same user arrive together from the client, and a lost tryLock surfaced as a 503.
+        if (!acquire(lock)) throw new MusicBusinessException(MusicErrorCode.SERVICE_BUSY);
+        try (MusicRequestBudget.Scope ignored =
+                MusicRequestBudget.start(budgetSeconds, TimeUnit.SECONDS)) {
             return action.get();
         } finally { lock.unlock(); }
+    }
+
+    private static boolean acquire(ReentrantLock lock) {
+        try {
+            return lock.tryLock(LOCK_WAIT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     private static final class Session {

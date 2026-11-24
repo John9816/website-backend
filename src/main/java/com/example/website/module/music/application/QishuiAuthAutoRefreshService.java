@@ -16,11 +16,15 @@ import java.util.concurrent.locks.ReentrantLock;
 /**
  * Keeps the personal Qishui access code alive without a manual "refresh authorization".
  *
- * <p>Upstream issues access codes with expires_time defaulting to 21600 s (6 h). The
- * /access/code/refresh/ chain already exists in QishuiAuthClient; what was missing was any
- * automatic trigger. Refreshing rotates the stored bindingId, which invalidates an
- * in-flight roaming session, so both the lazy path and the scheduled sweep skip users with
- * a live roaming session. All failures are best-effort and never surface to the caller.</p>
+ * <p>Upstream issues access codes with expires_time defaulting to 21600 s (6 h), and the
+ * /access/code/refresh/ chain already existed in QishuiAuthClient; what was missing was any
+ * automatic trigger. The refresh now rewrites the credential <em>in place</em> and keeps the
+ * bindingId stable, so it is safe to run while a roaming session is live — that is why this
+ * service no longer skips users with an active session. Rotating the binding here used to
+ * abort mid-playback roaming with a 409 "binding changed".</p>
+ *
+ * <p>All failures are best-effort and never surface to the caller: a failed upstream call
+ * must leave the real expiry status visible instead of breaking the request.</p>
  */
 @Service
 public class QishuiAuthAutoRefreshService {
@@ -28,7 +32,6 @@ public class QishuiAuthAutoRefreshService {
 
     private final QishuiCredentialStore store;
     private final QishuiAuthClient auth;
-    private final QishuiRoamingService roaming;
     private final Clock clock;
     private final long thresholdSec;
     private final boolean enabled;
@@ -38,22 +41,19 @@ public class QishuiAuthAutoRefreshService {
     public QishuiAuthAutoRefreshService(
             QishuiCredentialStore store,
             QishuiAuthClient auth,
-            QishuiRoamingService roaming,
             @Value("${app.music.qishui.auth-refresh-threshold-sec:1800}") long thresholdSec,
             @Value("${app.music.qishui.auth-refresh-enabled:true}") boolean enabled) {
-        this(store, auth, roaming, Clock.systemUTC(), thresholdSec, enabled);
+        this(store, auth, Clock.systemUTC(), thresholdSec, enabled);
     }
 
     QishuiAuthAutoRefreshService(
             QishuiCredentialStore store,
             QishuiAuthClient auth,
-            QishuiRoamingService roaming,
             Clock clock,
             long thresholdSec,
             boolean enabled) {
         this.store = store;
         this.auth = auth;
-        this.roaming = roaming;
         this.clock = clock;
         this.thresholdSec = thresholdSec;
         this.enabled = enabled;
@@ -78,16 +78,12 @@ public class QishuiAuthAutoRefreshService {
         try {
             Optional<QishuiCredentialStore.StoredCredential> saved = store.load(userId);
             if (!saved.isPresent() || !needsRefresh(saved.get().getCredential())) return false;
-            if (roaming != null && roaming.hasActiveSession(userId)) {
-                log.debug("Qishui auth auto-refresh skipped; live roaming session userId={}", userId);
-                return false;
-            }
             // QishuiHttpClient constrains every upstream call against the request budget.
             // The scheduler thread has no ambient budget, so start an explicit one.
             try (MusicRequestBudget.Scope ignored =
                     MusicRequestBudget.start(20, TimeUnit.SECONDS)) {
                 QishuiCredential updated = auth.refresh(saved.get().getCredential());
-                if (!store.replaceIfCurrent(userId, saved.get().getBindingId(), updated)) {
+                if (!store.updateIfCurrent(userId, saved.get().getBindingId(), updated)) {
                     log.info("Qishui auth auto-refresh skipped; binding changed userId={}", userId);
                     return false;
                 }

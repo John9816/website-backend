@@ -257,43 +257,26 @@ public class QishuiStreamService implements DisposableBean {
                             quality, prefixEnd, declared);
 
                     StreamInput in = new StreamInput(header, prefixEnd, headerLen, source);
-                    long writePos = prefixEnd;   // absolute file offset already written
-                    long linearPtr = prefixEnd;  // fallback cursor when no chunk table exists
+                    long readPtr = prefixEnd;
                     long[] sizes = plan.sampleSizes();
                     byte[] sampleBuf = new byte[READ_CHUNK];
-                    byte[] gapBuf = new byte[READ_CHUNK];
-                    sampleLoop:
                     for (int i = 0; i < sizes.length; i++) {
                         int size = (int) sizes[i];
-                        if (size <= 0) break;
-                        int resolved = plan.sampleOffset(i);
-                        long target = resolved >= 0 ? resolved : linearPtr;
-                        if (target + size > plan.payloadLimit()) break;
-                        // Copy any plain gap verbatim: a prefix 'encd' box between the mdat header
-                        // and first sample, or padding between non-contiguous chunks. These bytes
-                        // are not encrypted and must not be fed to AES-CTR.
-                        while (writePos < target) {
-                            int gap = (int) Math.min(gapBuf.length, target - writePos);
-                            if (!in.readFully(gapBuf, 0, gap)) break sampleLoop;
-                            writeFully(channel, gapBuf, 0, gap);
-                            writePos += gap;
-                            markReady(writePos);
-                        }
+                        if (size <= 0 || readPtr + size > plan.payloadLimit()) break;
                         if (sampleBuf.length < size) sampleBuf = new byte[size];
                         if (!in.readFully(sampleBuf, 0, size)) break;
                         plan.decryptSample(sampleBuf, 0, size, i);
                         writeFully(channel, sampleBuf, 0, size);
-                        writePos += size;
-                        linearPtr = writePos;
-                        markReady(writePos);
+                        readPtr += size;
+                        markReady(readPtr);
                     }
                     // Any trailing bytes after the last sample are container padding: plain.
                     byte[] rest = new byte[READ_CHUNK];
                     int n;
                     while ((n = in.readSome(rest)) > 0) {
                         writeFully(channel, rest, 0, n);
-                        writePos += n;
-                        markReady(writePos);
+                        readPtr += n;
+                        markReady(readPtr);
                     }
                 }
 
@@ -542,10 +525,18 @@ public class QishuiStreamService implements DisposableBean {
         try {
             return parse(trackId, quality, auth.getToken());
         } catch (MusicBusinessException first) {
-            // A revoked/expired token is the common cause: force one clean re-login.
-            log.info("Qishui parse failed, retrying once with a fresh v1 token: {}", first.getMessage());
-            auth.invalidate();
-            return parse(trackId, quality, auth.getToken());
+            // Only a rejected/expired token (HTTP 401/403 -> MISSING_UPSTREAM_TOKEN) is worth a
+            // re-login + retry. Errors like HTTP 422 (upstream rejected the request) or a timeout
+            // will NOT be fixed by logging in again — retrying only adds a full extra round trip
+            // and hammers the upstream. Fail fast so the hedge layer can promote the next resolver
+            // immediately, keeping source fallback imperceptible to the listener.
+            if (first.getErrorCode() == MusicErrorCode.MISSING_UPSTREAM_TOKEN) {
+                log.info("Qishui parse token rejected, retrying once with a fresh v1 token: {}", first.getMessage());
+                auth.invalidate();
+                return parse(trackId, quality, auth.getToken());
+            }
+            log.warn("Qishui parse failed fast (no re-login retry): {}", first.getMessage());
+            throw first;
         }
     }
 

@@ -14,16 +14,24 @@ import com.example.website.module.settings.application.SysConfigService;
 import com.example.website.module.content.application.WechatOfficialAccountClient;
 import com.example.website.module.content.application.WebSearchService;
 import com.example.website.module.music.application.TuneFreeAuthService;
+import com.example.website.module.reading.application.ImportedBookSourceReader;
+import com.example.website.module.reading.domain.UserBookSource;
+import com.example.website.module.reading.infrastructure.persistence.UserBookSourceRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -58,6 +66,8 @@ public class DataInitializer implements CommandLineRunner {
     private final PasswordEncoder passwordEncoder;
     private final AppProperties props;
     private final SysConfigService configService;
+    private final UserBookSourceRepository userBookSourceRepository;
+    private final ObjectMapper objectMapper;
 
     @Override
     public void run(String... args) {
@@ -65,6 +75,93 @@ public class DataInitializer implements CommandLineRunner {
         deleteObsoleteConfigs();
         seedAllConfigs();
         migrateLegacyNavigationData(admin.getId());
+        seedBuiltinBookSources();
+    }
+
+    /**
+     * Site-wide built-in book sources use the reserved system user id so every
+     * signed-in user can discover and read from them without importing anything.
+     * Sources are standard 阅读 App book-source JSON shipped as a classpath resource
+     * (reading/builtin-sources.json), seeded idempotently — a matching source key is
+     * left untouched so a user's own override always wins. The engine
+     * (ImportedBookSourceReader) executes the standard DSL directly.
+     */
+    private void seedBuiltinBookSources() {
+        int seeded = 0;
+        try {
+            // 品书斋：native 规则格式，已完整验证搜索/目录/正文链路，作为第一内置源
+            seeded += seedOne("sys-pinshuzhai", "品书斋（内置）", "https://www.pinshuzhai.com", builtinPinshuzhaiDefinition());
+
+            ClassPathResource resource = new ClassPathResource("reading/builtin-sources.json");
+            if (resource.exists()) {
+                JsonNode sources = objectMapper.readTree(resource.getInputStream());
+                if (sources.isArray()) {
+                    for (JsonNode node : sources) {
+                        String name = node.path("bookSourceName").asText("").trim();
+                        String url = node.path("bookSourceUrl").asText("").trim();
+                        if (name.isEmpty() || url.isEmpty()) continue;
+                        java.net.URI uri = java.net.URI.create(url);
+                        String host = uri.getHost();
+                        if (host == null) continue;
+                        String key = "sys-" + host.replaceFirst("^www\\.", "");
+                        seeded += seedOne(key, name + "（内置）", url, objectMapper.writeValueAsString(node));
+                    }
+                }
+            }
+            log.info("Built-in book sources ready, seeded {} new (total available in catalog)", seeded);
+        } catch (Exception ex) {
+            log.warn("Failed to seed built-in book sources: {}", ex.getMessage());
+        }
+    }
+
+    private int seedOne(String key, String name, String url, String definitionJson) {
+        if (userBookSourceRepository.findByUserIdAndSourceKey(ImportedBookSourceReader.SYSTEM_USER_ID, key).isPresent()) {
+            return 0;
+        }
+        UserBookSource source = new UserBookSource();
+        source.setUserId(ImportedBookSourceReader.SYSTEM_USER_ID);
+        source.setSourceKey(key);
+        source.setSourceName(name);
+        source.setSourceUrl(url);
+        source.setSourceType("book");
+        source.setEnabled(true);
+        source.setStatus("ready");
+        source.setMessage("系统内置书源 · 标准阅读规则");
+        source.setDefinitionJson(definitionJson);
+        userBookSourceRepository.save(source);
+        log.info("Seeded built-in book source: {} ({})", key, name);
+        return 1;
+    }
+
+    private String builtinPinshuzhaiDefinition() throws Exception {
+        Map<String, Object> search = new LinkedHashMap<>();
+        search.put("bookList", ".catdanlist ul li");
+        search.put("bookName", ".bookinfo h4 a");
+        search.put("bookUrl", ".bookinfo h4 a@href");
+        search.put("bookAuthor", ".bookinfo .author");
+        search.put("bookIntro", ".bookinfo p");
+        search.put("bookKind", ".bookinfo .cats a");
+        Map<String, Object> info = new LinkedHashMap<>();
+        info.put("name", ".info h1, h1");
+        info.put("author", ".info .author, .author");
+        info.put("coverUrl", ".info img@src, .bookimg img@src");
+        info.put("intro", ".docspt");
+        info.put("category", ".catb a");
+        info.put("lastChapter", ".newzxzj .zjlist a");
+        Map<String, Object> toc = new LinkedHashMap<>();
+        toc.put("chapterList", ".newzxzj .zjlist a");
+        toc.put("chapterName", ".newzxzj .zjlist a");
+        toc.put("chapterUrl", ".newzxzj .zjlist a@href");
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("content", "#chapter");
+        content.put("title", "#chapter h1, h1");
+        Map<String, Object> definition = new LinkedHashMap<>();
+        definition.put("searchUrl", "https://www.pinshuzhai.com/page/{{page}}?s={{key}}");
+        definition.put("ruleSearch", search);
+        definition.put("ruleBookInfo", info);
+        definition.put("ruleToc", toc);
+        definition.put("ruleContent", content);
+        return objectMapper.writeValueAsString(definition);
     }
 
     private void deleteObsoleteConfigs() {

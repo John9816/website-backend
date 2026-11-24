@@ -99,15 +99,40 @@ ssh ${ECS_USER}@${ECS_HOST} << ENDSSH
 set -e
 cd ${DEPLOY_BASE}
 
+echo "➤ 切换前校验新发布目录完整性（backend + frontend 必须同时就位）..."
+TARGET_RELEASE="releases/${RELEASE_NAME}"
+# 解析 frontend 软链的真实路径；若 frontend 缺失则给出明确修复指引并中止
+resolve_path() { readlink -f "$1" 2>/dev/null || echo "$1"; }
+MISSING=0
+check_file() {
+    local label="$1" path="$2"
+    if [ -f "$(resolve_path "${TARGET_RELEASE}/${path}")" ]; then
+        echo "   ✓ ${label}: ${path}"
+    else
+        echo "   ✗ ${label} 缺失: ${TARGET_RELEASE}/${path}"
+        MISSING=1
+    fi
+}
+check_file "后端 jar"      "backend/website.jar"
+check_file "前端服务脚本"  "frontend/server/ecs-server.mjs"
+check_file "前端首页"      "frontend/dist/index.html"
+if [ ${MISSING} -ne 0 ]; then
+    echo "✗ 发布目录不完整，拒绝切换 current（否则前端服务将 404）！" >&2
+    echo "  修复方法：在 ${TARGET_RELEASE} 下补 frontend 软链，例如：" >&2
+    echo "    ln -sfn /opt/website/releases/<含frontend的版本>/frontend ${TARGET_RELEASE}/frontend" >&2
+    exit 1
+fi
+
 echo "➤ 更新current符号链接..."
 rm -f current
-ln -sf releases/${RELEASE_NAME} current
+ln -sf ${TARGET_RELEASE} current
 
 echo "➤ 验证符号链接..."
 ls -lh current
 ls -lh current/backend/website.jar
+ls -lh current/frontend/dist/index.html
 
-echo "✓ 符号链接已更新"
+echo "✓ 符号链接已更新（backend + frontend 均就位）"
 ENDSSH
 
 echo -e "${GREEN}✓ 版本切换完成${NC}"
@@ -118,18 +143,18 @@ echo -e "${BLUE}═════════════════════�
 echo -e "${BLUE}步骤 5/6: 重启服务${NC}"
 echo -e "${BLUE}════════════════════════════════════════════════════════════════════════════════${NC}"
 
-echo -e "${YELLOW}➤ 停止旧服务...${NC}"
-ssh ${ECS_USER}@${ECS_HOST} "systemctl stop website-api || true"
+echo -e "${YELLOW}➤ 停止旧服务（后端 + 前端）...${NC}"
+ssh ${ECS_USER}@${ECS_HOST} "systemctl stop website-api website-ecs || true"
 sleep 2
 
-echo -e "${YELLOW}➤ 启动新服务...${NC}"
-ssh ${ECS_USER}@${ECS_HOST} "systemctl start website-api"
+echo -e "${YELLOW}➤ 启动新服务（后端 + 前端）...${NC}"
+ssh ${ECS_USER}@${ECS_HOST} "systemctl start website-api website-ecs"
 sleep 5
 
 echo -e "${YELLOW}➤ 检查服务状态...${NC}"
-ssh ${ECS_USER}@${ECS_HOST} "systemctl status website-api --no-pager -l | head -20"
+ssh ${ECS_USER}@${ECS_HOST} "systemctl status website-api website-ecs --no-pager -l | head -30"
 
-echo -e "${GREEN}✓ 服务重启完成${NC}"
+echo -e "${GREEN}✓ 服务重启完成（backend + frontend）${NC}"
 echo ""
 
 # 步骤6: 健康检查
@@ -139,14 +164,15 @@ echo -e "${BLUE}═════════════════════�
 
 echo -e "${YELLOW}➤ 等待应用启动...${NC}"
 for i in {1..30}; do
-    if curl -sf http://localhost:8090/health > /dev/null 2>&1 || \
-       ssh ${ECS_USER}@${ECS_HOST} "curl -sf http://localhost:8090/health > /dev/null 2>&1"; then
-        echo -e "${GREEN}✓ 应用启动成功！${NC}"
+    BACKEND_OK=$(ssh ${ECS_USER}@${ECS_HOST} "curl -sf -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8090/actuator/health 2>/dev/null" || echo "000")
+    FRONTEND_OK=$(ssh ${ECS_USER}@${ECS_HOST} "curl -sf -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:3000/ 2>/dev/null" || echo "000")
+    if [ "${BACKEND_OK}" = "200" ] && [ "${FRONTEND_OK}" = "200" ]; then
+        echo -e "${GREEN}✓ 后端(8090) + 前端(3000) 均启动成功！${NC}"
         break
     fi
     if [ $i -eq 30 ]; then
-        echo -e "${RED}✗ 应用启动超时！${NC}"
-        echo -e "${YELLOW}查看日志: ssh ${ECS_USER}@${ECS_HOST} 'journalctl -u website-api -n 50'${NC}"
+        echo -e "${RED}✗ 应用启动超时！后端=${BACKEND_OK} 前端=${FRONTEND_OK}${NC}"
+        echo -e "${YELLOW}查看日志: ssh ${ECS_USER}@${ECS_HOST} 'journalctl -u website-api -n 50; journalctl -u website-ecs -n 50'${NC}"
         exit 1
     fi
     echo -n "."

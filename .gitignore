@@ -44,12 +44,3 @@ _*.json
 .m2/
 .playwright-cli/
 .playwright-mcp/
-
-### Cloudflare Worker local state ###
-cloudflare-worker/node_modules/
-cloudflare-worker/output/
-cloudflare-worker/.wrangler/
-cloudflare-worker/.wrangler-config/
-cloudflare-worker/.local-logs/
-cloudflare-worker/*-headers.txt
-cloudflare-worker/*-curl.err
